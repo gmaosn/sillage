@@ -137,6 +137,30 @@ class PhysicsTest {
         assertTrue((0 until a.bodyCount).all { a.body(it).position.isFinite() && a.body(it).position.y > -.01f })
     }
 
+    /** A heap large enough for the worker threads: with or without them, the same result bit for bit. */
+    @Test fun lesFilsDonnentLeMemeResultat() {
+        fun heap(parallel: Boolean): PhysicsWorld {
+            val w = PhysicsWorld(); w.parallel = parallel
+            w.addMesh(TriangleMesh(floatArrayOf(-40f, 0f, -40f, -40f, 0f, 40f, 40f, 0f, 40f, -40f, 0f, -40f, 40f, 0f, 40f, 40f, 0f, -40f)))
+            for (i in 0 until 3000) {
+                val p = Vec3((i % 20) * 1.1f - 11f, 1f + (i / 400) * 1.2f, ((i / 20) % 20) * 1.1f - 11f)
+                when (i % 3) {
+                    0 -> w.add(Box(.4f, .3f, .35f), p, Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), i * .3f))
+                    1 -> w.add(Sphere(.35f), p)
+                    else -> w.add(Capsule(.25f, .3f), p, Quat.axisAngle(Vec3.X, i * .5f))
+                }
+            }
+            return w
+        }
+        val a = heap(false); val b = heap(true)
+        repeat(120) { a.step(1f / 60f); b.step(1f / 60f) }
+        assertTrue(a.contactCount > 4000, "${a.contactCount} points : le tas doit passer par les fils")
+        for (i in 0 until a.bodyCount) {
+            assertEquals(a.body(i).position, b.body(i).position, "corps $i")
+            assertEquals(a.body(i).rotation, b.body(i).rotation, "corps $i")
+        }
+    }
+
     @Test fun unChocReveilleUnObjetEndormi() {
         val w = PhysicsWorld(); ground(w)
         val b = w.add(Box(.5f, .5f, .5f), Vec3(0f, .5f, 0f), mass = 20f)   // une caisse vide, pas une tonne d'eau

@@ -15,9 +15,10 @@ private const val DT = 1f / 60f
 
 private fun mediane(xs: List<Double>) = xs.sorted()[xs.size / 2]
 private fun p99(xs: List<Double>) = xs.sorted()[(xs.size * .99).toInt().coerceAtMost(xs.size - 1)]
+/** Bytes allocated by every thread of the process (the physics worker threads included). */
 private val octetsAlloues: () -> Long = run {
-    val bean = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
-    { bean.getThreadAllocatedBytes(Thread.currentThread().threadId()) }
+    val bean = java.lang.management.ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+    { bean.totalThreadAllocatedBytes }
 }
 
 /**

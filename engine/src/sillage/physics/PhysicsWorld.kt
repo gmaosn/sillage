@@ -120,6 +120,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     var sleepLinearSpeed = .05f
     var timeToSleep = .5f
     var speculativeDistance = .02f
+    /**
+     * Large scenes use the engine's worker threads (one pool per process, up to 8 threads): broad
+     * phase, contacts and their preparation, and the solver by graph colouring. The result is the same
+     * bit for bit with or without threads, whatever their number; small scenes always run on one.
+     */
+    var parallel = true
 
     internal var count = 0
     private var capacity = 0
@@ -344,37 +350,52 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         return sqrt(st[o] * st[o] + st[o + 1] * st[o + 1] + st[o + 2] * st[o + 2])
     }
 
+    private var stepDt = 0f
+    private val prepareBodiesJob = Job { from, to -> for (i in from until to) prepareBody(i, stepDt) }
+
     private fun prepareBodies(dt: Float) {
-        for (i in 0 until count) {
-            val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
-            // A body that has not moved since the last step keeps its pose (static, asleep, still).
-            val old = poses[i]
-            if (old == null || old.p.x != px[i] || old.p.y != py[i] || old.p.z != pz[i] ||
-                q0[4 * i] != x || q0[4 * i + 1] != y || q0[4 * i + 2] != z || q0[4 * i + 3] != w) {
-                val ax = Vec3(1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w))
-                val ay = Vec3(2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w))
-                val az = Vec3(2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y))
-                poses[i] = Pose(Vec3(px[i], py[i], pz[i]), ax, ay, az)
-            }
-            val pose = poses[i]!!; val ax = pose.ax; val ay = pose.ay; val az = pose.az; val p = pose.p
-            if (types[i] == BodyType.DYNAMIC) prepareInertia(i)
-            q0[4 * i] = x; q0[4 * i + 1] = y; q0[4 * i + 2] = z; q0[4 * i + 3] = w
-            val o = i * S
-            st[o + DPX] = 0f; st[o + DPX + 1] = 0f; st[o + DPX + 2] = 0f
-            st[o + DQX] = 0f; st[o + DQX + 1] = 0f; st[o + DQX + 2] = 0f; st[o + DQW] = 1f
-            // Bounds, widened by the distance travelled during the step.
-            val e = when (val s = shapes[i]!!) {
-                is Sphere -> Vec3(s.radius, s.radius, s.radius)
-                is Box -> Vec3(abs(ax.x) * s.halfX + abs(ay.x) * s.halfY + abs(az.x) * s.halfZ,
-                    abs(ax.y) * s.halfX + abs(ay.y) * s.halfY + abs(az.y) * s.halfZ,
-                    abs(ax.z) * s.halfX + abs(ay.z) * s.halfY + abs(az.z) * s.halfZ)
-                is Capsule -> Vec3(abs(ay.x) * s.halfHeight + s.radius, abs(ay.y) * s.halfHeight + s.radius, abs(ay.z) * s.halfHeight + s.radius)
-            }
-            val m = speculativeDistance + speed(i) * dt
-            val b = 6 * i
-            box[b] = p.x - e.x - m; box[b + 1] = p.y - e.y - m; box[b + 2] = p.z - e.z - m
-            box[b + 3] = p.x + e.x + m; box[b + 4] = p.y + e.y + m; box[b + 5] = p.z + e.z + m
+        stepDt = dt
+        forChunks(count, 512, count >= PARALLEL_BODIES, prepareBodiesJob)
+    }
+
+    /** Runs [job] in chunks: on the worker threads when [large] (and [parallel]), else here, in the same chunks. */
+    private fun forChunks(n: Int, chunk: Int, large: Boolean, job: Job) {
+        if (parallel && large) Workers.shared.run(n, chunk, job) else Workers.serialChunks(n, chunk, job)
+    }
+
+    private fun prepareBody(i: Int, dt: Float) {
+        val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
+        // A body that has not moved since the last step keeps its pose (static, asleep, still).
+        val old = poses[i]
+        if (old == null || old.p.x != px[i] || old.p.y != py[i] || old.p.z != pz[i] ||
+            q0[4 * i] != x || q0[4 * i + 1] != y || q0[4 * i + 2] != z || q0[4 * i + 3] != w) {
+            val ax = Vec3(1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w))
+            val ay = Vec3(2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w))
+            val az = Vec3(2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y))
+            poses[i] = Pose(Vec3(px[i], py[i], pz[i]), ax, ay, az)
         }
+        val pose = poses[i]!!; val ax = pose.ax; val ay = pose.ay; val az = pose.az; val p = pose.p
+        if (types[i] == BodyType.DYNAMIC) prepareInertia(i)
+        q0[4 * i] = x; q0[4 * i + 1] = y; q0[4 * i + 2] = z; q0[4 * i + 3] = w
+        val o = i * S
+        st[o + DPX] = 0f; st[o + DPX + 1] = 0f; st[o + DPX + 2] = 0f
+        st[o + DQX] = 0f; st[o + DQX + 1] = 0f; st[o + DQX + 2] = 0f; st[o + DQW] = 1f
+        // Bounds, widened by the distance travelled during the step.
+        var ex: Float; var ey: Float; var ez: Float
+        when (val s = shapes[i]!!) {
+            is Sphere -> { ex = s.radius; ey = s.radius; ez = s.radius }
+            is Box -> {
+                ex = abs(ax.x) * s.halfX + abs(ay.x) * s.halfY + abs(az.x) * s.halfZ
+                ey = abs(ax.y) * s.halfX + abs(ay.y) * s.halfY + abs(az.y) * s.halfZ
+                ez = abs(ax.z) * s.halfX + abs(ay.z) * s.halfY + abs(az.z) * s.halfZ
+            }
+            is Capsule -> { ex = abs(ay.x) * s.halfHeight + s.radius; ey = abs(ay.y) * s.halfHeight + s.radius; ez = abs(ay.z) * s.halfHeight + s.radius }
+        }
+        val m = speculativeDistance + speed(i) * dt
+        ex += m; ey += m; ez += m
+        val b = 6 * i
+        box[b] = p.x - ex; box[b + 1] = p.y - ey; box[b + 2] = p.z - ez
+        box[b + 3] = p.x + ex; box[b + 4] = p.y + ey; box[b + 5] = p.z + ez
     }
 
     // Broad phase: a uniform grid. Every small body is entered in each cell its bounds overlap, as one
@@ -392,9 +413,18 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val oi = 6 * i; val oj = 6 * j
         if (box[oj] > box[oi + 3] || box[oj + 3] < box[oi] || box[oj + 1] > box[oi + 4] || box[oj + 4] < box[oi + 1] ||
             box[oj + 2] > box[oi + 5] || box[oj + 5] < box[oi + 2]) return
+        if (mayPair(i, j)) acceptPair(i, j)
+    }
+
+    /** Whether two overlapping bodies can touch at all: one must be dynamic, one must move (read only: any thread). */
+    private fun mayPair(i: Int, j: Int): Boolean {
+        if (types[i] != BodyType.DYNAMIC && types[j] != BodyType.DYNAMIC) return false
+        return moving(i) || moving(j)
+    }
+
+    /** Keeps a pair, after the sleep rules (one thread, in a fixed order: waking a body changes the next pairs). */
+    private fun acceptPair(i: Int, j: Int) {
         val di = types[i] == BodyType.DYNAMIC; val dj = types[j] == BodyType.DYNAMIC
-        if (!di && !dj) return
-        if (!moving(i) && !moving(j)) return
         // A sleeping body is woken only by something really coming at it: a moving kinematic body, or a
         // body above the sleep speed (its clock was reset). A slow neighbour resting against it does not
         // wake it — otherwise two neighbours in separate islands would wake each other forever.
@@ -413,8 +443,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     }
 
     private var cellMin = IntArray(0)      // per body: cell of its lowest corner (x, y, z)
-    private var local = FloatArray(0)      // bounds of one cell's occupants, copied side by side
-    private var localId = IntArray(0)
+    private val groups = IntList()         // cells holding two bodies or more: start and end in the sorted entries
+
+    /** What one chunk of cells works with: its candidate pairs (in order) and the bounds of a cell's occupants. */
+    private class CellScratch { val pairs = IntList(); var local = FloatArray(0); var localId = IntArray(0) }
+    private val cellScratch = ArrayList<CellScratch>()
+    private val cellsJob = Job { from, to ->
+        val sc = cellScratch[from / CELL_CHUNK]
+        sc.pairs.clear()
+        for (g in from until to) pairsInCell(groups[2 * g], groups[2 * g + 1], sc)
+    }
 
     private fun findPairs() {
         pairsA.clear(); pairsB.clear(); large.clear()
@@ -441,38 +479,25 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             for (x in x0..x1) for (y in y0..y1) for (z in z0..z1)
                 cells[entries++] = (x.toLong() shl 50) or (y.toLong() shl 37) or (z.toLong() shl 24) or i.toLong()
         }
-        java.util.Arrays.sort(cells, 0, entries)
+        cells.sort(0, entries)
+        groups.clear()
         var start = 0
         while (start < entries) {
             val cell = cells[start] ushr 24
             var end = start + 1
             while (end < entries && (cells[end] ushr 24) == cell) end++
-            val m = end - start
-            if (m > 1) {
-                val cx = (cell ushr 26).toInt(); val cy = ((cell ushr 13) and 0x1fff).toInt(); val cz = (cell and 0x1fff).toInt()
-                // Copy the occupants' bounds and lowest cells side by side: the pair tests then stay in cache.
-                if (localId.size < m) { local = FloatArray(9 * m * 2); localId = IntArray(m * 2) }
-                for (p in 0 until m) {
-                    val i = (cells[start + p] and 0xffffff).toInt(); val o = 6 * i; val l = 9 * p
-                    localId[p] = i
-                    local[l] = box[o]; local[l + 1] = box[o + 1]; local[l + 2] = box[o + 2]
-                    local[l + 3] = box[o + 3]; local[l + 4] = box[o + 4]; local[l + 5] = box[o + 5]
-                    local[l + 6] = cellMin[3 * i].toFloat(); local[l + 7] = cellMin[3 * i + 1].toFloat(); local[l + 8] = cellMin[3 * i + 2].toFloat()
-                }
-                for (p in 0 until m) {
-                    val lp = 9 * p
-                    for (q in p + 1 until m) {
-                        val lq = 9 * q
-                        if (local[lq] > local[lp + 3] || local[lq + 3] < local[lp] || local[lq + 1] > local[lp + 4] ||
-                            local[lq + 4] < local[lp + 1] || local[lq + 2] > local[lp + 5] || local[lq + 5] < local[lp + 2]) continue
-                        // Report the pair only from the cell holding the overlap's lowest corner.
-                        if (max(local[lp + 6], local[lq + 6]).toInt() != cx || max(local[lp + 7], local[lq + 7]).toInt() != cy ||
-                            max(local[lp + 8], local[lq + 8]).toInt() != cz) continue
-                        considerPair(localId[p], localId[q])
-                    }
-                }
-            }
+            if (end - start > 1) { groups.add(start); groups.add(end) }
             start = end
+        }
+        // Candidates cell by cell (any thread), then kept in cell order on this one.
+        val ng = groups.size / 2
+        val chunks = (ng + CELL_CHUNK - 1) / CELL_CHUNK
+        while (cellScratch.size < chunks) cellScratch.add(CellScratch())
+        forChunks(ng, CELL_CHUNK, entries >= PARALLEL_BODIES, cellsJob)
+        for (c in 0 until chunks) {
+            val l = cellScratch[c].pairs
+            var k = 0
+            while (k < l.size) { acceptPair(l[k], l[k + 1]); k += 2 }
         }
         for (k in 0 until large.size) {
             val i = large[k]
@@ -480,42 +505,100 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
     }
 
+    /** The pairs of one cell: each pair is reported only from the cell holding the lowest corner of the two bounds' overlap. */
+    private fun pairsInCell(start: Int, end: Int, sc: CellScratch) {
+        val m = end - start
+        val cell = cells[start] ushr 24
+        val cx = (cell ushr 26).toInt(); val cy = ((cell ushr 13) and 0x1fff).toInt(); val cz = (cell and 0x1fff).toInt()
+        // Copy the occupants' bounds and lowest cells side by side: the pair tests then stay in cache.
+        if (sc.localId.size < m) { sc.local = FloatArray(9 * m * 2); sc.localId = IntArray(m * 2) }
+        val local = sc.local; val localId = sc.localId
+        for (p in 0 until m) {
+            val i = (cells[start + p] and 0xffffff).toInt(); val o = 6 * i; val l = 9 * p
+            localId[p] = i
+            local[l] = box[o]; local[l + 1] = box[o + 1]; local[l + 2] = box[o + 2]
+            local[l + 3] = box[o + 3]; local[l + 4] = box[o + 4]; local[l + 5] = box[o + 5]
+            local[l + 6] = cellMin[3 * i].toFloat(); local[l + 7] = cellMin[3 * i + 1].toFloat(); local[l + 8] = cellMin[3 * i + 2].toFloat()
+        }
+        for (p in 0 until m) {
+            val lp = 9 * p
+            for (q in p + 1 until m) {
+                val lq = 9 * q
+                if (local[lq] > local[lp + 3] || local[lq + 3] < local[lp] || local[lq + 1] > local[lp + 4] ||
+                    local[lq + 4] < local[lp + 1] || local[lq + 2] > local[lp + 5] || local[lq + 5] < local[lp + 2]) continue
+                if (max(local[lp + 6], local[lq + 6]).toInt() != cx || max(local[lp + 7], local[lq + 7]).toInt() != cy ||
+                    max(local[lp + 8], local[lq + 8]).toInt() != cz) continue
+                val i = localId[p]; val j = localId[q]
+                if (mayPair(i, j)) { sc.pairs.add(i); sc.pairs.add(j) }
+            }
+        }
+    }
+
+    /** One chunk of the narrow phase: its own contact points, merged in chunk order, and its own scratch. */
+    private class NarrowScratch { val set = ContactSet(); val points = ContactPoints(); val found = IntList(); val stack = IntList() }
+    private val narrow = ArrayList<NarrowScratch>()
+    private var collideDt = 0f
+    private var collideMesh = 0
+    private val pairsJob = Job { from, to ->
+        val n = narrow[from / PAIR_CHUNK]; n.set.clear()
+        for (k in from until to) collidePair(k, collideDt, n)
+    }
+    private val meshJob = Job { from, to ->
+        val n = narrow[from / BODY_CHUNK]; n.set.clear()
+        for (b in from until to) collideMesh(collideMesh, b, collideDt, n)
+    }
+
     private fun collide(dt: Float) {
         points.clear()
-        for (k in 0 until pairsA.size) {
-            val i = pairsA[k]; val j = pairsB[k]
-            val margin = min(1f, speculativeDistance + (speed(i) + speed(j)) * dt)
-            scratch.clear()
-            collide(shapes[i]!!, poses[i]!!, shapes[j]!!, poses[j]!!, margin, scratch)
-            // A kinematic body sets the bounce of what it touches: a character is soft (0), a paddle may be bouncy.
-            val e = when {
-                types[i] == BodyType.KINEMATIC -> restitution[i]
-                types[j] == BodyType.KINEMATIC -> restitution[j]
-                else -> max(restitution[i], restitution[j])
-            }
-            if (scratch.count > 0) points.addAll(scratch, i, j, (i.toLong() shl 32) or j.toLong(),
-                sqrt(friction[i] * friction[j]), e, poses[j]!!, previous)
+        collideDt = dt
+        val np = pairsA.size
+        val pairChunks = (np + PAIR_CHUNK - 1) / PAIR_CHUNK
+        while (narrow.size < max(pairChunks, (count + BODY_CHUNK - 1) / BODY_CHUNK)) narrow.add(NarrowScratch())
+        forChunks(np, PAIR_CHUNK, np >= PARALLEL_PAIRS, pairsJob)
+        for (c in 0 until pairChunks) points.append(narrow[c].set)
+        for (m in meshes.indices) {
+            collideMesh = m
+            forChunks(count, BODY_CHUNK, count >= PARALLEL_PAIRS, meshJob)
+            for (c in 0 until (count + BODY_CHUNK - 1) / BODY_CHUNK) points.append(narrow[c].set)
         }
-        for ((m, mesh) in meshes.withIndex()) {
-            for (b in 0 until count) {
-                if (types[b] != BodyType.DYNAMIC || sleeping[b]) continue
-                val o = 6 * b
-                found.clear()
-                mesh.query(box[o], box[o + 1], box[o + 2], box[o + 3], box[o + 4], box[o + 5], found, stack)
-                if (found.size == 0) continue
-                val margin = min(1f, speculativeDistance + speed(b) * dt)
-                for (f in 0 until found.size) {
-                    val t = found[f]
-                    val tri = mesh.tris[t]
-                    scratch.clear()
-                    collideTriangle(tri, shapes[b]!!, poses[b]!!, margin, scratch)
-                    val surface = mesh.palette[mesh.material[t]]
-                    if (scratch.count > 0) points.addAll(scratch, -1, b,
-                        Long.MIN_VALUE or (m.toLong() shl 55) or (b.toLong() shl 24) or t.toLong(),
-                        sqrt(surface.friction * friction[b]), restitution[b] * surface.bounce, poses[b]!!, previous,
-                        surface.rollingResistance)
-                }
-            }
+    }
+
+    private fun collidePair(k: Int, dt: Float, n: NarrowScratch) {
+        val i = pairsA[k]; val j = pairsB[k]
+        val margin = min(1f, speculativeDistance + (speed(i) + speed(j)) * dt)
+        val scratch = n.points
+        scratch.clear()
+        collide(shapes[i]!!, poses[i]!!, shapes[j]!!, poses[j]!!, margin, scratch)
+        // A kinematic body sets the bounce of what it touches: a character is soft (0), a paddle may be bouncy.
+        val e = when {
+            types[i] == BodyType.KINEMATIC -> restitution[i]
+            types[j] == BodyType.KINEMATIC -> restitution[j]
+            else -> max(restitution[i], restitution[j])
+        }
+        if (scratch.count > 0) n.set.addAll(scratch, i, j, (i.toLong() shl 32) or j.toLong(),
+            sqrt(friction[i] * friction[j]), e, poses[j]!!, previous)
+    }
+
+    private fun collideMesh(m: Int, b: Int, dt: Float, n: NarrowScratch) {
+        if (types[b] != BodyType.DYNAMIC || sleeping[b]) return
+        val mesh = meshes[m]
+        val o = 6 * b
+        val found = n.found
+        found.clear()
+        mesh.query(box[o], box[o + 1], box[o + 2], box[o + 3], box[o + 4], box[o + 5], found, n.stack)
+        if (found.size == 0) return
+        val margin = min(1f, speculativeDistance + speed(b) * dt)
+        val scratch = n.points
+        for (f in 0 until found.size) {
+            val t = found[f]
+            val tri = mesh.tris[t]
+            scratch.clear()
+            collideTriangle(tri, shapes[b]!!, poses[b]!!, margin, scratch)
+            val surface = mesh.palette[mesh.material[t]]
+            if (scratch.count > 0) n.set.addAll(scratch, -1, b,
+                Long.MIN_VALUE or (m.toLong() shl 55) or (b.toLong() shl 24) or t.toLong(),
+                sqrt(surface.friction * friction[b]), restitution[b] * surface.bounce, poses[b]!!, previous,
+                surface.rollingResistance)
         }
     }
 
@@ -550,12 +633,23 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         return if (k > 0f) 1f / k else 0f
     }
 
+    private var prepH = 0f; private var prepHertz = 0f; private var upX = 0f; private var upY = 0f; private var upZ = 0f
+    private val pointsJob = Job { from, to -> for (k in from until to) preparePoint(k) }
+    private val patchesJob = Job { from, to -> for (q in from until to) preparePatch(q) }
+
     private fun prepareContacts(h: Float) {
-        val hertz = min(contactHertz, .25f / h)
+        prepH = h
+        prepHertz = min(contactHertz, .25f / h)
         val g = gravity.length()
-        val upx = if (g > 0f) -gravity.x / g else 0f; val upy = if (g > 0f) -gravity.y / g else 0f; val upz = if (g > 0f) -gravity.z / g else 0f
+        upX = if (g > 0f) -gravity.x / g else 0f; upY = if (g > 0f) -gravity.y / g else 0f; upZ = if (g > 0f) -gravity.z / g else 0f
+        forChunks(points.size, 256, points.size >= PARALLEL_POINTS, pointsJob)
+        preparePatches()
+    }
+
+    private fun preparePoint(k: Int) {
+        val h = prepH; val hertz = prepHertz; val upx = upX; val upy = upY; val upz = upZ
         val c = points; val d = c.d
-        for (k in 0 until c.size) {
+        run {
             val a = c.a[k]; val b = c.b[k]; val o = k * C
             val nx = d[o + CNX]; val ny = d[o + CNX + 1]; val nz = d[o + CNX + 2]
             val x = c.x[k]; val y = c.y[k]; val z = c.z[k]
@@ -582,7 +676,17 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             val omega = 2f * Math.PI.toFloat() * hz
             val a1 = 2f * contactDampingRatio + h * omega; val a2 = h * omega * a1; val a3 = 1f / (1f + a2)
             d[o + CBIAS] = omega / a1; d[o + CMS] = a2 * a3; d[o + CIS] = a3
-            relative(a, b, o)
+            // Approach speed at the start of the step (for restitution).
+            val sB = b * S
+            var rvx = st[sB] + st[sB + 4] * rbz - st[sB + 5] * rby
+            var rvy = st[sB + 1] + st[sB + 5] * rbx - st[sB + 3] * rbz
+            var rvz = st[sB + 2] + st[sB + 3] * rby - st[sB + 4] * rbx
+            if (a >= 0) {
+                val sA = a * S
+                rvx -= st[sA] + st[sA + 4] * raz - st[sA + 5] * ray
+                rvy -= st[sA + 1] + st[sA + 5] * rax - st[sA + 3] * raz
+                rvz -= st[sA + 2] + st[sA + 3] * ray - st[sA + 4] * rax
+            }
             d[o + CREL] = rvx * nx + rvy * ny + rvz * nz
             d[o + CMAXN] = 0f
             // Résistance au roulement : couple borné par μr × rayon × force normale.
@@ -597,7 +701,6 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 d[o + CRM] = if (tr > 0f) 3f / tr else 0f
             }
         }
-        preparePatches()
     }
 
     /**
@@ -607,7 +710,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
      */
     private fun preparePatches() {
         val c = points; val d = c.d; val ps = patches
-        ps.clear()
+        ps.clear(); scaled.clear()
         var k = 0; var ordinal = 0
         while (k < c.size) {
             val a = c.a[k]; val b = c.b[k]; val o0 = k * C
@@ -617,8 +720,19 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             // Key for warm starting: the pair (triangle bits cleared for meshes) and the patch's rank in it.
             ordinal = if (k > 0 && c.a[k - 1] == a && c.b[k - 1] == b) ordinal + 1 else 0
             val key = if (a < 0) (c.key[k] and 0xFFFFFFL.inv()) or ordinal.toLong() else if (ordinal == 0) c.key[k] else -1L
-            val q = ps.add(); val o = q * P; val pd = ps.d
+            val q = ps.add()
             ps.start[q] = k; ps.end[q] = e; ps.a[q] = a; ps.b[q] = b; ps.key[q] = key
+            if (d[o0 + CSA] != 1f || d[o0 + CSB] != 1f) scaled.add(q)
+            k = e
+        }
+        forChunks(ps.size, 256, ps.size >= PARALLEL_POINTS, patchesJob)
+        colour()
+    }
+
+    private fun preparePatch(q: Int) {
+        val c = points; val d = c.d; val ps = patches; val pd = ps.d
+        val k = ps.start[q]; val e = ps.end[q]; val a = ps.a[q]; val b = ps.b[q]; val key = ps.key[q]; val o = q * P
+        run {
             var nx = 0f; var ny = 0f; var nz = 0f; var cx = 0f; var cy = 0f; var cz = 0f; var mu = 0f
             for (j in k until e) {
                 nx += d[j * C + CNX]; ny += d[j * C + CNX + 1]; nz += d[j * C + CNX + 2]
@@ -639,7 +753,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             pd[o + PRB] = rbx; pd[o + PRB + 1] = rby; pd[o + PRB + 2] = rbz
             pd[o + PFR] = mu
             // First direction along the sliding velocity at the centre: sliding friction is then exactly μ·N.
-            relativeAt(a, b, rax, ray, raz, rbx, rby, rbz)
+            val sB = b * S
+            var rvx = st[sB] + st[sB + 4] * rbz - st[sB + 5] * rby
+            var rvy = st[sB + 1] + st[sB + 5] * rbx - st[sB + 3] * rbz
+            var rvz = st[sB + 2] + st[sB + 3] * rby - st[sB + 4] * rbx
+            if (a >= 0) {
+                val sA = a * S
+                rvx -= st[sA] + st[sA + 4] * raz - st[sA + 5] * ray
+                rvy -= st[sA + 1] + st[sA + 5] * rax - st[sA + 3] * raz
+                rvz -= st[sA + 2] + st[sA + 3] * ray - st[sA + 4] * rax
+            }
             val vn = rvx * nx + rvy * ny + rvz * nz
             var t1x = rvx - vn * nx; var t1y = rvy - vn * ny; var t1z = rvz - vn * nz
             val tl = t1x * t1x + t1y * t1y + t1z * t1z
@@ -669,13 +792,68 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                     if (qd[p + PN] * nx + qd[p + PN + 1] * ny + qd[p + PN + 2] * nz > .9f) pd[o + PLT] = qd[p + PLT]
                 }
             }
-            k = e
         }
     }
 
-    private fun integrateVelocities(h: Float) {
+    // ------------------------------------------------------------------ graph colouring
+
+    // Patches of the same colour share no moving body: they can be solved at the same time, and the
+    // order (colour after colour) depends only on the contacts, never on the threads. Small scenes keep
+    // the natural order. Patches that find no free colour (a body with dozens of contacts) come last, alone.
+    private var bodyColours = LongArray(0)
+    private var colourOf = IntArray(0)
+    private var ordered = IntArray(0)
+    private val colourStart = IntArray(MAX_COLOURS + 2)
+    private var colours = 0                          // 0: natural order, no colouring
+
+    private fun colour() {
+        val ps = patches; val n = ps.size
+        if (n < PARALLEL_POINTS) { colours = 0; return }
+        if (bodyColours.size < count) bodyColours = LongArray(capacity) else bodyColours.fill(0L, 0, count)
+        if (colourOf.size < n) { colourOf = IntArray(n * 2); ordered = IntArray(n * 2) }
+        colourStart.fill(0)
+        for (q in 0 until n) {
+            val a = ps.a[q]; val b = ps.b[q]
+            val da = a >= 0 && st[a * S + IM] > 0f; val db = st[b * S + IM] > 0f
+            val used = (if (da) bodyColours[a] else 0L) or (if (db) bodyColours[b] else 0L)
+            var c = used.inv().countTrailingZeroBits()
+            if (c >= MAX_COLOURS) c = MAX_COLOURS
+            else { val bit = 1L shl c; if (da) bodyColours[a] = bodyColours[a] or bit; if (db) bodyColours[b] = bodyColours[b] or bit }
+            colourOf[q] = c; colourStart[c + 1]++
+        }
+        for (c in 1..MAX_COLOURS + 1) colourStart[c] += colourStart[c - 1]
+        val fill = colourStart.copyOf()
+        for (q in 0 until n) ordered[fill[colourOf[q]]++] = q
+        colours = MAX_COLOURS + 1
+    }
+
+    /** Runs [job] over every patch: colour after colour on the worker threads, or in order on this one. */
+    private fun forPatches(job: Job) {
+        val n = patches.size
+        if (colours == 0) { Workers.serialChunks(n, n.coerceAtLeast(1), job); return }
+        for (c in 0 until MAX_COLOURS) {
+            val from = colourStart[c]; val to = colourStart[c + 1]
+            if (from == to) continue
+            colourBase = from
+            forChunks(to - from, PATCH_CHUNK, true, colourJob)
+        }
+        // The overflow, alone and in order.
+        val from = colourStart[MAX_COLOURS]; val to = colourStart[MAX_COLOURS + 1]
+        if (to > from) { colourBase = from; colourJob.run(0, to - from) }
+    }
+    private var colourBase = 0
+    private var patchJob: Job = Job { _, _ -> }
+    private val colourJob = Job { from, to -> for (i in from until to) { val q = ordered[colourBase + i]; patchJob.run(q, q + 1) } }
+
+    private var integrateH = 0f
+    private val velocitiesJob = Job { from, to -> integrateVelocities(from, to, integrateH) }
+    private val positionsJob = Job { from, to -> integratePositions(from, to, integrateH) }
+    private fun integrateVelocities(h: Float) { integrateH = h; forChunks(count, 1024, count >= PARALLEL_BODIES, velocitiesJob) }
+    private fun integratePositions(h: Float) { integrateH = h; forChunks(count, 1024, count >= PARALLEL_BODIES, positionsJob) }
+
+    private fun integrateVelocities(from: Int, to: Int, h: Float) {
         val gx = gravity.x; val gy = gravity.y; val gz = gravity.z
-        for (i in 0 until count) {
+        for (i in from until to) {
             if (types[i] != BodyType.DYNAMIC || sleeping[i]) continue
             val o = i * S
             val m = st[o + IM]; val gs = gravityScale[i]
@@ -725,8 +903,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         st[o + 5] = nz + w * uz + (x * uy - y * ux)
     }
 
-    private fun integratePositions(h: Float) {
-        for (i in 0 until count) {
+    private fun integratePositions(from: Int, to: Int, h: Float) {
+        for (i in from until to) {
             if (types[i] == BodyType.STATIC || (types[i] == BodyType.DYNAMIC && sleeping[i])) continue
             val o = i * S
             val vx = st[o]; val vy = st[o + 1]; val vz = st[o + 2]
@@ -786,63 +964,6 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
     }
 
-    /** Applies the impulse (px, py, pz) at levers rA (on a) and rB (on b): −P on a, +P on b. */
-    private fun pushAt(a: Int, b: Int, rax: Float, ray: Float, raz: Float, rbx: Float, rby: Float, rbz: Float,
-                       px: Float, py: Float, pz: Float, sa: Float = 1f, sb: Float = 1f) {
-        if (a >= 0) {
-            val s = a * S
-            val m = st[s + IM] * sa
-            if (m > 0f) {
-                st[s] -= px * m; st[s + 1] -= py * m; st[s + 2] -= pz * m
-                val cx = (ray * pz - raz * py) * sa; val cy = (raz * px - rax * pz) * sa; val cz = (rax * py - ray * px) * sa
-                val i = s + I0
-                st[s + 3] -= st[i] * cx + st[i + 1] * cy + st[i + 2] * cz
-                st[s + 4] -= st[i + 1] * cx + st[i + 3] * cy + st[i + 4] * cz
-                st[s + 5] -= st[i + 2] * cx + st[i + 4] * cy + st[i + 5] * cz
-            }
-        }
-        val s = b * S
-        val m = st[s + IM] * sb
-        if (m > 0f) {
-            st[s] += px * m; st[s + 1] += py * m; st[s + 2] += pz * m
-            val cx = (rby * pz - rbz * py) * sb; val cy = (rbz * px - rbx * pz) * sb; val cz = (rbx * py - rby * px) * sb
-            val i = s + I0
-            st[s + 3] += st[i] * cx + st[i + 1] * cy + st[i + 2] * cz
-            st[s + 4] += st[i + 1] * cx + st[i + 3] * cy + st[i + 4] * cz
-            st[s + 5] += st[i + 2] * cx + st[i + 4] * cy + st[i + 5] * cz
-        }
-    }
-
-    /** Relative velocity of b against a at levers rA, rB, written to (rvx, rvy, rvz). */
-    private fun relativeAt(a: Int, b: Int, rax: Float, ray: Float, raz: Float, rbx: Float, rby: Float, rbz: Float) {
-        val s = b * S
-        rvx = st[s] + st[s + 4] * rbz - st[s + 5] * rby
-        rvy = st[s + 1] + st[s + 5] * rbx - st[s + 3] * rbz
-        rvz = st[s + 2] + st[s + 3] * rby - st[s + 4] * rbx
-        if (a >= 0) {
-            val t = a * S
-            rvx -= st[t] + st[t + 4] * raz - st[t + 5] * ray
-            rvy -= st[t + 1] + st[t + 5] * rax - st[t + 3] * raz
-            rvz -= st[t + 2] + st[t + 3] * ray - st[t + 4] * rax
-        }
-    }
-
-    /** Angular impulse (lx, ly, lz): −L on a, +L on b (scaled by sa, sb). */
-    private fun twist(a: Int, b: Int, lx: Float, ly: Float, lz: Float, sa: Float = 1f, sb: Float = 1f) {
-        if (a >= 0 && st[a * S + IM] > 0f) {
-            val s = a * S; val i = s + I0
-            st[s + 3] -= (st[i] * lx + st[i + 1] * ly + st[i + 2] * lz) * sa
-            st[s + 4] -= (st[i + 1] * lx + st[i + 3] * ly + st[i + 4] * lz) * sa
-            st[s + 5] -= (st[i + 2] * lx + st[i + 4] * ly + st[i + 5] * lz) * sa
-        }
-        if (st[b * S + IM] > 0f) {
-            val s = b * S; val i = s + I0
-            st[s + 3] += (st[i] * lx + st[i + 1] * ly + st[i + 2] * lz) * sb
-            st[s + 4] += (st[i + 1] * lx + st[i + 3] * ly + st[i + 4] * lz) * sb
-            st[s + 5] += (st[i + 2] * lx + st[i + 4] * ly + st[i + 5] * lz) * sb
-        }
-    }
-
     // Relative velocity at contact data offset o, written to (rvx, rvy, rvz).
     private var rvx = 0f; private var rvy = 0f; private var rvz = 0f
     private fun relative(a: Int, b: Int, o: Int) {
@@ -860,177 +981,297 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
     }
 
-    // Anchor at data offset r rotated by body i's rotation since the step began, added (sign ±1) to (sx, sy, sz).
-    private var sx = 0f; private var sy = 0f; private var sz = 0f
-    private fun addRotated(i: Int, r: Int, sign: Float) {
-        val d = points.d
-        val x = d[r]; val y = d[r + 1]; val z = d[r + 2]
-        // A turning sphere keeps the same surface under the contact: rotating its anchor would fake a gap.
-        if (i < 0 || round[i]) { sx += sign * x; sy += sign * y; sz += sign * z; return }
-        val q = i * S + DQX
-        val qx = st[q]; val qy = st[q + 1]; val qz = st[q + 2]; val qw = st[q + 3]
-        val tx = 2f * (qy * z - qz * y); val ty = 2f * (qz * x - qx * z); val tz = 2f * (qx * y - qy * x)
-        sx += sign * (x + qw * tx + (qy * tz - qz * ty))
-        sy += sign * (y + qw * ty + (qz * tx - qx * tz))
-        sz += sign * (z + qw * tz + (qx * ty - qy * tx))
-    }
+    // The solver works patch by patch: the two bodies' velocities are read once into locals, every
+    // point, the friction, the twist and the rolling resistance of the patch are solved on them, then
+    // they are written back. One pass over memory per patch instead of one per point and per row.
 
-    private fun warmStart() {
-        val c = points; val d = c.d
-        for (k in 0 until c.size) {
-            val a = c.a[k]; val b = c.b[k]; val o = k * C
+    private val warmJob = Job { from, to -> for (q in from until to) warmStartPatch(q) }
+    private fun warmStart() { patchJob = warmJob; forPatches(warmJob) }
+
+    private fun warmStartPatch(q: Int) {
+        val d = points.d; val ps = patches; val pd = ps.d
+        val a = ps.a[q]; val b = ps.b[q]
+        val sB = b * S; val mB = st[sB + IM]
+        var vbx = st[sB]; var vby = st[sB + 1]; var vbz = st[sB + 2]; var wbx = st[sB + 3]; var wby = st[sB + 4]; var wbz = st[sB + 5]
+        val ib0 = st[sB + I0]; val ib1 = st[sB + I0 + 1]; val ib2 = st[sB + I0 + 2]; val ib3 = st[sB + I0 + 3]; val ib4 = st[sB + I0 + 4]; val ib5 = st[sB + I0 + 5]
+        val sA = if (a >= 0) a * S else 0
+        val mA = if (a >= 0) st[sA + IM] else 0f
+        var vax = 0f; var vay = 0f; var vaz = 0f; var wax = 0f; var way = 0f; var waz = 0f
+        var ia0 = 0f; var ia1 = 0f; var ia2 = 0f; var ia3 = 0f; var ia4 = 0f; var ia5 = 0f
+        if (mA > 0f) {
+            vax = st[sA]; vay = st[sA + 1]; vaz = st[sA + 2]; wax = st[sA + 3]; way = st[sA + 4]; waz = st[sA + 5]
+            ia0 = st[sA + I0]; ia1 = st[sA + I0 + 1]; ia2 = st[sA + I0 + 2]; ia3 = st[sA + I0 + 3]; ia4 = st[sA + I0 + 4]; ia5 = st[sA + I0 + 5]
+        }
+        val end = ps.end[q]
+        for (j in ps.start[q] until end) {
+            val o = j * C
             val n = d[o + CLN]
-            push(a, b, o, d[o + CNX] * n, d[o + CNX + 1] * n, d[o + CNX + 2] * n)
-            if (d[o + CRL] > 0f) twist(a, b, d[o + CLR], d[o + CLR + 1], d[o + CLR + 2])
+            val px = d[o + CNX] * n; val py = d[o + CNX + 1] * n; val pz = d[o + CNX + 2] * n
+            if (mA > 0f) {
+                val f = d[o + CSA]; val qx = px * f; val qy = py * f; val qz = pz * f
+                vax -= qx * mA; vay -= qy * mA; vaz -= qz * mA
+                val rx = d[o + CRA]; val ry = d[o + CRA + 1]; val rz = d[o + CRA + 2]
+                val cx = ry * qz - rz * qy; val cy = rz * qx - rx * qz; val cz = rx * qy - ry * qx
+                wax -= ia0 * cx + ia1 * cy + ia2 * cz; way -= ia1 * cx + ia3 * cy + ia4 * cz; waz -= ia2 * cx + ia4 * cy + ia5 * cz
+            }
+            if (mB > 0f) {
+                val f = d[o + CSB]; val qx = px * f; val qy = py * f; val qz = pz * f
+                vbx += qx * mB; vby += qy * mB; vbz += qz * mB
+                val rx = d[o + CRB]; val ry = d[o + CRB + 1]; val rz = d[o + CRB + 2]
+                val cx = ry * qz - rz * qy; val cy = rz * qx - rx * qz; val cz = rx * qy - ry * qx
+                wbx += ib0 * cx + ib1 * cy + ib2 * cz; wby += ib1 * cx + ib3 * cy + ib4 * cz; wbz += ib2 * cx + ib4 * cy + ib5 * cz
+            }
+            if (d[o + CRL] > 0f) {
+                val lx = d[o + CLR]; val ly = d[o + CLR + 1]; val lz = d[o + CLR + 2]
+                if (mA > 0f) { wax -= ia0 * lx + ia1 * ly + ia2 * lz; way -= ia1 * lx + ia3 * ly + ia4 * lz; waz -= ia2 * lx + ia4 * ly + ia5 * lz }
+                if (mB > 0f) { wbx += ib0 * lx + ib1 * ly + ib2 * lz; wby += ib1 * lx + ib3 * ly + ib4 * lz; wbz += ib2 * lx + ib4 * ly + ib5 * lz }
+            }
         }
-        val ps = patches; val pd = ps.d
-        for (q in 0 until ps.size) {
-            val o = q * P; val l1 = pd[o + PL1]; val l2 = pd[o + PL2]; val lt = pd[o + PLT]
-            val f = ps.start[q] * C; val sa = d[f + CSA]; val sb = d[f + CSB]
-            pushAt(ps.a[q], ps.b[q], pd[o + PRA], pd[o + PRA + 1], pd[o + PRA + 2], pd[o + PRB], pd[o + PRB + 1], pd[o + PRB + 2],
-                pd[o + PT1] * l1 + pd[o + PT2] * l2, pd[o + PT1 + 1] * l1 + pd[o + PT2 + 1] * l2, pd[o + PT1 + 2] * l1 + pd[o + PT2 + 2] * l2, sa, sb)
-            if (lt != 0f) twist(ps.a[q], ps.b[q], pd[o + PN] * lt, pd[o + PN + 1] * lt, pd[o + PN + 2] * lt, sa, sb)
+        val o = q * P; val l1 = pd[o + PL1]; val l2 = pd[o + PL2]; val lt = pd[o + PLT]
+        val f = ps.start[q] * C; val sa = d[f + CSA]; val sb = d[f + CSB]
+        val px = pd[o + PT1] * l1 + pd[o + PT2] * l2; val py = pd[o + PT1 + 1] * l1 + pd[o + PT2 + 1] * l2; val pz = pd[o + PT1 + 2] * l1 + pd[o + PT2 + 2] * l2
+        val tx = pd[o + PN] * lt; val ty = pd[o + PN + 1] * lt; val tz = pd[o + PN + 2] * lt
+        if (mA > 0f) {
+            val m = mA * sa
+            vax -= px * m; vay -= py * m; vaz -= pz * m
+            val rx = pd[o + PRA]; val ry = pd[o + PRA + 1]; val rz = pd[o + PRA + 2]
+            val cx = (ry * pz - rz * py) * sa + tx * sa; val cy = (rz * px - rx * pz) * sa + ty * sa; val cz = (rx * py - ry * px) * sa + tz * sa
+            wax -= ia0 * cx + ia1 * cy + ia2 * cz; way -= ia1 * cx + ia3 * cy + ia4 * cz; waz -= ia2 * cx + ia4 * cy + ia5 * cz
+            st[sA] = vax; st[sA + 1] = vay; st[sA + 2] = vaz; st[sA + 3] = wax; st[sA + 4] = way; st[sA + 5] = waz
+        }
+        if (mB > 0f) {
+            val m = mB * sb
+            vbx += px * m; vby += py * m; vbz += pz * m
+            val rx = pd[o + PRB]; val ry = pd[o + PRB + 1]; val rz = pd[o + PRB + 2]
+            val cx = (ry * pz - rz * py) * sb + tx * sb; val cy = (rz * px - rx * pz) * sb + ty * sb; val cz = (rx * py - ry * px) * sb + tz * sb
+            wbx += ib0 * cx + ib1 * cy + ib2 * cz; wby += ib1 * cx + ib3 * cy + ib4 * cz; wbz += ib2 * cx + ib4 * cy + ib5 * cz
+            st[sB] = vbx; st[sB + 1] = vby; st[sB + 2] = vbz; st[sB + 3] = wbx; st[sB + 4] = wby; st[sB + 5] = wbz
         }
     }
 
-    private fun clearHidden(x: Int) {
-        if (x < 0) return
-        hiddenN[x] = 0f; hiddenM[x] = 0f
-        for (j in 0..2) { hiddenT[3 * x + j] = 0f; slide[3 * x + j] = 0f }
-    }
+    /** Patches whose two dynamic bodies are scaled for support (a heavy body on a light one), listed per step. */
+    private val scaled = IntList()
+
+    private var solveBias = false; private var solveInvH = 0f; private var solveHidden = false; private var solveG = 0f
+    private val solveJob = Job { from, to -> for (q in from until to) solvePatch(q, solveBias, solveInvH, solveHidden, solveG) }
 
     private fun solve(h: Float, useBias: Boolean) {
-        val c = points; val d = c.d
-        val invH = 1f / h
-        for (k in 0 until c.size) {
-            val a = c.a[k]; val b = c.b[k]; val o = k * C
+        solveInvH = 1f / h; solveBias = useBias
+        solveHidden = scaled.size > 0
+        if (solveHidden) hideLoads()
+        solveG = gravity.length()
+        patchJob = solveJob; forPatches(solveJob)
+        if (solveHidden) slideStacks()
+    }
+
+    /**
+     * Loads hidden from a light body by the support scaling — what it would really carry, normal and
+     * friction — from the impulses as they stand: given to what it rests on, whose friction then holds
+     * both or gives way. Only bodies under a scaled patch are touched; [slideStacks] clears them.
+     */
+    private fun hideLoads() {
+        if (hiddenN.size < count) { hiddenN = FloatArray(capacity); hiddenT = FloatArray(3 * capacity); hiddenM = FloatArray(capacity); slide = FloatArray(3 * capacity) }
+        val d = points.d; val ps = patches; val pd = ps.d
+        for (k in 0 until scaled.size) {
+            val q = scaled[k]
+            val f = ps.start[q] * C; val sa = d[f + CSA]; val sb = d[f + CSB]
+            val o = q * P
+            val lower = if (sa < 1f) ps.a[q] else ps.b[q]; val upper = if (sa < 1f) ps.b[q] else ps.a[q]
+            val hide = 1f - min(sa, sb); val sign = if (sa < 1f) -1f else 1f
+            var load = 0f
+            for (j in ps.start[q] until ps.end[q]) load += d[j * C + CLN]
+            hiddenN[lower] += hide * load
+            hiddenM[lower] += 1f / st[upper * S + IM]
+            val l1 = pd[o + PL1] * hide * sign; val l2 = pd[o + PL2] * hide * sign
+            hiddenT[3 * lower] += pd[o + PT1] * l1 + pd[o + PT2] * l2
+            hiddenT[3 * lower + 1] += pd[o + PT1 + 1] * l1 + pd[o + PT2 + 1] * l2
+            hiddenT[3 * lower + 2] += pd[o + PT1 + 2] * l1 + pd[o + PT2 + 2] * l2
+        }
+    }
+
+    /** What rests on a light body that slid with it moves as much; then the hidden loads are cleared. */
+    private fun slideStacks() {
+        val d = points.d; val ps = patches
+        for (k in 0 until scaled.size) {
+            val q = scaled[k]
+            val f = ps.start[q] * C; val sa = d[f + CSA]
+            val lower = if (sa < 1f) ps.a[q] else ps.b[q]; val upper = if (sa < 1f) ps.b[q] else ps.a[q]
+            val su = upper * S
+            st[su] += slide[3 * lower]; st[su + 1] += slide[3 * lower + 1]; st[su + 2] += slide[3 * lower + 2]
+        }
+        for (k in 0 until scaled.size) {
+            val q = scaled[k]
+            val f = ps.start[q] * C; val sa = d[f + CSA]
+            val x = if (sa < 1f) ps.a[q] else ps.b[q]
+            hiddenN[x] = 0f; hiddenM[x] = 0f
+            for (j in 0..2) { hiddenT[3 * x + j] = 0f; slide[3 * x + j] = 0f }
+        }
+    }
+
+    private fun solvePatch(q: Int, useBias: Boolean, invH: Float, anyHidden: Boolean, gl: Float) {
+        val d = points.d; val ps = patches; val pd = ps.d
+        val a = ps.a[q]; val b = ps.b[q]
+        // Body b, then a (a static mesh, a = −1, is a body without mass that does not move).
+        val sB = b * S; val mB = st[sB + IM]
+        var vbx = st[sB]; var vby = st[sB + 1]; var vbz = st[sB + 2]; var wbx = st[sB + 3]; var wby = st[sB + 4]; var wbz = st[sB + 5]
+        val ib0 = st[sB + I0]; val ib1 = st[sB + I0 + 1]; val ib2 = st[sB + I0 + 2]; val ib3 = st[sB + I0 + 3]; val ib4 = st[sB + I0 + 4]; val ib5 = st[sB + I0 + 5]
+        val dbx = st[sB + DPX]; val dby = st[sB + DPX + 1]; val dbz = st[sB + DPX + 2]
+        val rotB = !round[b]
+        val qbx = st[sB + DQX]; val qby = st[sB + DQX + 1]; val qbz = st[sB + DQX + 2]; val qbw = st[sB + DQW]
+        val sA = if (a >= 0) a * S else 0
+        val mA = if (a >= 0) st[sA + IM] else 0f
+        var vax = 0f; var vay = 0f; var vaz = 0f; var wax = 0f; var way = 0f; var waz = 0f
+        var ia0 = 0f; var ia1 = 0f; var ia2 = 0f; var ia3 = 0f; var ia4 = 0f; var ia5 = 0f
+        var dax = 0f; var day = 0f; var daz = 0f
+        var qax = 0f; var qay = 0f; var qaz = 0f; var qaw = 1f
+        var rotA = false
+        if (a >= 0) {
+            vax = st[sA]; vay = st[sA + 1]; vaz = st[sA + 2]; wax = st[sA + 3]; way = st[sA + 4]; waz = st[sA + 5]
+            ia0 = st[sA + I0]; ia1 = st[sA + I0 + 1]; ia2 = st[sA + I0 + 2]; ia3 = st[sA + I0 + 3]; ia4 = st[sA + I0 + 4]; ia5 = st[sA + I0 + 5]
+            dax = st[sA + DPX]; day = st[sA + DPX + 1]; daz = st[sA + DPX + 2]
+            rotA = !round[a]
+            qax = st[sA + DQX]; qay = st[sA + DQX + 1]; qaz = st[sA + DQX + 2]; qaw = st[sA + DQW]
+        }
+        val start = ps.start[q]; val end = ps.end[q]
+
+        // Normal points: soft non-penetration, separation from the motion since the step began.
+        for (j in start until end) {
+            val o = j * C
             val nx = d[o + CNX]; val ny = d[o + CNX + 1]; val nz = d[o + CNX + 2]
-            // Current separation from the motion since the step began.
-            val sb = b * S + DPX
-            sx = st[sb]; sy = st[sb + 1]; sz = st[sb + 2]
-            if (a >= 0) { val sa = a * S + DPX; sx -= st[sa]; sy -= st[sa + 1]; sz -= st[sa + 2] }
-            addRotated(b, o + CRB, 1f); addRotated(a, o + CRA, -1f)
-            val s = sx * nx + sy * ny + sz * nz + d[o + CADJ]
+            val rax = d[o + CRA]; val ray = d[o + CRA + 1]; val raz = d[o + CRA + 2]
+            val rbx = d[o + CRB]; val rby = d[o + CRB + 1]; val rbz = d[o + CRB + 2]
+            // Anchors turned by each body's rotation since the step began (a sphere keeps its anchor).
+            var cbx = rbx; var cby = rby; var cbz = rbz
+            if (rotB) {
+                val tx = 2f * (qby * rbz - qbz * rby); val ty = 2f * (qbz * rbx - qbx * rbz); val tz = 2f * (qbx * rby - qby * rbx)
+                cbx = rbx + qbw * tx + (qby * tz - qbz * ty); cby = rby + qbw * ty + (qbz * tx - qbx * tz); cbz = rbz + qbw * tz + (qbx * ty - qby * tx)
+            }
+            var cax = rax; var cay = ray; var caz = raz
+            if (rotA) {
+                val tx = 2f * (qay * raz - qaz * ray); val ty = 2f * (qaz * rax - qax * raz); val tz = 2f * (qax * ray - qay * rax)
+                cax = rax + qaw * tx + (qay * tz - qaz * ty); cay = ray + qaw * ty + (qaz * tx - qax * tz); caz = raz + qaw * tz + (qax * ty - qay * tx)
+            }
+            val s = (dbx - dax + cbx - cax) * nx + (dby - day + cby - cay) * ny + (dbz - daz + cbz - caz) * nz + d[o + CADJ]
             var bias = 0f; var massScale = 1f; var impulseScale = 0f
             if (s > 0f) bias = s * invH
             else if (useBias) { bias = max(d[o + CBIAS] * s, -contactSpeed); massScale = d[o + CMS]; impulseScale = d[o + CIS] }
-            relative(a, b, o)
+            val rvx = vbx + wby * rbz - wbz * rby - (vax + way * raz - waz * ray)
+            val rvy = vby + wbz * rbx - wbx * rbz - (vay + waz * rax - wax * raz)
+            val rvz = vbz + wbx * rby - wby * rbx - (vaz + wax * ray - way * rax)
             val vn = rvx * nx + rvy * ny + rvz * nz
             val old = d[o + CLN]
             val total = max(old - d[o + CNM] * massScale * (vn + bias) - impulseScale * old, 0f)
             val impulse = total - old
             d[o + CLN] = total
             if (impulse > d[o + CMAXN]) d[o + CMAXN] = impulse
-            if (impulse != 0f) push(a, b, o, nx * impulse, ny * impulse, nz * impulse)
-        }
-        // Friction, per patch, at its centre: first along the sliding direction, then across (both
-        // within the circle μ·N), then the twist about the normal (within μ·Σ Nᵢ·dᵢ).
-        // Loads hidden from a light body by the support scaling — what it would really carry, normal and
-        // friction: given to what it rests on. Its support's friction then holds both, or gives way.
-        if (hiddenN.size < count) { hiddenN = FloatArray(capacity); hiddenT = FloatArray(3 * capacity); hiddenM = FloatArray(capacity); slide = FloatArray(3 * capacity) }
-        val ps = patches; val pd = ps.d
-        var anyHidden = false
-        for (q in 0 until ps.size) {
-            val f = ps.start[q] * C; val sa = d[f + CSA]; val sb = d[f + CSB]
-            if (sa == 1f && sb == 1f) continue
-            val o = q * P
-            val lower = if (sa < 1f) ps.a[q] else ps.b[q]; val hide = 1f - min(sa, sb); val sign = if (sa < 1f) -1f else 1f
-            var load = 0f
-            for (j in ps.start[q] until ps.end[q]) load += d[j * C + CLN]
-            hiddenN[lower] += hide * load
-            val upper = if (sa < 1f) ps.b[q] else ps.a[q]
-            hiddenM[lower] += 1f / st[upper * S + IM]
-            val l1 = pd[o + PL1] * hide * sign; val l2 = pd[o + PL2] * hide * sign
-            hiddenT[3 * lower] += pd[o + PT1] * l1 + pd[o + PT2] * l2
-            hiddenT[3 * lower + 1] += pd[o + PT1 + 1] * l1 + pd[o + PT2 + 1] * l2
-            hiddenT[3 * lower + 2] += pd[o + PT1 + 2] * l1 + pd[o + PT2 + 2] * l2
-            anyHidden = true
-        }
-        val gl = gravity.length()
-        for (q in 0 until ps.size) {
-            val a = ps.a[q]; val b = ps.b[q]; val o = q * P
-            var load = 0f; var twistCap = 0f
-            for (j in ps.start[q] until ps.end[q]) { val l = d[j * C + CLN]; load += l; twistCap += l * d[j * C + CDIST] }
-            val f0 = ps.start[q] * C; val sa = d[f0 + CSA]; val sb = d[f0 + CSB]
-            var reserved = 0f
-            if (anyHidden && gl > 0f) {
-                val up = -(pd[o + PN] * gravity.x + pd[o + PN + 1] * gravity.y + pd[o + PN + 2] * gravity.z) / gl
-                val x = if (up >= .5f) b else if (up <= -.5f && a >= 0) a else -1
-                if (x >= 0 && hiddenN[x] > 0f) {
-                    twistCap *= (load + hiddenN[x]) / max(load, 1e-12f); load += hiddenN[x]
-                    // The hidden friction, in this patch's plane, uses up part of its grip; beyond the grip,
-                    // the excess pushes the light body (once per substep): the whole stack then slides.
-                    val nx = pd[o + PN]; val ny = pd[o + PN + 1]; val nz = pd[o + PN + 2]
-                    var hx = hiddenT[3 * x]; var hy = hiddenT[3 * x + 1]; var hz = hiddenT[3 * x + 2]
-                    val hn = hx * nx + hy * ny + hz * nz; hx -= hn * nx; hy -= hn * ny; hz -= hn * nz
-                    val hl = sqrt(hx * hx + hy * hy + hz * hz)
-                    val grip = pd[o + PFR] * load
-                    if (hl > grip && useBias) {
-                        // The stack slides as a whole: the same velocity change for the light body and what
-                        // rests on it (pushing the light body alone would make it slip under its load).
-                        val e = (hl - grip) / hl / (1f / st[x * S + IM] + hiddenM[x])
-                        val vx = hx * e; val vy = hy * e; val vz = hz * e
-                        val sx0 = x * S
-                        st[sx0] += vx; st[sx0 + 1] += vy; st[sx0 + 2] += vz
-                        slide[3 * x] += vx; slide[3 * x + 1] += vy; slide[3 * x + 2] += vz
-                    }
-                    reserved = min(hl, grip)
-                }
+            if (impulse == 0f) continue
+            val px = nx * impulse; val py = ny * impulse; val pz = nz * impulse
+            if (mA > 0f) {
+                val f = d[o + CSA]; val qx = px * f; val qy = py * f; val qz = pz * f
+                vax -= qx * mA; vay -= qy * mA; vaz -= qz * mA
+                val cx = ray * qz - raz * qy; val cy = raz * qx - rax * qz; val cz = rax * qy - ray * qx
+                wax -= ia0 * cx + ia1 * cy + ia2 * cz; way -= ia1 * cx + ia3 * cy + ia4 * cz; waz -= ia2 * cx + ia4 * cy + ia5 * cz
             }
-            val mu = pd[o + PFR]; val limit = max(0f, mu * load - reserved)
+            if (mB > 0f) {
+                val f = d[o + CSB]; val qx = px * f; val qy = py * f; val qz = pz * f
+                vbx += qx * mB; vby += qy * mB; vbz += qz * mB
+                val cx = rby * qz - rbz * qy; val cy = rbz * qx - rbx * qz; val cz = rbx * qy - rby * qx
+                wbx += ib0 * cx + ib1 * cy + ib2 * cz; wby += ib1 * cx + ib3 * cy + ib4 * cz; wbz += ib2 * cx + ib4 * cy + ib5 * cz
+            }
+        }
 
-            val rax = pd[o + PRA]; val ray = pd[o + PRA + 1]; val raz = pd[o + PRA + 2]
-            val rbx = pd[o + PRB]; val rby = pd[o + PRB + 1]; val rbz = pd[o + PRB + 2]
-            val t1x = pd[o + PT1]; val t1y = pd[o + PT1 + 1]; val t1z = pd[o + PT1 + 2]
-            relativeAt(a, b, rax, ray, raz, rbx, rby, rbz)
-            val old1 = pd[o + PL1]
-            val new1 = (old1 - pd[o + PM1] * (rvx * t1x + rvy * t1y + rvz * t1z)).coerceIn(-limit, limit)
-            pd[o + PL1] = new1
-            if (new1 != old1) { val e = new1 - old1; pushAt(a, b, rax, ray, raz, rbx, rby, rbz, t1x * e, t1y * e, t1z * e, sa, sb); relativeAt(a, b, rax, ray, raz, rbx, rby, rbz) }
-            val t2x = pd[o + PT2]; val t2y = pd[o + PT2 + 1]; val t2z = pd[o + PT2 + 2]
-            val lim2 = sqrt(max(0f, limit * limit - new1 * new1))
-            val old2 = pd[o + PL2]
-            val new2 = (old2 - pd[o + PM2] * (rvx * t2x + rvy * t2y + rvz * t2z)).coerceIn(-lim2, lim2)
-            pd[o + PL2] = new2
-            if (new2 != old2) { val e = new2 - old2; pushAt(a, b, rax, ray, raz, rbx, rby, rbz, t2x * e, t2y * e, t2z * e, sa, sb) }
-            val nx = pd[o + PN]; val ny = pd[o + PN + 1]; val nz = pd[o + PN + 2]
-            val ob = b * S
-            var wn = st[ob + 3] * nx + st[ob + 4] * ny + st[ob + 5] * nz
-            if (a >= 0) { val oa = a * S; wn -= st[oa + 3] * nx + st[oa + 4] * ny + st[oa + 5] * nz }
+        // Friction at the patch centre: first along the sliding direction, then across (both within the
+        // circle μ·N), then the twist about the normal (within μ·Σ Nᵢ·dᵢ).
+        val o = q * P
+        var load = 0f; var twistCap = 0f
+        for (j in start until end) { val l = d[j * C + CLN]; load += l; twistCap += l * d[j * C + CDIST] }
+        val f0 = start * C; val sa = d[f0 + CSA]; val sb = d[f0 + CSB]
+        val nx = pd[o + PN]; val ny = pd[o + PN + 1]; val nz = pd[o + PN + 2]
+        var reserved = 0f
+        if (anyHidden && gl > 0f) {
+            val up = -(nx * gravity.x + ny * gravity.y + nz * gravity.z) / gl
+            val x = if (up >= .5f) b else if (up <= -.5f && a >= 0) a else -1
+            if (x >= 0 && hiddenN[x] > 0f) {
+                twistCap *= (load + hiddenN[x]) / max(load, 1e-12f); load += hiddenN[x]
+                // The hidden friction, in this patch's plane, uses up part of its grip; beyond the grip,
+                // the excess pushes the light body (once per substep): the whole stack then slides.
+                var hx = hiddenT[3 * x]; var hy = hiddenT[3 * x + 1]; var hz = hiddenT[3 * x + 2]
+                val hn = hx * nx + hy * ny + hz * nz; hx -= hn * nx; hy -= hn * ny; hz -= hn * nz
+                val hl = sqrt(hx * hx + hy * hy + hz * hz)
+                val grip = pd[o + PFR] * load
+                if (hl > grip && useBias) {
+                    // The same velocity change for the light body and what rests on it ([slideStacks]).
+                    val e = (hl - grip) / hl / (1f / st[x * S + IM] + hiddenM[x])
+                    val ex = hx * e; val ey = hy * e; val ez = hz * e
+                    if (x == b) { vbx += ex; vby += ey; vbz += ez } else { vax += ex; vay += ey; vaz += ez }
+                    slide[3 * x] += ex; slide[3 * x + 1] += ey; slide[3 * x + 2] += ez
+                }
+                reserved = min(hl, grip)
+            }
+        }
+        val mu = pd[o + PFR]; val limit = max(0f, mu * load - reserved)
+        val rax = pd[o + PRA]; val ray = pd[o + PRA + 1]; val raz = pd[o + PRA + 2]
+        val rbx = pd[o + PRB]; val rby = pd[o + PRB + 1]; val rbz = pd[o + PRB + 2]
+        val msa = mA * sa; val msb = mB * sb
+        for (row in 0..1) {
+            val t = o + if (row == 0) PT1 else PT2
+            val tx = pd[t]; val ty = pd[t + 1]; val tz = pd[t + 2]
+            val rvx = vbx + wby * rbz - wbz * rby - (vax + way * raz - waz * ray)
+            val rvy = vby + wbz * rbx - wbx * rbz - (vay + waz * rax - wax * raz)
+            val rvz = vbz + wbx * rby - wby * rbx - (vaz + wax * ray - way * rax)
+            val li = o + if (row == 0) PL1 else PL2
+            val bound = if (row == 0) limit else { val l1 = pd[o + PL1]; sqrt(max(0f, limit * limit - l1 * l1)) }
+            val old = pd[li]
+            val new = (old - pd[o + if (row == 0) PM1 else PM2] * (rvx * tx + rvy * ty + rvz * tz)).coerceIn(-bound, bound)
+            pd[li] = new
+            if (new == old) continue
+            val e = new - old
+            val px = tx * e; val py = ty * e; val pz = tz * e
+            if (msa > 0f) {
+                vax -= px * msa; vay -= py * msa; vaz -= pz * msa
+                val cx = (ray * pz - raz * py) * sa; val cy = (raz * px - rax * pz) * sa; val cz = (rax * py - ray * px) * sa
+                wax -= ia0 * cx + ia1 * cy + ia2 * cz; way -= ia1 * cx + ia3 * cy + ia4 * cz; waz -= ia2 * cx + ia4 * cy + ia5 * cz
+            }
+            if (msb > 0f) {
+                vbx += px * msb; vby += py * msb; vbz += pz * msb
+                val cx = (rby * pz - rbz * py) * sb; val cy = (rbz * px - rbx * pz) * sb; val cz = (rbx * py - rby * px) * sb
+                wbx += ib0 * cx + ib1 * cy + ib2 * cz; wby += ib1 * cx + ib3 * cy + ib4 * cz; wbz += ib2 * cx + ib4 * cy + ib5 * cz
+            }
+        }
+        run {
+            val wn = (wbx - wax) * nx + (wby - way) * ny + (wbz - waz) * nz
             val tcap = mu * twistCap
-            val oldT = pd[o + PLT]
-            val newT = (oldT - pd[o + PMT] * wn).coerceIn(-tcap, tcap)
-            pd[o + PLT] = newT
-            if (newT != oldT) { val e = newT - oldT; twist(a, b, nx * e, ny * e, nz * e, sa, sb) }
-        }
-        if (anyHidden) {
-            for (q in 0 until ps.size) {
-                val f = ps.start[q] * C; val sa = d[f + CSA]; val sb = d[f + CSB]
-                if (sa == 1f && sb == 1f) continue
-                val lower = if (sa < 1f) ps.a[q] else ps.b[q]; val upper = if (sa < 1f) ps.b[q] else ps.a[q]
-                val su = upper * S
-                st[su] += slide[3 * lower]; st[su + 1] += slide[3 * lower + 1]; st[su + 2] += slide[3 * lower + 2]
-            }
-            for (k in 0 until c.size) {
-                clearHidden(c.a[k]); clearHidden(c.b[k])
+            val old = pd[o + PLT]
+            val new = (old - pd[o + PMT] * wn).coerceIn(-tcap, tcap)
+            pd[o + PLT] = new
+            if (new != old) {
+                val e = new - old; val lx = nx * e; val ly = ny * e; val lz = nz * e
+                if (mA > 0f) { wax -= (ia0 * lx + ia1 * ly + ia2 * lz) * sa; way -= (ia1 * lx + ia3 * ly + ia4 * lz) * sa; waz -= (ia2 * lx + ia4 * ly + ia5 * lz) * sa }
+                if (mB > 0f) { wbx += (ib0 * lx + ib1 * ly + ib2 * lz) * sb; wby += (ib1 * lx + ib3 * ly + ib4 * lz) * sb; wbz += (ib2 * lx + ib4 * ly + ib5 * lz) * sb }
             }
         }
-        // Rolling resistance, per point.
-        for (k in 0 until c.size) {
-            val a = c.a[k]; val b = c.b[k]; val o = k * C
-            val rl = d[o + CRL]
-            if (rl > 0f) {
-                val sbw = b * S
-                var dwx = st[sbw + 3]; var dwy = st[sbw + 4]; var dwz = st[sbw + 5]
-                if (a >= 0) { val saw = a * S; dwx -= st[saw + 3]; dwy -= st[saw + 4]; dwz -= st[saw + 5] }
-                val m = d[o + CRM]; val max = rl * d[o + CLN]
-                val ox = d[o + CLR]; val oy = d[o + CLR + 1]; val oz = d[o + CLR + 2]
-                var lx = ox - m * dwx; var ly = oy - m * dwy; var lz = oz - m * dwz
-                val l2 = lx * lx + ly * ly + lz * lz
-                if (l2 > max * max) { val f = max / sqrt(l2); lx *= f; ly *= f; lz *= f }
-                d[o + CLR] = lx; d[o + CLR + 1] = ly; d[o + CLR + 2] = lz
-                twist(a, b, lx - ox, ly - oy, lz - oz)
-            }
+
+        // Rolling resistance, per point: a torque against the relative spin, bounded by μr × radius × N.
+        for (j in start until end) {
+            val p = j * C
+            val rl = d[p + CRL]
+            if (rl <= 0f) continue
+            val m = d[p + CRM]; val cap = rl * d[p + CLN]
+            val ox = d[p + CLR]; val oy = d[p + CLR + 1]; val oz = d[p + CLR + 2]
+            var lx = ox - m * (wbx - wax); var ly = oy - m * (wby - way); var lz = oz - m * (wbz - waz)
+            val l2 = lx * lx + ly * ly + lz * lz
+            if (l2 > cap * cap) { val f = cap / sqrt(l2); lx *= f; ly *= f; lz *= f }
+            d[p + CLR] = lx; d[p + CLR + 1] = ly; d[p + CLR + 2] = lz
+            val ex = lx - ox; val ey = ly - oy; val ez = lz - oz
+            if (mA > 0f) { wax -= ia0 * ex + ia1 * ey + ia2 * ez; way -= ia1 * ex + ia3 * ey + ia4 * ez; waz -= ia2 * ex + ia4 * ey + ia5 * ez }
+            if (mB > 0f) { wbx += ib0 * ex + ib1 * ey + ib2 * ez; wby += ib1 * ex + ib3 * ey + ib4 * ez; wbz += ib2 * ex + ib4 * ey + ib5 * ez }
+        }
+
+        if (mA > 0f) {
+            st[sA] = vax; st[sA + 1] = vay; st[sA + 2] = vaz; st[sA + 3] = wax; st[sA + 4] = way; st[sA + 5] = waz
+        }
+        if (mB > 0f) {
+            st[sB] = vbx; st[sB + 1] = vby; st[sB + 2] = vbz; st[sB + 3] = wbx; st[sB + 4] = wby; st[sB + 5] = wbz
         }
     }
 
@@ -1091,6 +1332,17 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
     }
 }
+
+// Sizes above which a phase goes to the worker threads, and the chunks it is cut into.
+private const val PARALLEL_BODIES = 2048
+private const val PARALLEL_PAIRS = 512
+private const val PARALLEL_POINTS = 1024
+private const val CELL_CHUNK = 256
+private const val PAIR_CHUNK = 128
+private const val BODY_CHUNK = 128
+private const val PATCH_CHUNK = 64
+private const val MAX_COLOURS = 32
+
 
 // Solver data of one contact point, contiguous (C floats): normal, anchors, separation offset, normal
 // mass and impulse, material, rolling resistance, softness. Friction lives in the patches (below).
@@ -1163,6 +1415,18 @@ internal class ContactSet {
                 }
             }
         }
+    }
+
+    /** Appends the points of [o] (a chunk of the narrow phase) after these. */
+    fun append(o: ContactSet) {
+        val n = o.size
+        if (n == 0) return
+        ensure(size + n)
+        o.a.copyInto(a, size, 0, n); o.b.copyInto(b, size, 0, n); o.key.copyInto(key, size, 0, n); o.feature.copyInto(feature, size, 0, n)
+        o.x.copyInto(x, size, 0, n); o.y.copyInto(y, size, 0, n); o.z.copyInto(z, size, 0, n); o.sep.copyInto(sep, size, 0, n)
+        o.lx.copyInto(lx, size, 0, n); o.ly.copyInto(ly, size, 0, n); o.lz.copyInto(lz, size, 0, n)
+        o.d.copyInto(d, C * size, 0, C * n)
+        size += n
     }
 
     /** Indexes this step's points by pair, so that the next step can find them. */

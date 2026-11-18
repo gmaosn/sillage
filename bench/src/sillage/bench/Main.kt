@@ -20,7 +20,9 @@ fun main(args: Array<String>) {
             "pyramid" -> pyramid(n ?: 20)
             "pile" -> pile(n ?: 10_000)
             "determinism" -> determinism()
+            "threads" -> threadsDeterminism(n ?: 6000)
             "settle" -> settle(n ?: 1000)
+            "solver" -> solverCost(n ?: 3000)
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -92,9 +94,12 @@ private fun pile(count: Int) {
     timed(w, 60, warm)
     timed(w, 60 * 4, fall)
     w.profiling = true
-    timed(w, 60 * 6, rest)
+    var points = 0L; var pairs = 0L
+    repeat(60 * 6) { val t0 = System.nanoTime(); w.step(DT); rest.samples.add(System.nanoTime() - t0); points += w.contactCount; pairs += w.pairCount }
     val names = listOf("préparation des corps", "paires", "contacts", "préparation des contacts", "démarrage à chaud", "résolution", "détente", "sommeil")
     println("  phases du tassement (moyenne par pas) : " + names.indices.joinToString { "${names[it]} ${"%.1f".format(w.phaseNanos[it] / 1e6 / 360)} ms" })
+    val passes = 2.0 * w.substeps
+    println("  par point de contact : résolution ${"%.0f".format(w.phaseNanos[5] / passes * 2 / points)} ns par passe, contacts ${"%.0f".format(w.phaseNanos[2].toDouble() / pairs)} ns par paire, paires ${"%.0f".format(w.phaseNanos[1].toDouble() / 360 / w.bodyCount)} ns par corps")
     println("  ${w.pairCount} paires, ${w.contactCount} points de contact")
     val asleep = (0 until w.bodyCount).count { w.body(it).isSleeping }
     val lowest = (0 until w.bodyCount).minOf { w.body(it).position.y }
@@ -159,4 +164,67 @@ private fun settle(count: Int) {
         }
         println("  t=$sec s : ${bodies.count { it.isSleeping }} endormis, $fast au-dessus du seuil, v max ${"%.3f".format(v)} m/s, ω max ${"%.3f".format(om)} rad/s, ${w.pairCount} paires, ${w.contactCount} points")
     }
+}
+
+/** Cost of each phase per contact point, all bodies kept awake (sleep off), at a given heap size. */
+private fun solverCost(count: Int) {
+    val w = PhysicsWorld(); ground(w, 60f)
+    w.timeToSleep = 1e9f
+    w.parallel = System.getProperty("sillage.serial") == null
+    val side = kotlin.math.sqrt(count / 3.0).toInt().coerceAtLeast(4)
+    for ((x, z, hx, hz) in listOf(arrayOf(-side * .6f - .5f, 0f, .5f, side * .6f + 1f), arrayOf(side * .6f + .5f, 0f, .5f, side * .6f + 1f),
+            arrayOf(0f, -side * .6f - .5f, side * .6f + 1f, .5f), arrayOf(0f, side * .6f + .5f, side * .6f + 1f, .5f)))
+        w.add(Box(hx, 4f, hz), Vec3(x, 4f, z), type = BodyType.STATIC)
+    for (n in 0 until count) {
+        val l = n / (side * side); val i = (n / side) % side; val j = n % side
+        val p = Vec3((i - side / 2) * 1.2f + .3f * (l % 2), 1f + l * 1.2f, (j - side / 2) * 1.2f)
+        when (n % 3) {
+            0 -> w.add(Box(.4f, .3f, .35f), p, Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), n * .37f))
+            1 -> w.add(Sphere(.35f), p)
+            else -> w.add(Capsule(.22f, .3f), p, Quat.axisAngle(Vec3.X, n * .5f))
+        }
+    }
+    repeat(60 * 4) { w.step(DT) }
+    w.profiling = true
+    var points = 0L; var pairs = 0L; val steps = System.getProperty("sillage.steps")?.toInt() ?: 300
+    val t0 = System.nanoTime()
+    repeat(steps) { w.step(DT); points += w.contactCount; pairs += w.pairCount }
+    val total = (System.nanoTime() - t0) / 1e6 / steps
+    val ns = w.phaseNanos
+    fun per(k: Int, n: Long, passes: Int = 1) = "%.0f".format(ns[k].toDouble() / passes / n)
+    println("Coût par élément, $count corps éveillés (${points / steps} points, ${pairs / steps} paires, ${"%.2f".format(total)} ms par pas) :")
+    println("  paires ${per(1, steps.toLong() * w.bodyCount)} ns/corps, contacts ${per(2, pairs)} ns/paire, préparation ${per(3, points)} ns/point, " +
+        "démarrage à chaud ${per(4, points, w.substeps)} ns/point, résolution ${per(5, points, w.substeps)} ns/point, détente ${per(6, points, w.substeps)} ns/point")
+}
+
+/** The same heap stepped without and with the worker threads must end bit for bit identical. */
+private fun threadsDeterminism(count: Int) {
+    fun scene(parallel: Boolean): PhysicsWorld {
+        val w = PhysicsWorld(); ground(w, 60f); w.parallel = parallel
+        val side = 30
+        for (i in 0 until count) {
+            val p = Vec3((i % side) * 1.1f - side * .55f, 1f + (i / (side * side)) * 1.2f, ((i / side) % side) * 1.1f - side * .55f)
+            when (i % 3) {
+                0 -> w.add(Box(.4f, .3f, .35f), p, Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), i * .3f))
+                1 -> w.add(Sphere(.35f), p)
+                else -> w.add(Capsule(.25f, .3f), p, Quat.axisAngle(Vec3.X, i * .5f))
+            }
+        }
+        return w
+    }
+    fun digest(w: PhysicsWorld): Long {
+        var h = 1125899906842597L
+        for (i in 0 until w.bodyCount) {
+            val b = w.body(i)
+            for (f in floatArrayOf(b.position.x, b.position.y, b.position.z, b.rotation.x, b.rotation.y, b.rotation.z, b.rotation.w))
+                h = 31 * h + f.toRawBits()
+        }
+        return h
+    }
+    val a = scene(false); val b = scene(true)
+    for (s in 1..300) {
+        a.step(DT); b.step(DT)
+        if (digest(a) != digest(b)) { println("Fils : DIFFÉRENT dès le pas $s (${a.contactCount} et ${b.contactCount} points)"); return }
+    }
+    println("Fils : $count corps, 300 pas, identiques au bit près avec et sans fils (${a.contactCount} points), empreinte ${java.lang.Long.toHexString(digest(a))}")
 }
