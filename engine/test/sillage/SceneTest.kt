@@ -104,7 +104,7 @@ class SceneTest {
         // Une touche pour basculer, si on la donne.
         s.camera.switchKey = Key.V
         var v = false
-        s.input.down = { k -> k == Key.V && v }
+        s.input.source = KeySource { k -> k == Key.V && v }
         v = true; s.input.poll(); s.update(dt); v = false; s.input.poll()
         assertEquals(CameraMode.THIRD_PERSON, s.camera.mode)
     }

@@ -207,10 +207,14 @@ fun Qa.physique() {
         val nouveaux = (0 until 20).map { w.add(Box(.2f, .2f, .2f), Vec3(rnd.f(-2f, 2f), 6f + .5f * it, rnd.f(-2f, 2f))) }
         val reutilisees = nouveaux.count { n -> retires.any { it.id == n.id } }
         repeat(600) { w.step(DT) }
-        // Le tas, réveillé par les retraits et les nouvelles caisses, doit se reposer.
-        val dorment = restants.count { it.isSleeping }
-        "20 retirés : $touches contacts après, $rayons rayons qui les touchent, $reutilisees/20 places reprises, $nonFinis non finis, ${dorment}/${restants.size} du tas rendormis 10 s après" to
-            (touches == 0 && rayons == 0 && reutilisees == 20 && nonFinis == 0 && dorment >= restants.size * 9 / 10)
+        // Le tas, réveillé par les retraits et les nouvelles caisses, doit se reposer. Une boule éjectée qui roule
+        // encore au loin sur le sol n'est pas le tas : seuls comptent les corps restés à moins de 6 m du centre.
+        val restes = restants.filter { it.position.let { p -> p.x * p.x + p.z * p.z < 36f } }
+        val dorment = restes.count { it.isSleeping }
+        if (System.getenv("QA_DETAIL") != null) for (b in restants.filter { !it.isSleeping })
+            println("DETAIL éveillé ${b.shape::class.simpleName} masse ${f2(b.mass)} en ${b.position} v=${f3(b.velocity.length())} ω=${f3(b.angularVelocity.length())}")
+        "20 retirés : $touches contacts après, $rayons rayons qui les touchent, $reutilisees/20 places reprises, $nonFinis non finis, ${dorment}/${restes.size} du tas rendormis 10 s après (${restants.size - restes.size} partis rouler au loin)" to
+            (touches == 0 && rayons == 0 && reutilisees == 20 && nonFinis == 0 && dorment >= restes.size * 9 / 10)
     }
 
     controle("chute libre (1 s) contre ½gt²", "écart ≤ 0,5 %") {

@@ -31,9 +31,22 @@ val playground: Scene.() -> Unit = {
     for (p in listOf(vec(4, .6, 0), vec(-6, 3.8, -6), vec(10.5, 2.8, -2.5), vec(-3, .6, 5))) pickup(cone(.25, .5, Color.YELLOW, at = p).spin(120))
     every(3) { val b = sphere(.25, colors.random(), at = vec(Math.random() * 6 - 3, 9, Math.random() * 6 - 3)).dynamic(bounce = .7); after(20) { b.remove() } }
 
+    // B drops a heap of 400 crates in front of the player: the physics spreads them over the cores.
+    val dropped = ArrayList<Node>()
+    onKey(Key.B) {
+        val p = player!!.position
+        for (n in 0 until 400) {
+            val x = n % 8; val z = (n / 8) % 8; val y = n / 64
+            dropped += box(.5, color = if ((x + y + z) % 2 == 0) Color.WOOD else Color.ORANGE, round = .04,
+                at = vec(p.x + (x - 3.5) * .55, 6 + y * .55, p.z - 6 + (z - 3.5) * .55)).dynamic()
+        }
+    }
+    onRestart { dropped.forEach { it.remove() }; dropped.clear() }
+
     player(at = vec(0, 0, 6))
     camera.switchKey = Key.V
     onKey(Key.R) { restart() }
     hud.text({ "Stars ${pickups.count { it.collected }} / ${pickups.size}" }, 24, 24, 3)
-    hud.text("WASD move   SPACE jump   SHIFT walk   V first person   R restart   TAB mouse", 24, 24, 1.5, anchor = Hud.Anchor.BOTTOM_LEFT)
+    hud.text({ "${dropped.size} crates" }, 24, 24, 2, anchor = Hud.Anchor.TOP_RIGHT)
+    hud.text("WASD move   SPACE jump   SHIFT walk   V first person   B crates   R restart   TAB mouse", 24, 24, 1.5, anchor = Hud.Anchor.BOTTOM_LEFT)
 }

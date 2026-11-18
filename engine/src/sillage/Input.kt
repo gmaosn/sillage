@@ -29,8 +29,12 @@ object Key {
 }
 
 /** Keyboard and mouse, as the scene sees them this frame. */
+/** Where the keys come from: the window, or your own source for tests, replays or a bot. */
+fun interface KeySource { fun isDown(key: Int): Boolean }
+
 class Input internal constructor() {
-    internal var down: (Int) -> Boolean = { false }
+    /** Where the keys are read each frame: the window in a game; set your own to script the keys (`KeySource { it == Key.B }`). */
+    var source: KeySource = KeySource { false }
     private val was = BooleanArray(256)
     private val now = BooleanArray(256)
     /** Mouse motion since the last frame (pixels; only while the mouse is captured) and wheel turns. */
@@ -59,5 +63,5 @@ class Input internal constructor() {
     /** −1, 0 or 1 from two keys: `axis(Key.A, Key.D)`. */
     fun axis(negative: Int, positive: Int): Float = (if (isDown(positive)) 1f else 0f) - (if (isDown(negative)) 1f else 0f)
 
-    internal fun poll() { now.copyInto(was); for (k in 0 until 256) now[k] = down(k) }
+    internal fun poll() { now.copyInto(was); val d = source; for (k in 0 until 256) now[k] = d.isDown(k) }
 }

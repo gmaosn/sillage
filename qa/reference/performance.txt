@@ -1,10 +1,10 @@
 # Base de vitesse de cette machine, écrite par le contrôle qualité (ms).
-physique.pile1000=7.2797
-physique.pile1000.alloc=618.5859
-physique.pyramide=0.4815
-ile.miseajour=0.1415
-ile.miseajour.alloc=66.2637
-rendu.1280.moyenne=2.7380
-rendu.2560.moyenne=3.1362
-rendu.caisses10000=4.7603
-jeu.tas3000=53.6058
+physique.pile1000=3.0902
+physique.pile1000.alloc=633.2695
+physique.pyramide=0.3806
+ile.miseajour=0.1133
+ile.miseajour.alloc=70.3252
+rendu.1280.moyenne=0.3856
+rendu.2560.moyenne=1.0455
+rendu.caisses10000=1.3065
+jeu.tas3000=7.0440

@@ -42,7 +42,7 @@ Tab captures and frees the mouse, Escape quits. The program's arguments reach th
 | `--export-sounds dir` | writes the engine's synthesised sounds as WAV files |
 | `--validation` | Vulkan validation layers |
 
-`game` returns a `RunReport` (frames drawn, frame times, player position), which makes scripted checks easy.
+`game` returns a `RunReport` (frames drawn, CPU time per frame, GPU time per frame, time to the first frame, player position), which makes scripted checks easy.
 
 ## Units, axes, numbers
 
@@ -151,6 +151,8 @@ val turn = input.axis(Key.LEFT, Key.RIGHT)          // −1, 0 or 1
 
 `input.pressed(key)` is true only on the frame the key goes down. `input.mouseDelta`, `input.wheel` and `input.mouseCaptured` give the mouse.
 
+The keys come from `input.source`: the window in a game, or your own `KeySource` to script them (tests, replays, a bot), as in `input.source = KeySource { it == Key.B }`.
+
 ## The interface
 
 `hud` draws text and panels over the scene with a built-in pixel font (capitals, lowercase, digits, punctuation and French accents). The canvas is 600 units high and as wide as the window's shape (960 for 16:10), so a layout keeps its proportions; anchors keep elements in their corner on any window.
@@ -220,4 +222,32 @@ val s = Scene().apply {
 repeat(120) { s.step(1f / 60f) }
 ```
 
-`step(dt)` advances everything but the drawing. The engine's own tests (`./kotlin test -m engine`) and the quality battery (`./kotlin run -m qa …`) work this way.
+`step(dt)` reads the keys from `input.source` and advances everything but the drawing. The engine's own tests (`./kotlin test -m engine`) and the quality battery (`./kotlin run -m qa …`) work this way.
+
+## Performance
+
+What the engine does by itself:
+
+- **Physics on several threads.** Large scenes use a pool of up to 8 threads, one per process: broad phase, contacts and the solver (by graph colouring: contacts that share no moving body are solved together). The result is the same bit for bit with or without threads, whatever their number; `physics.parallel = false` keeps everything on the game's thread. Small scenes always run on one.
+- **One draw call per mesh.** Every copy of a mesh is drawn in one call, with its model matrices in an instance buffer. Primitives of the same size and colour share their mesh, so a thousand `box(.5)` cost one draw; for your own meshes, build one `Mesh` and give it to many nodes (`mesh(crate, at = …)`). To change one node's look, give it another mesh rather than editing a shared one.
+- **Two frames in flight.** The CPU prepares the next frame while the GPU draws the last one.
+- **Queries through a grid.** Rays, sphere sweeps and contact queries (the player, shadows, the camera) only look at the bodies near them.
+
+Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo island takes about 0.6 ms of CPU and 0.3 ms of GPU per frame; 10,000 crates on screen, 1.4 ms CPU and 0.4 ms GPU; a heap of 3,000 falling crates with shadows, 7 ms per frame; 10,000 awake bodies in a heap, about 22 ms per physics step.
+
+### Shipping a game
+
+`./kotlin package -m mygame -f executable-jar` makes one jar with the engine and the Kotlin library inside. Run it with:
+
+```
+java --enable-native-access=ALL-UNNAMED -jar mygame-jvm-executable.jar
+```
+
+The JDK's AOT cache (JDK 25) makes the start and the first seconds smoother: run the game once to record what it loads and compiles, then ship the cache next to the jar.
+
+```
+java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=mygame.aot -jar mygame-jvm-executable.jar --headless --frames 1200 --mute
+java --enable-native-access=ALL-UNNAMED -XX:AOTCache=mygame.aot -jar mygame-jvm-executable.jar
+```
+
+On the demo island this brings the first frame from about 1.0 to 0.7 s and halves the time of the first frames. The default garbage collector (G1) suits the engine: its pauses are rare once the game runs; ZGC and compact object headers made no measurable difference.

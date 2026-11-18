@@ -151,8 +151,14 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         if (squeeze > .005f) {
             val before = embedded(position)
             if (before < squeeze - .001f) {
-                val down = if (vy < 0f && before <= .005f) resolve(position.plus(0f, vy * h, 0f), false) else null
-                if (down != null && embedded(down) <= max(before, .002f)) p = down
+                // The fall alone: straight down first (between upright walls it squeezes no more — pushed out
+                // of both walls in turn, it would sink a hair deeper and be refused), else pushed out as usual.
+                val down = if (vy < 0f && before <= .005f) {
+                    val straight = position.plus(0f, vy * h, 0f)
+                    if (embedded(straight) <= max(before, .002f) + 1e-4f) straight
+                    else resolve(straight, false).takeIf { embedded(it) <= max(before, .002f) }
+                } else null
+                if (down != null) p = down
                 else {
                     if (p.y < position.y - 1e-5f) { onRims = true; fall = 0f }
                     p = position

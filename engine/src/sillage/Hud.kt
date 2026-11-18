@@ -41,16 +41,39 @@ class Hud internal constructor() {
     fun remove(element: Element) { elements.remove(element) }
     fun clear() = elements.clear()
 
-    private var key: List<Any?>? = null
     private var last: Mesh? = null
+    // What the last mesh showed, to see without allocating whether anything changed.
+    private var shownAspect = 0f; private var shownFps = 0; private var shownCaptured = false; private var shownHint: String? = null
+    private var shownElements = 0
+    private var shownNumbers = FloatArray(0)        // per element: x, y, visible, anchor, size or width, height, align
+    private var shownThings = arrayOfNulls<Any>(0)  // per element: text, colour
 
     /** The HUD as an unlit mesh in clip space, rebuilt only when what it shows changed. */
     internal fun mesh(aspect: Float, fps: Int, mouseCaptured: Boolean): Mesh {
-        val texts = elements.map { if (it is Text && it.visible) it.value() else null }
-        val k = listOf(aspect, if (showFps) fps else -1, mouseCaptured, mouseHint, texts, elements.map { e -> listOf(e.x, e.y, e.visible, e.anchor,
-            (e as? Text)?.let { listOf(it.size, it.color) }, (e as? Panel)?.let { listOf(it.width, it.height, it.color) }) })
-        last?.let { if (k == key) return it }
-        key = k
+        val n = elements.size
+        val shownFpsNow = if (showFps) fps else -1
+        var changed = last == null || aspect != shownAspect || shownFpsNow != shownFps || mouseCaptured != shownCaptured ||
+            mouseHint != shownHint || n != shownElements
+        if (shownNumbers.size < 7 * n) { shownNumbers = FloatArray(14 * n); shownThings = arrayOfNulls(4 * n); changed = true }
+        for (i in 0 until n) {
+            val e = elements[i]; val f = 7 * i; val o = 2 * i
+            val text = if (e is Text && e.visible) e.value() else null
+            val a = e.x; val b = e.y; val c = if (e.visible) 1f else 0f; val d = e.anchor.ordinal.toFloat()
+            val g = when (e) { is Text -> e.size; is Panel -> e.width }
+            val h = when (e) { is Text -> 0f; is Panel -> e.height }
+            val k = when (e) { is Text -> e.align.ordinal.toFloat(); is Panel -> 0f }
+            val color = when (e) { is Text -> e.color; is Panel -> e.color }
+            val nums = shownNumbers
+            if (nums[f] != a || nums[f + 1] != b || nums[f + 2] != c || nums[f + 3] != d || nums[f + 4] != g || nums[f + 5] != h || nums[f + 6] != k ||
+                shownThings[o] != text || shownThings[o + 1] != color) {
+                changed = true
+                nums[f] = a; nums[f + 1] = b; nums[f + 2] = c; nums[f + 3] = d; nums[f + 4] = g; nums[f + 5] = h; nums[f + 6] = k
+                shownThings[o] = text; shownThings[o + 1] = color
+            }
+        }
+        if (!changed) return last!!
+        shownAspect = aspect; shownFps = shownFpsNow; shownCaptured = mouseCaptured; shownHint = mouseHint; shownElements = n
+        val texts = List(n) { shownThings[2 * it] as String? }
         return build(aspect, fps, mouseCaptured, texts).also { last = it }
     }
 

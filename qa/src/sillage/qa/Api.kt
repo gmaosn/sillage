@@ -58,6 +58,22 @@ fun Qa.api() {
             (sous == 0 && nonFinis == 0 && plus in 6..7)
     }
 
+    controle("terrain de jeu : B cinq fois, 2000 caisses lâchées", "rien sous le sol ni de non fini, une image ≤ 33 ms en moyenne") {
+        val m = Scene().apply(playground); val p = m.player!!; p.controls = false
+        var frame = 0
+        m.input.source = KeySource { k -> k == Key.B && frame % 60 == 10 && frame < 300 }
+        val temps = ArrayList<Double>()
+        repeat(600) {
+            val t = System.nanoTime(); m.step(DT); if (frame >= 300) temps.add((System.nanoTime() - t) / 1e6)
+            frame++
+        }
+        val caisses = m.nodes.filter { it.body?.type == BodyType.DYNAMIC && it.body?.shape is sillage.physics.Box }
+        val sous = caisses.count { !it.position.isFinite() || it.position.y < 0f }
+        val moyenne = temps.average()
+        "${caisses.size} caisses, $sous sous le sol ou non finies, ${f2(moyenne)} ms par image (physique et scène, ${m.physics.contactCount} points)" to
+            (caisses.size >= 2000 && sous == 0 && moyenne <= 33.0)
+    }
+
     controle("changement de scène et d'éclairage en cours de partie", "la nouvelle scène tourne, son joueur est le bon") {
         var images = 0
         val r = game("QA", arrayOf("--headless", "--mute", "--frames", "120")) {

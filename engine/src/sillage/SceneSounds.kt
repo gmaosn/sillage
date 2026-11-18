@@ -18,7 +18,7 @@ import kotlin.math.*
  */
 internal class SceneSounds(private val scene: Scene) {
     private var audio: Audio? = null
-    private val steps = HashMap<String, List<Sound>>()
+    private val steps = java.util.concurrent.ConcurrentHashMap<String, List<Sound>>()
     private val jump by lazy { Sounds.jump() }
     private val land by lazy { Sounds.land() }
     val pickup by lazy { Sounds.pickup() }
@@ -37,8 +37,19 @@ internal class SceneSounds(private val scene: Scene) {
 
     fun start(a: Audio?) {
         audio = a
-        if (a != null) for (p in pendingAmbience) startAmbience(a, p)
+        if (a != null) {
+            for (p in pendingAmbience) startAmbience(a, p)
+            // Synthesise the engine's sounds now, beside the game: made on first use, the pickup chime or
+            // the first step on sand would hold a frame for tens of milliseconds.
+            kotlin.concurrent.thread(isDaemon = true, name = "sillage-sounds") {
+                pickup; jump; land; wood; rubber; scrape
+                for (s in listOf("grass", "sand", "wood", "stone")) steps.getOrPut(s) { List(4) { Sounds.footstep(s, it) } }
+            }
+        }
     }
+
+    /** The pickup chime, when there is sound (nothing is synthesised otherwise). */
+    fun playPickup() { if (audio != null) play(pickup, null, .7f, 1f) }
 
     fun track(body: Body, impact: Impact) { if (impact != Impact.SILENT) tracked.add(Tracked(body, impact, body.velocity)) }
     fun untrack(body: Body) { tracked.removeAll { it.body == body } }

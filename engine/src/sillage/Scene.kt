@@ -76,6 +76,8 @@ class Scene {
     private val keyActions = ArrayList<Pair<Int, () -> Unit>>()
     private class Timer(var at: Float, val every: Float, val spread: Float, val action: () -> Unit)
     private val timers = ArrayList<Timer>()
+    private val timerCopy = ArrayList<Timer>()
+    private val nodeCopy = ArrayList<Node>()
     private val pickupList = ArrayList<Pickup>()
     internal var next: (Scene.() -> Unit)? = null
     internal var forcedPlayerClip: String? = null
@@ -87,40 +89,48 @@ class Scene {
 
     private fun add(node: Node, at: Vec3): Node { node.position = at; all.add(node); return node }
 
+    // Primitives of the same size and colour share one mesh: the renderer then draws all their copies
+    // in a single call (a thousand crates, one draw). Replace a node's mesh rather than editing a shared one.
+    private data class Shared(val kind: Int, val a: Float, val b: Float, val c: Float, val d: Float, val color: Color)
+    private val shared = HashMap<Shared, Mesh>()
+    private fun shared(kind: Int, a: Float, b: Float, c: Float, d: Float, color: Color, make: () -> Mesh): Mesh =
+        shared.getOrPut(Shared(kind, a, b, c, d, color), make)
+
     /** A box centred on [at]; [round] rounds its edges (metres). */
     fun box(width: Number = 1, height: Number = width, depth: Number = width, color: Color = Color.WOOD, round: Number = 0, at: Vec3 = Vec3.ZERO): Node {
         val w = width.toFloat(); val h = height.toFloat(); val d = depth.toFloat()
-        return add(Node(this, Mesh.box(w, h, d, color, round.toFloat())).also { it.shape = Box(w / 2, h / 2, d / 2) }, at)
+        val r = round.toFloat()
+        return add(Node(this, shared(0, w, h, d, r, color) { Mesh.box(w, h, d, color, r) }).also { it.shape = Box(w / 2, h / 2, d / 2) }, at)
     }
 
     /** A ball centred on [at]. */
     fun sphere(radius: Number = .5, color: Color = Color.RED, at: Vec3 = Vec3.ZERO): Node {
         val r = radius.toFloat()
-        return add(Node(this, Mesh.sphere(r, color)).also { it.shape = Sphere(r) }, at)
+        return add(Node(this, shared(1, r, 0f, 0f, 0f, color) { Mesh.sphere(r, color) }).also { it.shape = Sphere(r) }, at)
     }
 
     /** A capsule standing on Y, [height] from tip to tip, centred on [at]. */
     fun capsule(radius: Number = .3, height: Number = 1.6, color: Color = Color.ORANGE, at: Vec3 = Vec3.ZERO): Node {
         val r = radius.toFloat(); val h = max(height.toFloat(), 2 * r)
-        return add(Node(this, Mesh.capsule(r, h, color)).also { it.shape = Capsule(r, h / 2 - r) }, at)
+        return add(Node(this, shared(2, r, h, 0f, 0f, color) { Mesh.capsule(r, h, color) }).also { it.shape = Capsule(r, h / 2 - r) }, at)
     }
 
     /** A cylinder standing on Y, centred on [at] (it collides as a box). */
     fun cylinder(radius: Number = .5, height: Number = 1, color: Color = Color.GREY, at: Vec3 = Vec3.ZERO): Node {
         val r = radius.toFloat(); val h = height.toFloat()
-        return add(Node(this, Mesh.cylinder(r, h, color)).also { it.shape = Box(r * .9f, h / 2, r * .9f) }, at)
+        return add(Node(this, shared(3, r, h, 0f, 0f, color) { Mesh.cylinder(r, h, color) }).also { it.shape = Box(r * .9f, h / 2, r * .9f) }, at)
     }
 
     /** A cone standing on Y, centred on [at]. */
     fun cone(radius: Number = .5, height: Number = 1, color: Color = Color.YELLOW, at: Vec3 = Vec3.ZERO): Node {
         val r = radius.toFloat(); val h = height.toFloat()
-        return add(Node(this, Mesh.cone(r, h, color)).also { it.shape = Box(r * .6f, h / 2, r * .6f) }, at)
+        return add(Node(this, shared(4, r, h, 0f, 0f, color) { Mesh.cone(r, h, color) }).also { it.shape = Box(r * .6f, h / 2, r * .6f) }, at)
     }
 
     /** A flat rectangle facing up. */
     fun plane(width: Number = 10, depth: Number = width, color: Color = Color.GRASS, at: Vec3 = Vec3.ZERO): Node {
         val w = width.toFloat(); val d = depth.toFloat()
-        return add(Node(this, Mesh.plane(w, d, color)).also { it.shape = Box(w / 2, .05f, d / 2) }, at)
+        return add(Node(this, shared(5, w, d, 0f, 0f, color) { Mesh.plane(w, d, color) }).also { it.shape = Box(w / 2, .05f, d / 2) }, at)
     }
 
     /** A node drawing [mesh] (made with [MeshBuilder] or the shapes of [Mesh]). */
@@ -335,7 +345,7 @@ class Scene {
         t.onEnter = { b ->
             val who = playerList.first { it.character.body == b }
             t.enabled = false; node.visible = false; p.collected = true
-            sounds.play(sounds.pickup, null, .7f, 1f)
+            sounds.playPickup()
             if (celebrate) who.celebrate()
             onPickup(who)
         }
@@ -389,26 +399,31 @@ class Scene {
 
     // ------------------------------------------------------------------ one frame
 
-    /** Advances the scene by [dt] seconds without drawing it (the camera follows too): for tests and servers. */
-    fun step(dt: Float) { update(dt); camera.view(dt) }
+    /** Advances the scene by [dt] seconds without drawing it (keys read from [Input.source], camera following): for tests and servers. */
+    fun step(dt: Float) { input.poll(); update(dt); camera.view(dt) }
 
     internal fun update(dt: Float) {
         time += dt
-        for ((key, action) in keyActions) if (input.pressed(key)) action()
+        for (k in 0 until keyActions.size) { val a = keyActions[k]; if (input.pressed(a.first)) a.second() }
         camera.switchKey?.let { k -> if (input.pressed(k)) camera.mode = if (camera.mode == CameraMode.FIRST_PERSON) CameraMode.THIRD_PERSON else CameraMode.FIRST_PERSON }
         // Timers (a timer may add timers).
-        for (t in timers.toList()) if (time >= t.at) { t.action(); if (t.every > 0f) t.at = time + t.every + Math.random().toFloat() * t.spread else timers.remove(t) }
-        for (u in updates) u(dt)
-        for (n in all.toList()) for (b in n.behaviours) n.b(dt)
+        // Callbacks may add or remove timers and nodes: they run over a copy kept from frame to frame.
+        if (timers.isNotEmpty()) {
+            timerCopy.clear(); for (k in 0 until timers.size) timerCopy.add(timers[k])
+            for (k in 0 until timerCopy.size) { val t = timerCopy[k]; if (time >= t.at) { t.action(); if (t.every > 0f) t.at = time + t.every + Math.random().toFloat() * t.spread else timers.remove(t) } }
+        }
+        for (k in 0 until updates.size) updates[k](this, dt)
+        nodeCopy.clear(); for (k in 0 until all.size) nodeCopy.add(all[k])
+        for (k in 0 until nodeCopy.size) { val n = nodeCopy[k]; val bs = n.behaviours; for (j in 0 until bs.size) n.(bs[j])(dt) }
         // The world first (animated scenery, moving platforms, bodies), then the players: they stand where
         // the platforms will be drawn, without sinking into them for a frame.
-        for (n in all) if (n !is Player) n.animator?.advance(dt)
+        for (k in 0 until all.size) { val n = all[k]; if (n !is Player) n.animator?.advance(dt) }
         val h = dt.coerceIn(1f / 240f, 1f / 30f)
         for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, q) }
         for (n in kinematicNodes) n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation)
         physics.step(h)
-        for (n in linked) n.body?.let { b -> n.rotation = b.rotation; n.position = b.position - b.rotation.rotate(n.bodyOffset) }
-        for (p in playerList) { p.forcedClip = forcedPlayerClip; p.update(dt) }
+        for (k in 0 until linked.size) { val n = linked[k]; n.body?.let { b -> n.rotation = b.rotation; n.position = b.position - b.rotation.rotate(n.bodyOffset) } }
+        for (k in 0 until playerList.size) { val p = playerList[k]; p.forcedClip = forcedPlayerClip; p.update(dt) }
         placeShadows()
         sounds.update(dt)
     }
