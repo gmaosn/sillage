@@ -1,9 +1,9 @@
 # Base de vitesse de cette machine, écrite par le contrôle qualité (ms).
 physique.pile1000=3.0902
-physique.pile1000.alloc=633.2695
+physique.pile1000.alloc=47.5000
 physique.pyramide=0.3806
 ile.miseajour=0.1133
-ile.miseajour.alloc=70.3252
+ile.miseajour.alloc=17.5000
 rendu.1280.moyenne=0.3856
 rendu.2560.moyenne=1.0455
 rendu.caisses10000=1.3065

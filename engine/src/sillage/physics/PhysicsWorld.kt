@@ -147,7 +147,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private var fx = FloatArray(0); private var fy = FloatArray(0); private var fz = FloatArray(0)
     private var q0 = FloatArray(0)
     private var box = FloatArray(0)
-    private var poses = arrayOfNulls<Pose>(0)
+    private var poses = Array(0) { Pose() }
 
     internal val meshes = ArrayList<TriangleMesh>()
 
@@ -192,7 +192,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c); round = round.copyOf(c)
         sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c); removed = removed.copyOf(c)
         fx = fx.copyOf(c); fy = fy.copyOf(c); fz = fz.copyOf(c)
-        q0 = q0.copyOf(4 * c); box = box.copyOf(6 * c); poses = poses.copyOf(c)
+        q0 = q0.copyOf(4 * c); box = box.copyOf(6 * c)
+        poses = Array(c) { if (it < capacity) poses[it] else Pose() }
         capacity = c
     }
 
@@ -206,7 +207,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         queryGrid.valid = false
         val i = if (free.size > 0) free.pop() else { if (count == capacity) grow(); count++ }
         // A reused slot starts afresh.
-        removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null
+        removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null; poses[i].px = Float.NaN
         fx[i] = 0f; fy[i] = 0f; fz[i] = 0f; java.util.Arrays.fill(st, i * S, i * S + S, 0f)
         linearDamping[i] = 0f; angularDamping[i] = 0f
         types[i] = type; shapes[i] = shape
@@ -305,6 +306,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     internal val triggerScratch = Touches()
     // Scratch for the queries (single-threaded, not reentrant: a query's filter must not query again).
     internal val queryStack = IntList(); internal val queryFound = IntList(); internal val queryScratch = ContactPoints()
+    internal val queryPose = Pose(); internal val ray = RayQuery()
     internal val queryGrid = QueryGrid(); internal val queryBodies = IntList()
 
     /** The grid of the bodies for a query, built if bodies moved since; null for a small world (searched body by body). */
@@ -378,15 +380,9 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private fun prepareBody(i: Int, dt: Float) {
         val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
         // A body that has not moved since the last step keeps its pose (static, asleep, still).
-        val old = poses[i]
-        if (old == null || old.p.x != px[i] || old.p.y != py[i] || old.p.z != pz[i] ||
-            q0[4 * i] != x || q0[4 * i + 1] != y || q0[4 * i + 2] != z || q0[4 * i + 3] != w) {
-            val ax = Vec3(1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w))
-            val ay = Vec3(2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w))
-            val az = Vec3(2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y))
-            poses[i] = Pose(Vec3(px[i], py[i], pz[i]), ax, ay, az)
-        }
-        val pose = poses[i]!!; val ax = pose.ax; val ay = pose.ay; val az = pose.az; val p = pose.p
+        val pose = poses[i]
+        if (pose.px != px[i] || pose.py != py[i] || pose.pz != pz[i] ||
+            q0[4 * i] != x || q0[4 * i + 1] != y || q0[4 * i + 2] != z || q0[4 * i + 3] != w) pose.set(px[i], py[i], pz[i], x, y, z, w)
         if (types[i] == BodyType.DYNAMIC) prepareInertia(i)
         q0[4 * i] = x; q0[4 * i + 1] = y; q0[4 * i + 2] = z; q0[4 * i + 3] = w
         val o = i * S
@@ -397,17 +393,17 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         when (val s = shapes[i]!!) {
             is Sphere -> { ex = s.radius; ey = s.radius; ez = s.radius }
             is Box -> {
-                ex = abs(ax.x) * s.halfX + abs(ay.x) * s.halfY + abs(az.x) * s.halfZ
-                ey = abs(ax.y) * s.halfX + abs(ay.y) * s.halfY + abs(az.y) * s.halfZ
-                ez = abs(ax.z) * s.halfX + abs(ay.z) * s.halfY + abs(az.z) * s.halfZ
+                ex = abs(pose.xx) * s.halfX + abs(pose.yx) * s.halfY + abs(pose.zx) * s.halfZ
+                ey = abs(pose.xy) * s.halfX + abs(pose.yy) * s.halfY + abs(pose.zy) * s.halfZ
+                ez = abs(pose.xz) * s.halfX + abs(pose.yz) * s.halfY + abs(pose.zz) * s.halfZ
             }
-            is Capsule -> { ex = abs(ay.x) * s.halfHeight + s.radius; ey = abs(ay.y) * s.halfHeight + s.radius; ez = abs(ay.z) * s.halfHeight + s.radius }
+            is Capsule -> { ex = abs(pose.yx) * s.halfHeight + s.radius; ey = abs(pose.yy) * s.halfHeight + s.radius; ez = abs(pose.yz) * s.halfHeight + s.radius }
         }
         val m = speculativeDistance + speed(i) * dt
         ex += m; ey += m; ez += m
         val b = 6 * i
-        box[b] = p.x - ex; box[b + 1] = p.y - ey; box[b + 2] = p.z - ez
-        box[b + 3] = p.x + ex; box[b + 4] = p.y + ey; box[b + 5] = p.z + ez
+        box[b] = pose.px - ex; box[b + 1] = pose.py - ey; box[b + 2] = pose.pz - ez
+        box[b + 3] = pose.px + ex; box[b + 4] = pose.py + ey; box[b + 5] = pose.pz + ez
     }
 
     // Broad phase: a uniform grid. Every small body is entered in each cell its bounds overlap, as one
@@ -580,7 +576,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val margin = min(1f, speculativeDistance + (speed(i) + speed(j)) * dt)
         val scratch = n.points
         scratch.clear()
-        collide(shapes[i]!!, poses[i]!!, shapes[j]!!, poses[j]!!, margin, scratch)
+        collide(shapes[i]!!, poses[i], shapes[j]!!, poses[j], margin, scratch)
         // A kinematic body sets the bounce of what it touches: a character is soft (0), a paddle may be bouncy.
         val e = when {
             types[i] == BodyType.KINEMATIC -> restitution[i]
@@ -588,7 +584,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             else -> max(restitution[i], restitution[j])
         }
         if (scratch.count > 0) n.set.addAll(scratch, i, j, (i.toLong() shl 32) or j.toLong(),
-            sqrt(friction[i] * friction[j]), e, poses[j]!!, previous)
+            sqrt(friction[i] * friction[j]), e, poses[j], previous)
     }
 
     private fun collideMesh(m: Int, b: Int, dt: Float, n: NarrowScratch) {
@@ -603,13 +599,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val scratch = n.points
         for (f in 0 until found.size) {
             val t = found[f]
-            val tri = mesh.tris[t]
             scratch.clear()
-            collideTriangle(tri, shapes[b]!!, poses[b]!!, margin, scratch)
+            collideTriangle(mesh, t, shapes[b]!!, poses[b], margin, scratch)
             val surface = mesh.palette[mesh.material[t]]
             if (scratch.count > 0) n.set.addAll(scratch, -1, b,
                 Long.MIN_VALUE or (m.toLong() shl 55) or (b.toLong() shl 24) or t.toLong(),
-                sqrt(surface.friction * friction[b]), restitution[b] * surface.bounce, poses[b]!!, previous,
+                sqrt(surface.friction * friction[b]), restitution[b] * surface.bounce, poses[b], previous,
                 surface.rollingResistance)
         }
     }
@@ -1405,10 +1400,7 @@ internal class ContactSet {
             java.util.Arrays.fill(d, o, o + C, 0f)
             d[o + CNX] = src.nx[i]; d[o + CNX + 1] = src.ny[i]; d[o + CNX + 2] = src.nz[i]
             d[o + CFR] = mu; d[o + CREST] = e; d[o + CRL] = surfaceRolling
-            val dx0 = x[k] - poseB.p.x; val dy0 = y[k] - poseB.p.y; val dz0 = z[k] - poseB.p.z
-            val lxk = dx0 * poseB.ax.x + dy0 * poseB.ax.y + dz0 * poseB.ax.z
-            val lyk = dx0 * poseB.ay.x + dy0 * poseB.ay.y + dz0 * poseB.ay.z
-            val lzk = dx0 * poseB.az.x + dy0 * poseB.az.y + dz0 * poseB.az.z
+            val lxk = poseB.localX(x[k], y[k], z[k]); val lyk = poseB.localY(x[k], y[k], z[k]); val lzk = poseB.localZ(x[k], y[k], z[k])
             lx[k] = lxk; ly[k] = lyk; lz[k] = lzk
             if (prevStart >= 0) {
                 var bestJ = -1; var bestD = .05f * .05f

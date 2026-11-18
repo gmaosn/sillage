@@ -59,8 +59,9 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
     private val cosSlope get() = cos(Math.toRadians(maxSlope.toDouble())).toFloat()
 
     private fun center(feet: Vec3) = feet.plus(0f, height / 2, 0f)
+    private val pose = Pose()
     private fun gather(feet: Vec3, margin: Float = .02f) =
-        world.touching(shape, Pose(center(feet), Vec3.X, Vec3.Y, Vec3.Z), margin, body.id, touches)
+        world.touching(shape, pose.set(feet.x, feet.y + height / 2, feet.z), margin, body.id, touches)
 
     /** Puts the character at [feet] at once (respawn). */
     fun teleport(feet: Vec3) {

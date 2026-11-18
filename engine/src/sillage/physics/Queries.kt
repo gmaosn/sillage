@@ -7,12 +7,34 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/** What a ray met: [distance] along the ray, the [point] and surface [normal], then the [body] or the mesh [material]. */
-/** What a ray or a sphere sweep met: [distance] travelled, [point] where it touches (on the surface), [normal] there. */
+/** What a ray or a sphere sweep met: [distance] travelled, [point] where it touches (on the surface), [normal] there, then the [body] or the mesh [material]. */
 class RayHit(val distance: Float, val point: Vec3, val normal: Vec3, val body: Body?, val material: Material?)
 
-/** Pose of body [i] from its current position and rotation (queries run between steps). */
-internal fun PhysicsWorld.poseOf(i: Int): Pose = poseOf(Vec3(px[i], py[i], pz[i]), Quat(qx[i], qy[i], qz[i], qw[i]))
+/** Pose of body [i] from its current position and rotation (queries run between steps), written to [into]. */
+internal fun PhysicsWorld.poseOf(i: Int, into: Pose): Pose = into.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
+
+/**
+ * The state of one ray or sphere sweep, kept by the world (queries are not reentrant): the ray, the
+ * nearest hit so far, and the scratch of the shape tests. Those return the distance of their hit, or
+ * NaN for none, and write its unit normal to [n] at a given offset; the three floats after it are
+ * theirs to use for what they call in turn.
+ */
+internal class RayQuery {
+    var ox = 0f; var oy = 0f; var oz = 0f
+    var dx = 0f; var dy = 0f; var dz = 0f
+    var radius = 0f
+    var best = 0f; var hit = false; var body = -1; var material: Material? = null
+    var hx = 0f; var hy = 0f; var hz = 0f; var nx = 0f; var ny = 0f; var nz = 0f
+    val n = FloatArray(12)
+    val pose = Pose()
+    val tri = Tri()
+
+    fun keep(t: Float, at: Int, body: Int, material: Material?) {
+        best = t; hit = true; this.body = body; this.material = material
+        nx = n[at]; ny = n[at + 1]; nz = n[at + 2]
+        hx = ox + dx * t - nx * radius; hy = oy + dy * t - ny * radius; hz = oz + dz * t - nz * radius
+    }
+}
 
 /**
  * Casts a ray from [origin] along [direction] up to [maxDistance]. With [radius] > 0 it sweeps a sphere
@@ -21,42 +43,24 @@ internal fun PhysicsWorld.poseOf(i: Int): Pose = poseOf(Vec3(px[i], py[i], pz[i]
  */
 fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radius: Float = 0f,
                          meshes: Boolean = true, filter: ((Body) -> Boolean)? = null): RayHit? {
-    val d = direction.normalized()
-    var best = maxDistance; var hit: RayHit? = null; var hitBody = Int.MAX_VALUE
-    fun consider(i: Int) {
-        if (removed[i]) return
-        val shape = shapes[i]!!
-        // Quick rejection by the bounding sphere, on scalars (no vector for the bodies far from the ray).
-        val reach = shape.boundingRadius + radius
-        val cx = px[i] - origin.x; val cy = py[i] - origin.y; val cz = pz[i] - origin.z
-        val m = cx * d.x + cy * d.y + cz * d.z
-        if (m < -reach || m > best + reach) return
-        val ex = cx - d.x * m; val ey = cy - d.y * m; val ez = cz - d.z * m
-        if (ex * ex + ey * ey + ez * ez > reach * reach) return
-        if (filter != null && !filter(Body(this, i))) return
-        val c = Vec3(px[i], py[i], pz[i])
-        val pose = poseOf(i)
-        val r = when (shape) {
-            is Sphere -> raySphere(origin, d, c, shape.radius + radius)
-            is Capsule -> rayCapsule(origin, d, pose.p - pose.ay * shape.halfHeight, pose.p + pose.ay * shape.halfHeight, shape.radius + radius)
-            is Box -> if (radius > 0f) sweepBox(origin, d, pose, shape, radius) else rayBox(origin, d, pose, shape.halfX, shape.halfY, shape.halfZ)
-        } ?: return
-        // Equal distances: the lowest body wins, as when every body is tried in order.
-        if (r.first < best || (r.first == best && hit != null && i < hitBody)) {
-            best = r.first; hitBody = i; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, Body(this, i), null)
-        }
-    }
+    val r = ray
+    r.ox = origin.x; r.oy = origin.y; r.oz = origin.z
+    val dl = sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z)
+    if (dl == 0f) { r.dx = direction.x; r.dy = direction.y; r.dz = direction.z }
+    else { r.dx = direction.x / dl; r.dy = direction.y / dl; r.dz = direction.z / dl }
+    r.radius = radius; r.best = maxDistance; r.hit = false; r.body = -1; r.material = null
+    val ox = r.ox; val oy = r.oy; val oz = r.oz; val dx = r.dx; val dy = r.dy; val dz = r.dz
     val grid = if (radius <= QueryGrid.PAD) gridFor() else null
-    if (grid == null) for (i in 0 until count) consider(i)
+    if (grid == null) for (i in 0 until count) consider(i, r, filter)
     else {
         // Walk the cells along the ray (Amanatides–Woo), within the grid's bounds, until no closer body can come.
         grid.begin()
         val cand = queryBodies; cand.clear()
-        for (k in 0 until grid.large.size) consider(grid.large[k])
-        var t0 = 0f; var t1 = best
+        for (k in 0 until grid.large.size) consider(grid.large[k], r, filter)
+        var t0 = 0f; var t1 = r.best
         for (axis in 0..2) {
-            val o = when (axis) { 0 -> origin.x; 1 -> origin.y; else -> origin.z }
-            val v = when (axis) { 0 -> d.x; 1 -> d.y; else -> d.z }
+            val o = when (axis) { 0 -> ox; 1 -> oy; else -> oz }
+            val v = when (axis) { 0 -> dx; 1 -> dy; else -> dz }
             val lo = when (axis) { 0 -> grid.minX; 1 -> grid.minY; else -> grid.minZ }
             val hi = when (axis) { 0 -> grid.maxX; 1 -> grid.maxY; else -> grid.maxZ }
             if (abs(v) < 1e-12f) { if (o < lo || o > hi) t1 = -1f }
@@ -64,119 +68,180 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
         }
         if (t0 <= t1) {
             val s = grid.size
-            val sx = origin.x + d.x * t0; val sy = origin.y + d.y * t0; val sz = origin.z + d.z * t0
-            var x = grid.cell(sx); var y = grid.cell(sy); var z = grid.cell(sz)
-            val stepX = if (d.x > 0f) 1 else -1; val stepY = if (d.y > 0f) 1 else -1; val stepZ = if (d.z > 0f) 1 else -1
-            fun boundary(c: Int, step: Int) = (c - 4096 + (if (step > 0) 1 else 0)) * s
-            var tx = if (abs(d.x) < 1e-12f) Float.MAX_VALUE else (boundary(x, stepX) - origin.x) / d.x
-            var ty = if (abs(d.y) < 1e-12f) Float.MAX_VALUE else (boundary(y, stepY) - origin.y) / d.y
-            var tz = if (abs(d.z) < 1e-12f) Float.MAX_VALUE else (boundary(z, stepZ) - origin.z) / d.z
-            val dx = if (abs(d.x) < 1e-12f) Float.MAX_VALUE else s / abs(d.x)
-            val dy = if (abs(d.y) < 1e-12f) Float.MAX_VALUE else s / abs(d.y)
-            val dz = if (abs(d.z) < 1e-12f) Float.MAX_VALUE else s / abs(d.z)
+            var x = grid.cell(ox + dx * t0); var y = grid.cell(oy + dy * t0); var z = grid.cell(oz + dz * t0)
+            val stepX = if (dx > 0f) 1 else -1; val stepY = if (dy > 0f) 1 else -1; val stepZ = if (dz > 0f) 1 else -1
+            var tx = if (abs(dx) < 1e-12f) Float.MAX_VALUE else (boundary(x, stepX, s) - ox) / dx
+            var ty = if (abs(dy) < 1e-12f) Float.MAX_VALUE else (boundary(y, stepY, s) - oy) / dy
+            var tz = if (abs(dz) < 1e-12f) Float.MAX_VALUE else (boundary(z, stepZ, s) - oz) / dz
+            val ddx = if (abs(dx) < 1e-12f) Float.MAX_VALUE else s / abs(dx)
+            val ddy = if (abs(dy) < 1e-12f) Float.MAX_VALUE else s / abs(dy)
+            val ddz = if (abs(dz) < 1e-12f) Float.MAX_VALUE else s / abs(dz)
             while (true) {
                 cand.clear(); grid.collect(x, y, z, cand); cand.sort()
-                for (k in 0 until cand.size) consider(cand[k])
+                for (k in 0 until cand.size) consider(cand[k], r, filter)
                 val next = min(tx, min(ty, tz))
-                if (next > best || next > t1) break
-                if (tx <= ty && tx <= tz) { x += stepX; tx += dx } else if (ty <= tz) { y += stepY; ty += dy } else { z += stepZ; tz += dz }
+                if (next > r.best || next > t1) break
+                if (tx <= ty && tx <= tz) { x += stepX; tx += ddx } else if (ty <= tz) { y += stepY; ty += ddy } else { z += stepZ; tz += ddz }
             }
         }
     }
     if (meshes && radius > 0f) {
         val stack = queryStack; val found = queryFound
-        val e = origin + d * best
+        val ex = ox + dx * r.best; val ey = oy + dy * r.best; val ez = oz + dz * r.best
         for (mesh in this.meshes) {
             found.clear()
-            mesh.query(min(origin.x, e.x) - radius, min(origin.y, e.y) - radius, min(origin.z, e.z) - radius,
-                max(origin.x, e.x) + radius, max(origin.y, e.y) + radius, max(origin.z, e.z) + radius, found, stack)
-            val tris = mesh.tris
+            mesh.query(min(ox, ex) - radius, min(oy, ey) - radius, min(oz, ez) - radius,
+                max(ox, ex) + radius, max(oy, ey) + radius, max(oz, ez) + radius, found, stack)
             for (f in 0 until found.size) {
-                val t = found[f]; val tr = tris[t]
-                val r = sweepTriangle(origin, d, radius, tr.a, tr.b, tr.c, tr.n, best) ?: continue
-                if (r.first <= best) { best = r.first; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, null, mesh.palette[mesh.material[t]]) }
+                val t = found[f]
+                val h = sweepTriangle(r, r.tri.load(mesh, t), r.best, 0)
+                if (h <= r.best) r.keep(h, 0, -1, mesh.palette[mesh.material[t]])
             }
         }
     } else if (meshes) {
         val stack = queryStack
         for (mesh in this.meshes) {
-            val t = mesh.raycast(origin.x, origin.y, origin.z, d.x, d.y, d.z, best, stack)
-            if (t >= 0f && t <= best) {
+            val t = mesh.raycast(ox, oy, oz, dx, dy, dz, r.best, stack)
+            if (t >= 0f && t <= r.best) {
                 val k = mesh.hitTriangle
-                best = t
-                hit = RayHit(t, origin + d * t, Vec3(mesh.n[3 * k], mesh.n[3 * k + 1], mesh.n[3 * k + 2]), null, mesh.palette[mesh.material[k]])
+                r.best = t; r.hit = true; r.body = -1; r.material = mesh.palette[mesh.material[k]]
+                r.hx = ox + dx * t; r.hy = oy + dy * t; r.hz = oz + dz * t
+                r.nx = mesh.n[3 * k]; r.ny = mesh.n[3 * k + 1]; r.nz = mesh.n[3 * k + 2]
             }
         }
     }
-    return hit
+    if (!r.hit) return null
+    return RayHit(r.best, Vec3(r.hx, r.hy, r.hz), Vec3(r.nx, r.ny, r.nz), if (r.body >= 0) Body(this, r.body) else null, r.material)
+}
+
+private fun boundary(c: Int, step: Int, size: Float) = (c - 4096 + (if (step > 0) 1 else 0)) * size
+
+/** Tests body [i] against the ray, keeping it if it is the nearest hit so far. */
+private fun PhysicsWorld.consider(i: Int, r: RayQuery, filter: ((Body) -> Boolean)?) {
+    if (removed[i]) return
+    val shape = shapes[i]!!
+    // Quick rejection by the bounding sphere.
+    val reach = shape.boundingRadius + r.radius
+    val cx = px[i] - r.ox; val cy = py[i] - r.oy; val cz = pz[i] - r.oz
+    val m = cx * r.dx + cy * r.dy + cz * r.dz
+    if (m < -reach || m > r.best + reach) return
+    val ex = cx - r.dx * m; val ey = cy - r.dy * m; val ez = cz - r.dz * m
+    if (ex * ex + ey * ey + ez * ez > reach * reach) return
+    if (filter != null && !filter(Body(this, i))) return
+    val pose = poseOf(i, r.pose)
+    val t = when (shape) {
+        is Sphere -> raySphere(r, pose.px, pose.py, pose.pz, shape.radius + r.radius, 0)
+        is Capsule -> {
+            val h = shape.halfHeight
+            rayCapsule(r, pose.px - pose.yx * h, pose.py - pose.yy * h, pose.pz - pose.yz * h,
+                pose.px + pose.yx * h, pose.py + pose.yy * h, pose.pz + pose.yz * h, shape.radius + r.radius, 0)
+        }
+        is Box -> if (r.radius > 0f) sweepBox(r, pose, shape, r.radius, 0) else rayBox(r, pose, shape.halfX, shape.halfY, shape.halfZ, 0)
+    }
+    // Equal distances: the lowest body wins, as when every body is tried in order.
+    if (t < r.best || (t == r.best && r.hit && i < r.body)) r.keep(t, 0, i, null)
 }
 
 /**
- * A sphere of radius [r] swept from [o] along the unit direction [d] against the triangle (a, b, c) of
- * unit normal [n], seen from its front: distance travelled and contact normal, or null beyond [maxT].
- * The sphere meets the face (the plane raised by r) or else an edge or a corner (capsules around edges).
+ * A sphere of radius r.radius swept along the ray against the triangle [t], seen from its front: the
+ * distance travelled (NaN if none within [maxT]), normal at [at]. The sphere meets the face (the plane
+ * raised by the radius) or else an edge or a corner (capsules around the edges).
  */
-internal fun sweepTriangle(o: Vec3, d: Vec3, r: Float, a: Vec3, b: Vec3, c: Vec3, n: Vec3, maxT: Float): Pair<Float, Vec3>? {
-    val dist = (o - a) dot n
-    val dn = d dot n
-    if (dist < 0f || (dist >= r && dn >= 0f)) return null          // behind, or moving away
+private fun sweepTriangle(q: RayQuery, t: Tri, maxT: Float, at: Int): Float {
+    val r = q.radius; val n = q.n
+    val dist = (q.ox - t.ax) * t.nx + (q.oy - t.ay) * t.ny + (q.oz - t.az) * t.nz
+    val dn = q.dx * t.nx + q.dy * t.ny + q.dz * t.nz
+    if (dist < 0f || (dist >= r && dn >= 0f)) return Float.NaN          // behind, or moving away
     if (dist < r) {
-        if (inside(o - n * dist, a, b, c, n)) return 0f to n         // already touching the face
+        if (inside(q.ox - t.nx * dist, q.oy - t.ny * dist, q.oz - t.nz * dist, t)) {   // already touching the face
+            n[at] = t.nx; n[at + 1] = t.ny; n[at + 2] = t.nz; return 0f
+        }
     } else {
-        val t = (r - dist) / dn
-        if (t > maxT) return null
-        if (inside(o + d * t - n * r, a, b, c, n)) return t to n     // the face comes first when hit inside
+        val h = (r - dist) / dn
+        if (h > maxT) return Float.NaN
+        if (inside(q.ox + q.dx * h - t.nx * r, q.oy + q.dy * h - t.ny * r, q.oz + q.dz * h - t.nz * r, t)) {   // the face comes first when hit inside
+            n[at] = t.nx; n[at + 1] = t.ny; n[at + 2] = t.nz; return h
+        }
     }
-    var best: Pair<Float, Vec3>? = null
-    for ((p, q) in arrayOf(a to b, b to c, c to a)) {
-        val h = rayCapsule(o, d, p, q, r) ?: continue
-        if (h.first <= maxT && (best == null || h.first < best.first)) best = h
+    var best = Float.NaN
+    for (j in 0..2) {
+        val k = if (j == 2) 0 else j + 1
+        val h = rayCapsule(q, t.vx(j), t.vy(j), t.vz(j), t.vx(k), t.vy(k), t.vz(k), r, at + 3)
+        if (h <= maxT && (best.isNaN() || h < best)) { best = h; n[at] = n[at + 3]; n[at + 1] = n[at + 4]; n[at + 2] = n[at + 5] }
     }
     return best
 }
 
-private fun inside(p: Vec3, a: Vec3, b: Vec3, c: Vec3, n: Vec3): Boolean {
-    val s1 = ((b - a) cross (p - a)) dot n; val s2 = ((c - b) cross (p - b)) dot n; val s3 = ((a - c) cross (p - c)) dot n
+private fun inside(px: Float, py: Float, pz: Float, t: Tri): Boolean {
+    val s1 = side(t.ax, t.ay, t.az, t.bx, t.by, t.bz, px, py, pz, t)
+    val s2 = side(t.bx, t.by, t.bz, t.cx, t.cy, t.cz, px, py, pz, t)
+    val s3 = side(t.cx, t.cy, t.cz, t.ax, t.ay, t.az, px, py, pz, t)
     return (s1 >= 0f && s2 >= 0f && s3 >= 0f) || (s1 <= 0f && s2 <= 0f && s3 <= 0f)
+}
+
+/** ((b − a) × (p − a)) · n: on which side of edge a→b point p lies. */
+private fun side(ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float, px: Float, py: Float, pz: Float, t: Tri): Float {
+    val ex = bx - ax; val ey = by - ay; val ez = bz - az
+    val wx = px - ax; val wy = py - ay; val wz = pz - az
+    return (ey * wz - ez * wy) * t.nx + (ez * wx - ex * wz) * t.ny + (ex * wy - ey * wx) * t.nz
 }
 
 /** Height of the first surface below (x, [fromY], z) within [depth] metres, or null. */
 fun PhysicsWorld.groundBelow(x: Float, z: Float, fromY: Float = 1000f, depth: Float = 2000f, filter: ((Body) -> Boolean)? = null): RayHit? =
     raycast(Vec3(x, fromY, z), Vec3(0f, -1f, 0f), depth, filter = filter)
 
-private fun raySphere(o: Vec3, d: Vec3, c: Vec3, r: Float): Pair<Float, Vec3>? {
-    val m = o - c
-    val c0 = (m dot m) - r * r
-    if (c0 <= 0f) return 0f to (if (m.lengthSquared() > 0f) m.normalized() else -d)
-    val b = m dot d
-    if (b > 0f) return null
-    val disc = b * b - c0
-    if (disc < 0f) return null
-    val t = -b - sqrt(disc)
-    return t to (o + d * t - c).normalized()
+/** Writes the unit vector of (x, y, z) to n[at] (the zero vector stays zero). */
+private fun unit(x: Float, y: Float, z: Float, n: FloatArray, at: Int) {
+    val l = sqrt(x * x + y * y + z * z)
+    if (l == 0f) { n[at] = x; n[at + 1] = y; n[at + 2] = z } else { n[at] = x / l; n[at + 1] = y / l; n[at + 2] = z / l }
 }
 
-private fun rayCapsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: Float): Pair<Float, Vec3>? {
-    val ab = b - a; val len = ab.length()
-    if (len < 1e-6f) return raySphere(o, d, a, r)
-    val u = ab / len
+private fun backwards(q: RayQuery, at: Int): Float { q.n[at] = -q.dx; q.n[at + 1] = -q.dy; q.n[at + 2] = -q.dz; return 0f }
+
+private fun raySphere(q: RayQuery, cx: Float, cy: Float, cz: Float, r: Float, at: Int): Float {
+    val mx = q.ox - cx; val my = q.oy - cy; val mz = q.oz - cz
+    val m2 = mx * mx + my * my + mz * mz
+    val c0 = m2 - r * r
+    if (c0 <= 0f) return if (m2 > 0f) { unit(mx, my, mz, q.n, at); 0f } else backwards(q, at)
+    val b = mx * q.dx + my * q.dy + mz * q.dz
+    if (b > 0f) return Float.NaN
+    val disc = b * b - c0
+    if (disc < 0f) return Float.NaN
+    val t = -b - sqrt(disc)
+    unit(q.ox + q.dx * t - cx, q.oy + q.dy * t - cy, q.oz + q.dz * t - cz, q.n, at)
+    return t
+}
+
+private fun rayCapsule(q: RayQuery, ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float, r: Float, at: Int): Float {
+    val abx = bx - ax; val aby = by - ay; val abz = bz - az
+    val len = sqrt(abx * abx + aby * aby + abz * abz)
+    if (len < 1e-6f) return raySphere(q, ax, ay, az, r, at)
+    val ux = abx / len; val uy = aby / len; val uz = abz / len
+    val ox = q.ox; val oy = q.oy; val oz = q.oz; val dx = q.dx; val dy = q.dy; val dz = q.dz; val n = q.n
     // Origin inside: distance to the segment below the radius.
-    val s0 = ((o - a) dot u).coerceIn(0f, len)
-    if ((o - (a + u * s0)).lengthSquared() <= r * r) return 0f to -d
-    var best: Pair<Float, Vec3>? = null
+    val s0 = ((ox - ax) * ux + (oy - ay) * uy + (oz - az) * uz).coerceIn(0f, len)
+    val gx = ox - (ax + ux * s0); val gy = oy - (ay + uy * s0); val gz = oz - (az + uz * s0)
+    if (gx * gx + gy * gy + gz * gz <= r * r) return backwards(q, at)
+    var best = Float.NaN
     // Side of the cylinder.
-    val w = o - a
-    val dp = d - u * (d dot u); val wp = w - u * (w dot u)
-    val qa = dp dot dp; val qb = 2f * (wp dot dp); val qc = (wp dot wp) - r * r
+    val wx = ox - ax; val wy = oy - ay; val wz = oz - az
+    val du = dx * ux + dy * uy + dz * uz; val dpx = dx - ux * du; val dpy = dy - uy * du; val dpz = dz - uz * du
+    val wu = wx * ux + wy * uy + wz * uz; val wpx = wx - ux * wu; val wpy = wy - uy * wu; val wpz = wz - uz * wu
+    val qa = dpx * dpx + dpy * dpy + dpz * dpz; val qb = 2f * (wpx * dpx + wpy * dpy + wpz * dpz)
+    val qc = (wpx * wpx + wpy * wpy + wpz * wpz) - r * r
     if (qa > 1e-12f) {
         val disc = qb * qb - 4f * qa * qc
         if (disc >= 0f) {
             val t = (-qb - sqrt(disc)) / (2f * qa)
-            val s = (w + d * t) dot u
-            if (t >= 0f && s in 0f..len) best = t to (wp + dp * t).normalized()
+            val s = (wx + dx * t) * ux + (wy + dy * t) * uy + (wz + dz * t) * uz
+            if (t >= 0f && s in 0f..len) { best = t; unit(wpx + dpx * t, wpy + dpy * t, wpz + dpz * t, n, at) }
         }
     }
-    for (cap in listOf(raySphere(o, d, a, r), raySphere(o, d, b, r))) if (cap != null && (best == null || cap.first < best.first)) best = cap
+    // The two end caps.
+    val ta = raySphere(q, ax, ay, az, r, at + 3)
+    if (best.isNaN() || ta < best) if (!ta.isNaN()) { best = ta; n[at] = n[at + 3]; n[at + 1] = n[at + 4]; n[at + 2] = n[at + 5] }
+    val tb = raySphere(q, bx, by, bz, r, at + 3)
+    if (best.isNaN() || tb < best) if (!tb.isNaN()) { best = tb; n[at] = n[at + 3]; n[at + 1] = n[at + 4]; n[at + 2] = n[at + 5] }
     return best
 }
 
@@ -184,47 +249,60 @@ private fun rayCapsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: Float): Pair<Float
  * A sphere of radius [r] swept against a box: the box grown by r, with rounded edges and corners (the
  * Minkowski sum). The grown box tells where a face is hit; off the faces, the twelve edges as capsules.
  */
-private fun sweepBox(o: Vec3, d: Vec3, pose: Pose, b: Box, r: Float): Pair<Float, Vec3>? {
-    val h = floatArrayOf(b.halfX, b.halfY, b.halfZ)
-    val lo = pose.toLocal(o)
+private fun sweepBox(q: RayQuery, pose: Pose, b: Box, r: Float, at: Int): Float {
+    val hx = b.halfX; val hy = b.halfY; val hz = b.halfZ
+    val lx = pose.localX(q.ox, q.oy, q.oz); val ly = pose.localY(q.ox, q.oy, q.oz); val lz = pose.localZ(q.ox, q.oy, q.oz)
     // Starting inside the rounded box: distance from the box below the radius.
-    val qx = max(abs(lo.x) - h[0], 0f); val qy = max(abs(lo.y) - h[1], 0f); val qz = max(abs(lo.z) - h[2], 0f)
-    if (qx * qx + qy * qy + qz * qz <= r * r) return 0f to -d
-    val grown = rayBox(o, d, pose, h[0] + r, h[1] + r, h[2] + r) ?: return null
-    val p = pose.toLocal(o + d * grown.first)
+    val gx = max(abs(lx) - hx, 0f); val gy = max(abs(ly) - hy, 0f); val gz = max(abs(lz) - hz, 0f)
+    if (gx * gx + gy * gy + gz * gz <= r * r) return backwards(q, at)
+    val grown = rayBox(q, pose, hx + r, hy + r, hz + r, at)
+    if (grown.isNaN()) return Float.NaN
+    val wx = q.ox + q.dx * grown; val wy = q.oy + q.dy * grown; val wz = q.oz + q.dz * grown
     var outside = 0
-    for (k in 0..2) if (abs(p[k]) > h[k] + 1e-5f) outside++
-    if (outside <= 1 && grown.first > 0f) return grown            // on a face (only the hit axis is beyond the box)
-    var best: Pair<Float, Vec3>? = null
+    if (abs(pose.localX(wx, wy, wz)) > hx + 1e-5f) outside++
+    if (abs(pose.localY(wx, wy, wz)) > hy + 1e-5f) outside++
+    if (abs(pose.localZ(wx, wy, wz)) > hz + 1e-5f) outside++
+    if (outside <= 1 && grown > 0f) return grown            // on a face (only the hit axis is beyond the box)
+    var best = Float.NaN
+    val n = q.n
     for (axis in 0..2) {
         val u = (axis + 1) % 3; val v = (axis + 2) % 3
-        for (su in floatArrayOf(-1f, 1f)) for (sv in floatArrayOf(-1f, 1f)) {
-            val e0 = FloatArray(3); val e1 = FloatArray(3)
-            e0[axis] = -h[axis]; e1[axis] = h[axis]; e0[u] = su * h[u]; e1[u] = su * h[u]; e0[v] = sv * h[v]; e1[v] = sv * h[v]
-            val hit = rayCapsule(o, d, pose.toWorld(Vec3(e0[0], e0[1], e0[2])), pose.toWorld(Vec3(e1[0], e1[1], e1[2])), r) ?: continue
-            if (best == null || hit.first < best.first) best = hit
+        val ha = b.half(axis)
+        for (iu in 0..1) for (iv in 0..1) {
+            val cu = (if (iu == 0) -1f else 1f) * b.half(u); val cv = (if (iv == 0) -1f else 1f) * b.half(v)
+            // Edge along [axis], at (cu, cv) on the two other axes, in box space.
+            val x0 = corner(0, axis, u, -ha, cu, cv); val y0 = corner(1, axis, u, -ha, cu, cv); val z0 = corner(2, axis, u, -ha, cu, cv)
+            val x1 = corner(0, axis, u, ha, cu, cv); val y1 = corner(1, axis, u, ha, cu, cv); val z1 = corner(2, axis, u, ha, cu, cv)
+            val hit = rayCapsule(q, pose.worldX(x0, y0, z0), pose.worldY(x0, y0, z0), pose.worldZ(x0, y0, z0),
+                pose.worldX(x1, y1, z1), pose.worldY(x1, y1, z1), pose.worldZ(x1, y1, z1), r, at + 3)
+            if (!hit.isNaN() && (best.isNaN() || hit < best)) { best = hit; n[at] = n[at + 3]; n[at + 1] = n[at + 4]; n[at + 2] = n[at + 5] }
         }
     }
     return best
 }
 
-private fun rayBox(o: Vec3, d: Vec3, pose: Pose, hx: Float, hy: Float, hz: Float): Pair<Float, Vec3>? {
-    val lo = pose.toLocal(o)
-    val ld = Vec3(d dot pose.ax, d dot pose.ay, d dot pose.az)
-    val h = floatArrayOf(hx, hy, hz)
+/** Component [c] of a box-space point whose coordinate on [axis] is [a], on [u] is [cu], on the third is [cv]. */
+private fun corner(c: Int, axis: Int, u: Int, a: Float, cu: Float, cv: Float) = if (c == axis) a else if (c == u) cu else cv
+
+private fun rayBox(q: RayQuery, pose: Pose, hx: Float, hy: Float, hz: Float, at: Int): Float {
+    val lox = pose.localX(q.ox, q.oy, q.oz); val loy = pose.localY(q.ox, q.oy, q.oz); val loz = pose.localZ(q.ox, q.oy, q.oz)
+    val dx = q.dx; val dy = q.dy; val dz = q.dz
     var t0 = 0f; var t1 = Float.MAX_VALUE; var axis = -1; var sign = 0f
     for (k in 0..2) {
-        val ok = lo[k]; val dk = ld[k]
-        if (abs(dk) < 1e-9f) { if (ok < -h[k] || ok > h[k]) return null; continue }
-        var ta = (-h[k] - ok) / dk; var tb = (h[k] - ok) / dk
+        val ok = when (k) { 0 -> lox; 1 -> loy; else -> loz }
+        val dk = when (k) { 0 -> dx * pose.xx + dy * pose.xy + dz * pose.xz; 1 -> dx * pose.yx + dy * pose.yy + dz * pose.yz; else -> dx * pose.zx + dy * pose.zy + dz * pose.zz }
+        val h = when (k) { 0 -> hx; 1 -> hy; else -> hz }
+        if (abs(dk) < 1e-9f) { if (ok < -h || ok > h) return Float.NaN; continue }
+        var ta = (-h - ok) / dk; var tb = (h - ok) / dk
         var s = -1f
         if (ta > tb) { val x = ta; ta = tb; tb = x; s = 1f }
         if (ta > t0) { t0 = ta; axis = k; sign = s }
         t1 = min(t1, tb)
-        if (t0 > t1) return null
+        if (t0 > t1) return Float.NaN
     }
-    if (axis < 0) return 0f to -d                       // origin inside the box
-    return t0 to pose.axis(axis) * sign
+    if (axis < 0) return backwards(q, at)                     // origin inside the box
+    q.n[at] = pose.ax(axis) * sign; q.n[at + 1] = pose.ay(axis) * sign; q.n[at + 2] = pose.az(axis) * sign
+    return t0
 }
 
 /** What a shape placed somewhere touches: see [PhysicsWorld.overlaps]. */
@@ -238,7 +316,8 @@ class Overlap(val body: Body?, val material: Material?, val point: Vec3, val nor
  */
 fun PhysicsWorld.overlaps(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, margin: Float = 0f, exclude: Body? = null): List<Overlap> {
     val t = Touches()
-    touching(shape, poseOf(position, rotation.normalized()), margin, exclude?.id ?: -1, t)
+    val q = rotation.normalized()
+    touching(shape, Pose().set(position.x, position.y, position.z, q.x, q.y, q.z, q.w), margin, exclude?.id ?: -1, t)
     return List(t.size) { k -> Overlap(if (t.body[k] >= 0) Body(this, t.body[k]) else null, t.material[k], t.point(k), t.normal(k), t.sep[k]) }
 }
 
@@ -275,30 +354,30 @@ internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, excl
     val reach = shape.boundingRadius + margin
     val grid = gridFor()
     val cand = queryBodies
-    if (grid != null) grid.bodiesIn(pose.p.x - reach, pose.p.y - reach, pose.p.z - reach, pose.p.x + reach, pose.p.y + reach, pose.p.z + reach, cand)
+    if (grid != null) grid.bodiesIn(pose.px - reach, pose.py - reach, pose.pz - reach, pose.px + reach, pose.py + reach, pose.pz + reach, cand)
     val n = if (grid != null) cand.size else count
     for (k in 0 until n) {
         val i = if (grid != null) cand[k] else k
         if (i == exclude || removed[i]) continue
         val r = shapes[i]!!.boundingRadius + reach
-        val dx = px[i] - pose.p.x; val dy = py[i] - pose.p.y; val dz = pz[i] - pose.p.z
+        val dx = px[i] - pose.px; val dy = py[i] - pose.py; val dz = pz[i] - pose.pz
         if (dx * dx + dy * dy + dz * dz > r * r) continue
         scratch.clear()
-        collide(shapes[i]!!, poseOf(i), shape, pose, margin, scratch)
+        collide(shapes[i]!!, poseOf(i, queryPose), shape, pose, margin, scratch)
         out.add(scratch, i, null)
     }
     if (!meshes) return
     val found = queryFound; val stack = queryStack
     for (mesh in this.meshes) {
         found.clear()
-        mesh.query(pose.p.x - reach, pose.p.y - reach, pose.p.z - reach, pose.p.x + reach, pose.p.y + reach, pose.p.z + reach, found, stack)
+        mesh.query(pose.px - reach, pose.py - reach, pose.pz - reach, pose.px + reach, pose.py + reach, pose.pz + reach, found, stack)
         for (f in 0 until found.size) {
             val t = found[f]; val v = mesh.v; val n = mesh.n
             // Triangles are one-sided: a shape whose centre is behind one (inside a closed mesh such as a
             // pier, under a floor) does not touch it, or it would be thrown out through the far side.
-            if ((pose.p.x - v[9 * t]) * n[3 * t] + (pose.p.y - v[9 * t + 1]) * n[3 * t + 1] + (pose.p.z - v[9 * t + 2]) * n[3 * t + 2] < 0f) continue
+            if ((pose.px - v[9 * t]) * n[3 * t] + (pose.py - v[9 * t + 1]) * n[3 * t + 1] + (pose.pz - v[9 * t + 2]) * n[3 * t + 2] < 0f) continue
             scratch.clear()
-            collideTriangle(mesh.tris[t], shape, pose, margin, scratch)
+            collideTriangle(mesh, t, shape, pose, margin, scratch)
             out.add(scratch, -1, mesh.palette[mesh.material[t]])
         }
     }

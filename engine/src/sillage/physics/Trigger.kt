@@ -19,13 +19,14 @@ class Trigger internal constructor(val world: PhysicsWorld, val shape: Shape, va
 
     private val ids = LinkedHashSet<Int>()
     private val now = HashSet<Int>()
+    private val pose = Pose()
     /** Bodies inside after the last step. */
     val inside: List<Body> get() = ids.map { Body(world, it) }
 
     internal fun check(entered: MutableList<() -> Unit>) {
         if (!enabled) return
         now.clear()
-        val pose = poseOf(position, rotation)
+        pose.set(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w)
         val touches = world.triggerScratch
         world.touching(shape, pose, 0f, -1, touches, meshes = false)
         for (k in 0 until touches.size) {
@@ -36,14 +37,6 @@ class Trigger internal constructor(val world: PhysicsWorld, val shape: Shape, va
         val it = ids.iterator()
         while (it.hasNext()) { val b = it.next(); if (b !in now) { it.remove(); onExit?.let { f -> entered.add { f(Body(world, b)) } } } }
     }
-}
-
-internal fun poseOf(p: Vec3, q: Quat): Pose {
-    val x = q.x; val y = q.y; val z = q.z; val w = q.w
-    return Pose(p,
-        Vec3(1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)),
-        Vec3(2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)),
-        Vec3(2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)))
 }
 
 /** Adds a [Trigger] zone of [shape] at [position]. */

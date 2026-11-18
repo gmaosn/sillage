@@ -54,7 +54,7 @@ fun Qa.performance() {
             val a = octetsAlloues(); val t = System.nanoTime(); w.step(DT); temps.add((System.nanoTime() - t) / 1e6); alloue += octetsAlloues() - a
         }
         mesure("physique.pile1000", "pas physique, pile de ${w.bodyCount - 1} corps", "ms", mediane(temps), " (p99 ${f2(p99(temps))})")
-        mesure("physique.pile1000.alloc", "allocations par pas physique (pile)", "Kio", alloue / 150 / 1024.0, " (objectif de l'étape 7 : zéro)")
+        mesure("physique.pile1000.alloc", "allocations par pas physique (pile)", "Kio", alloue / 150 / 1024.0, " (croissance des tampons et tâches des fils ; la phase fine n'alloue plus)")
     }
 
     run {
