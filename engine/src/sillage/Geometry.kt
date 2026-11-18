@@ -129,5 +129,3 @@ class Objet(val maillage: Maillage) {
     }
 }
 
-/** Volume de collision. [camera] = faux pour les objets fins (troncs, tonneaux) : ils n'arrêtent pas la caméra. */
-class Boite(val min: Vec3, val max: Vec3, val camera: Boolean = true)

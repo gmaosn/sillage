@@ -46,7 +46,7 @@ internal object Hud {
         text("COQUILLAGES",704f,38f,2f,paper)
         text(monde.recoltes.toString()+" / "+monde.coquillages.size,704f,73f,2f,gold)
         rect(24f,528f,912f,48f,ink)
-        text("ZQSD / WASD  BOUGER    ESPACE  SAUTER    SOURIS  CAMERA",42f,540f,1.5f,paper)
+        text("ZQSD / WASD  BOUGER    MAJ  MARCHER    ESPACE  SAUTER    SOURIS  CAMERA",42f,540f,1.5f,paper)
         text("MOLETTE  ZOOM    R  RECOMMENCER    TAB  SOURIS    ECHAP  QUITTER",42f,558f,1.25f,gold)
         text(fps.toString()+" FPS",836f,118f,1.25f,ink)
         if(monde.recoltes==monde.coquillages.size && monde.coquillages.isNotEmpty()) {

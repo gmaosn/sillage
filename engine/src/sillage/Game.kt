@@ -11,7 +11,7 @@ import kotlin.math.*
 internal class Game(private val titre: String,private val monde: Monde,private val args: Array<String>) {
     fun run() {
         if("--help" in args) {
-            println("Sillage : --headless --smoke --frames N --capture chemin.png --look-at ex,ey,ez,cx,cy,cz --validation")
+            println("Sillage : --headless --smoke --frames N --capture chemin.png --look-at ex,ey,ez,cx,cy,cz --anim clip --validation")
             return
         }
         val headless="--headless" in args
@@ -25,6 +25,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
         val frames=option("--frames")?.toInt()?.also { require(it>0) } ?: if(headless || smoke) 180 else Int.MAX_VALUE
         val screenshot=option("--capture")?.let { Path.of(it) }
         // Caméra fixe pour les captures : œil puis cible. Les déplacements restent relatifs à la caméra de jeu.
+        option("--anim")?.let { monde.animationForcee=it }
         val lookAt=option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size==6) { "--look-at attend 6 nombres" } }
         var window: Window?=null
         var renderer: VulkanRenderer?=null
@@ -69,7 +70,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 } else monde.camera.mouvement(
                     (if(down(Key.D,Key.RIGHT)) 1f else 0f)-(if(down(Key.A,Key.LEFT)) 1f else 0f),
                     (if(down(Key.W,Key.UP)) 1f else 0f)-(if(down(Key.S,Key.DOWN)) 1f else 0f))
-                monde.miseAJour(movement,jump && !oldJump,dt); oldJump=jump
+                monde.miseAJour(movement,jump && !oldJump,dt,marche=down(Key.SHIFT,Key.RIGHT_SHIFT)); oldJump=jump
                 if(monde.joueur.position.distanceTo(initial)>.1f) moved=true
                 highest=max(highest,monde.joueur.position.y); lowest=min(lowest,monde.joueur.position.y)
                 val view=monde.camera.vue(monde,dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0],it[1],it[2]),Vec3(it[3],it[4],it[5])) } ?: v }

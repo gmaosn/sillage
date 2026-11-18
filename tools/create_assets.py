@@ -519,6 +519,63 @@ anim('fall', .3, 2, pose({hips: {'translation': (0, .56, 0), 'rotation': qy(0)},
                           legs['g'][0]: {'rotation': qx(-.15)}, legs['g'][1]: {'rotation': qx(-.25)},
                           arms['d'][0]: {'rotation': qeuler(x=.3, z=1.3)}, arms['g'][0]: {'rotation': qeuler(x=.3, z=-1.3)},
                           arms['d'][1]: {'rotation': qx(.2)}, arms['g'][1]: {'rotation': qx(.2)}}))
+def walk(t, ph):
+    knee_w = lambda q: -(.08 + .55 * max(0.0, -math.sin(q - math.pi / 4)))
+    return {hips: {'translation': (0, .558 - .012 * math.cos(2 * ph), 0), 'rotation': qy(.06 * math.sin(ph))},
+            torso: {'rotation': qeuler(x=-.04, y=-.08 * math.sin(ph))},
+            head: {'rotation': qeuler(x=.02, y=.05 * math.sin(ph))},
+            legs['d'][0]: {'rotation': qx(.42 * math.sin(ph))}, legs['g'][0]: {'rotation': qx(.42 * math.sin(ph + math.pi))},
+            legs['d'][1]: {'rotation': qx(knee_w(ph))}, legs['g'][1]: {'rotation': qx(knee_w(ph + math.pi))},
+            arms['d'][0]: {'rotation': qeuler(x=-.38 * math.sin(ph), z=.08)}, arms['g'][0]: {'rotation': qeuler(x=.38 * math.sin(ph), z=-.08)},
+            arms['d'][1]: {'rotation': qx(.25 + .1 * math.sin(ph))}, arms['g'][1]: {'rotation': qx(.25 - .1 * math.sin(ph))}}
+anim('walk', 1.0, 17, walk)
+
+def push(t, ph):
+    knee_p = lambda q: -(.25 + .45 * max(0.0, -math.sin(q - math.pi / 4)))
+    return {hips: {'translation': (0, .52, 0), 'rotation': qy(.04 * math.sin(ph))},
+            torso: {'rotation': qx(-.42)},                                     # penché vers l'objet
+            head: {'rotation': qx(.3)},                                         # regarde devant lui
+            legs['d'][0]: {'rotation': qx(-.2 + .32 * math.sin(ph))}, legs['g'][0]: {'rotation': qx(-.2 + .32 * math.sin(ph + math.pi))},
+            legs['d'][1]: {'rotation': qx(knee_p(ph))}, legs['g'][1]: {'rotation': qx(knee_p(ph + math.pi))},
+            arms['d'][0]: {'rotation': qeuler(x=1.75 + .05 * math.sin(ph), z=.12)}, arms['g'][0]: {'rotation': qeuler(x=1.75 - .05 * math.sin(ph), z=-.12)},
+            arms['d'][1]: {'rotation': qx(.3)}, arms['g'][1]: {'rotation': qx(.3)}}
+anim('push', 1.1, 17, push)
+
+def land(t, ph):
+    u = t / .22                                    # 0 : choc, 1 : presque debout
+    e = 1 - (1 - u) ** 2
+    return {hips: {'translation': (0, .46 + .09 * e, 0), 'rotation': qy(0)},
+            torso: {'rotation': qx(-.28 * (1 - e))}, head: {'rotation': qx(.12 * (1 - e))},
+            legs['d'][0]: {'rotation': qx(.75 * (1 - e) + .05)}, legs['g'][0]: {'rotation': qx(.65 * (1 - e) + .05)},
+            legs['d'][1]: {'rotation': qx(-1.3 * (1 - e) - .1)}, legs['g'][1]: {'rotation': qx(-1.2 * (1 - e) - .1)},
+            arms['d'][0]: {'rotation': qeuler(x=.3 * (1 - e), z=.5 * (1 - e) + .07)}, arms['g'][0]: {'rotation': qeuler(x=.3 * (1 - e), z=-.5 * (1 - e) - .07)},
+            arms['d'][1]: {'rotation': qx(.3)}, arms['g'][1]: {'rotation': qx(.3)}}
+anim('land', .22, 6, land)
+
+def celebrate(t, ph):
+    u = t / .9
+    hop = math.sin(math.pi * min(u / .55, 1.0)) if u < .55 else 0.0
+    up = min(u / .15, 1.0) * (1 - max(0.0, (u - .8) / .2))   # bras levé puis redescendu
+    return {hips: {'translation': (0, .56 + .16 * hop, 0), 'rotation': qy(0)},
+            torso: {'rotation': qx(.08 * up)}, head: {'rotation': qx(-.25 * up)},
+            legs['d'][0]: {'rotation': qx(.5 * hop)}, legs['g'][0]: {'rotation': qx(.2 * hop)},
+            legs['d'][1]: {'rotation': qx(-.9 * hop)}, legs['g'][1]: {'rotation': qx(-.5 * hop)},
+            arms['d'][0]: {'rotation': qeuler(x=2.9 * up, z=.15 * up)}, arms['g'][0]: {'rotation': qeuler(x=.2 * up, z=-.9 * up)},
+            arms['d'][1]: {'rotation': qx(.15 * up)}, arms['g'][1]: {'rotation': qx(.4 * up)}}
+anim('celebrate', .9, 19, celebrate)
+
+def wave(t, ph):
+    u = t / 2.0
+    raise_ = min(u / .15, 1.0) * min((1 - u) / .15, 1.0)      # lève le bras, salue, le baisse
+    return {hips: {'translation': (0, .56, 0), 'rotation': qy(0)},
+            torso: {'rotation': qeuler(z=-.06 * raise_)}, head: {'rotation': qeuler(x=-.05 * raise_, z=.12 * raise_)},
+            legs['d'][0]: {'rotation': qx(0)}, legs['g'][0]: {'rotation': qx(0)},
+            legs['d'][1]: {'rotation': qx(0)}, legs['g'][1]: {'rotation': qx(0)},
+            arms['d'][0]: {'rotation': qeuler(x=.25 * raise_, z=2.5 * raise_ + .07 * (1 - raise_))},
+            arms['d'][1]: {'rotation': qz(raise_ * .45 * math.sin(TAU * 2.2 * t))},
+            arms['g'][0]: {'rotation': qz(-.07)}, arms['g'][1]: {'rotation': qx(.12)}}
+anim('wave', 2.0, 41, wave)
+
 hero.save('marin.glb')
 
 

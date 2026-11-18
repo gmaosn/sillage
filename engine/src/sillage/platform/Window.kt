@@ -17,6 +17,8 @@ object Key {
     const val S = 31
     const val D = 32
     const val Z = 44
+    const val SHIFT = 42
+    const val RIGHT_SHIFT = 54
     const val SPACE = 57
     const val UP = 103
     const val LEFT = 105

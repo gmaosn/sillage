@@ -1,0 +1,198 @@
+package sillage.physics
+
+import sillage.math.Vec3
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
+
+/**
+ * A walking character on the physics world, in the spirit of Jolt's virtual character: a capsule that
+ * is moved by the game, not by forces. It slides along walls, walks up gentle slopes and slides down
+ * steep ones, climbs low steps, sticks to the ground when walking downhill, stands on bodies (and
+ * weighs on them) and pushes them according to their mass: a heavy crate slows it down, a ball does
+ * not. A kinematic capsule follows it in the world so that bodies collide with it.
+ *
+ * [position] is the point between the feet.
+ */
+class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, val height: Float = 1.8f, var mass: Float = 70f) {
+    init { require(height > 2 * radius) { "A character must be taller than its width" } }
+
+    /** Gravity of the character alone (games like it stronger than the world's: snappier jumps). */
+    var gravity = Vec3(0f, -22f, 0f)
+    /** Steepest walkable slope, in degrees; steeper ground makes the character slide. */
+    var maxSlope = 50f
+    /** Highest step climbed without jumping (m). */
+    var stepHeight = .35f
+    /** How far the character is pulled down to stay on the ground when walking downhill (m). */
+    var snapDistance = .3f
+    /** Strongest push on a movable body (N): about what a person can push; heavier loads do not budge. */
+    var pushForce = 400f
+
+    var position: Vec3 = feet
+        private set
+    /** Actual velocity of the last update (m/s). */
+    var velocity: Vec3 = Vec3.ZERO
+        private set
+    var onGround = false
+        private set
+    var groundNormal: Vec3 = Vec3.UP
+        private set
+    /** What the character stands on: a body, or null for a static mesh (then see [groundMaterial]). */
+    var groundBody: Body? = null
+        private set
+    var groundMaterial: Material? = null
+        private set
+    /** The movable body pushed during the last update, if any. */
+    var pushing: Body? = null
+        private set
+
+    private val shape = Capsule(radius, (height - 2 * radius) / 2)
+    /** Kinematic capsule in the world: what other bodies bump into. */
+    val body: Body = world.add(shape, feet.plus(0f, height / 2, 0f), type = BodyType.KINEMATIC, restitution = 0f).also { it.tag = this }
+    private val touches = Touches()
+    private var fall = 0f                        // vertical speed while airborne
+    private var rest = 0f
+
+    private val cosSlope get() = cos(Math.toRadians(maxSlope.toDouble())).toFloat()
+
+    private fun center(feet: Vec3) = feet.plus(0f, height / 2, 0f)
+    private fun gather(feet: Vec3, margin: Float = .02f) =
+        world.touching(shape, Pose(center(feet), Vec3.X, Vec3.Y, Vec3.Z), margin, body.id, touches)
+
+    /** Puts the character at [feet] at once (respawn). */
+    fun teleport(feet: Vec3) {
+        position = feet; velocity = Vec3.ZERO; fall = 0f; onGround = false
+        body.position = center(feet); body.velocity = Vec3.ZERO
+    }
+
+    /**
+     * Moves the character for [dt] seconds. [walk]: wanted horizontal velocity (m/s, its y is ignored);
+     * [jumpSpeed] > 0 starts a jump at that vertical speed (the game decides when a jump is allowed).
+     */
+    fun update(walk: Vec3, jumpSpeed: Float, dt: Float) {
+        val start = position
+        pushing = null
+        rest += dt.coerceIn(0f, .1f)
+        var jump = jumpSpeed
+        val h = 1f / 120f
+        while (rest >= h) { substep(walk, jump, h); jump = 0f; rest -= h }
+        velocity = if (dt > 0f) (position - start) / dt else Vec3.ZERO
+        body.moveTo(center(position), dt.coerceAtLeast(1e-4f))
+    }
+
+    private fun substep(walk: Vec3, jumpSpeed: Float, h: Float) {
+        val wasOnGround = onGround
+        var vx = walk.x; var vz = walk.z
+        var vy: Float
+        if (jumpSpeed > 0f) { vy = jumpSpeed; fall = jumpSpeed; onGround = false }
+        else if (onGround) {
+            // Follow the ground plane: no bounce when walking downhill, no slowdown uphill.
+            val n = groundNormal
+            vy = -(n.x * vx + n.z * vz) / n.y
+            fall = 0f
+        } else { fall += gravity.y * h; vy = fall }
+        val intended = Vec3(vx * h, 0f, vz * h)
+        var p = position + Vec3(vx, vy, vz) * h
+        var blockedByWall = false
+        // Push out of everything, at most four rounds.
+        for (round in 0 until 4) {
+            gather(p)
+            var moved = false
+            for (k in 0 until touches.size) {
+                val s = touches.separations[k]
+                val b = touches.bodies[k]
+                val dynamic = b >= 0 && world.types[b] == BodyType.DYNAMIC
+                if (s >= (if (dynamic) .005f else 0f)) continue
+                val n = touches.normals[k]
+                // Leave a hair of space against movable bodies: otherwise the kinematic capsule, which
+                // follows the character, would overlap them and the solver would shove them away.
+                val skin = if (dynamic) .005f else 0f
+                if (n.y >= cosSlope) {
+                    // Walkable: rise straight up, the slope does not drag the character down.
+                    p = p.plus(0f, (-s + skin) / n.y, 0f)
+                    if (fall < 0f) fall = 0f
+                } else {
+                    if (dynamic && round == 0) push(Body(world, b), n, touches.points[k], walk, h)
+                    else if (!dynamic && n.y > -.3f) blockedByWall = true
+                    p += n * (-s + skin)
+                    if (n.y < -.3f && fall > 0f) fall = 0f       // ceiling
+                }
+                moved = true
+            }
+            if (!moved) break
+        }
+        // Low step: up, forward, down.
+        if (wasOnGround && blockedByWall && intended.lengthSquared() > 1e-10f) {
+            val progress = Vec3(p.x - position.x, 0f, p.z - position.z) dot intended.normalized()
+            if (progress < intended.length() * .5f) climbStep(intended)?.let { p = it }
+        }
+        // Stick to the ground when walking down a slope or off a small ledge.
+        if (wasOnGround && jumpSpeed <= 0f && fall <= 0f) {
+            groundUnder(p, snapDistance)?.let { y -> val drop = p.y - y; if (drop > 0f && drop <= snapDistance) p = Vec3(p.x, y, p.z) }
+        }
+        // Ground: walkable contacts just below.
+        gather(p, .04f)
+        var gn = Vec3.ZERO; var ground = -2; var material: Material? = null; var groundPoint = p
+        for (k in 0 until touches.size) {
+            val n = touches.normals[k]
+            if (n.y < cosSlope || touches.separations[k] > .04f) continue
+            gn += n; ground = touches.bodies[k]; material = touches.materials[k]; groundPoint = touches.points[k]
+        }
+        onGround = ground != -2 && fall <= .01f
+        if (onGround) {
+            groundNormal = gn.normalized(); groundMaterial = material
+            groundBody = if (ground >= 0) Body(world, ground) else null
+            // The character weighs on what it stands on.
+            groundBody?.let { g -> if (g.type == BodyType.DYNAMIC) g.applyImpulse(world.gravity * (mass * h), groundPoint) }
+        } else { groundBody = null; groundMaterial = null; groundNormal = Vec3.UP }
+        position = p
+    }
+
+    /**
+     * Pushes a movable body like a person would: along the walking direction, with at most [pushForce],
+     * until the body moves as fast as the character wants to walk. The character itself is held by
+     * the body, so a heavy crate slows it down and one too heavy does not move at all.
+     */
+    private fun push(b: Body, n: Vec3, point: Vec3, walk: Vec3, h: Float) {
+        val d = Vec3(-n.x, 0f, -n.z)
+        if (d.lengthSquared() < 1e-6f) return
+        val dir = d.normalized()
+        val wanted = walk.x * dir.x + walk.z * dir.z
+        if (wanted <= 0f) return
+        pushing = b
+        val missing = wanted - (b.velocity dot dir)
+        if (missing <= 0f) return
+        b.applyImpulse(dir * min(pushForce * h, b.mass * missing), point)
+    }
+
+    /** First surface under the feet: a sphere sweep slightly thinner than the capsule (bodies) or a ray (meshes). */
+    private fun groundUnder(feet: Vec3, depth: Float): Float? {
+        val sweep = radius * .9f
+        val hit = world.raycast(center(feet), Vec3(0f, -1f, 0f), height / 2 + depth, radius = sweep,
+            filter = { it.id != body.id }) ?: return null
+        if (hit.normal.y < cosSlope) return null
+        return if (hit.body != null) hit.point.y - sweep else hit.point.y
+    }
+
+    private fun penetrating(feet: Vec3): Boolean {
+        gather(feet, 0f)
+        for (k in 0 until touches.size) if (touches.separations[k] < -.003f) return true
+        return false
+    }
+
+    /** Tries to walk up a low step: returns the new feet position, or null. */
+    private fun climbStep(intended: Vec3): Vec3? {
+        val up = position.plus(0f, stepHeight, 0f)
+        if (penetrating(up)) return null
+        // Probe a little ahead: one substep alone barely reaches over the edge.
+        val ahead = intended.normalized() * max(intended.length(), radius * .5f)
+        var q = up + ahead
+        if (penetrating(q)) return null
+        // Come down onto the step.
+        val y = groundUnder(q, stepHeight + .05f) ?: return null
+        q = Vec3(q.x, y, q.z)
+        val rise = q.y - position.y
+        return if (rise > .005f && rise <= stepHeight + .01f && !penetrating(q.plus(0f, .01f, 0f))) q else null
+    }
+}

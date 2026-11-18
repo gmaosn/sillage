@@ -60,6 +60,10 @@ class Body internal constructor(private val world: PhysicsWorld, val id: Int) {
         get() = world.rolling[id]
         set(v) { world.rolling[id] = v }
     val isSleeping: Boolean get() = world.sleeping[id]
+    /** Free label for the game (a role, a group, the object it moves…); the engine never reads it. */
+    var tag: Any?
+        get() = world.tags[id]
+        set(v) { world.tags[id] = v }
 
     /** Instant change of momentum, applied at [point] (the centre by default). */
     fun applyImpulse(impulse: Vec3, point: Vec3 = position) {
@@ -116,6 +120,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private var capacity = 0
     internal var types = Array(0) { BodyType.STATIC }
     internal var shapes = arrayOfNulls<Shape>(0)
+    internal var tags = arrayOfNulls<Any>(0)
     internal var px = FloatArray(0); internal var py = FloatArray(0); internal var pz = FloatArray(0)
     internal var qx = FloatArray(0); internal var qy = FloatArray(0); internal var qz = FloatArray(0); internal var qw = FloatArray(0)
     internal var st = FloatArray(0)
@@ -131,7 +136,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private var box = FloatArray(0)
     private var poses = arrayOfNulls<Pose>(0)
 
-    private val meshes = ArrayList<TriangleMesh>()
+    internal val meshes = ArrayList<TriangleMesh>()
 
     val bodyCount get() = count
     /** When true, [phaseNanos] accumulates time per phase: bodies, pairs, contacts, prepare, warm start, solve, relax, sleep. */
@@ -152,7 +157,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private fun grow() {
         val c = max(16, capacity * 2)
         types = Array(c) { if (it < capacity) types[it] else BodyType.STATIC }
-        shapes = shapes.copyOf(c)
+        shapes = shapes.copyOf(c); tags = tags.copyOf(c)
         px = px.copyOf(c); py = py.copyOf(c); pz = pz.copyOf(c)
         qx = qx.copyOf(c); qy = qy.copyOf(c); qz = qz.copyOf(c); qw = qw.copyOf(c)
         st = st.copyOf(S * c)

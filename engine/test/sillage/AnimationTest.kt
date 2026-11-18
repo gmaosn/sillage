@@ -114,7 +114,7 @@ class AnimationTest {
         var dir = Path.of("").toAbsolutePath()
         while (!Files.exists(dir.resolve("project.yaml"))) dir = dir.parent
         val m = Glb.chargerModele(dir.resolve("demo/resources/models/marin.glb").toString())
-        assertEquals(setOf("idle", "run", "jump", "fall"), m.clips.keys)
+        assertEquals(setOf("idle", "run", "jump", "fall", "walk", "push", "land", "celebrate", "wave"), m.clips.keys)
         val parts = m.parties(); val a = Animateur(m, parts)
         assertTrue(parts.size >= 10, "${parts.size} pièces")
         for (clip in m.clips.keys) {

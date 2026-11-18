@@ -145,4 +145,50 @@ class TriangleMesh(triangles: FloatArray, materialIds: IntArray? = null, palette
             stack.add(left[node]); stack.add(right[node])
         }
     }
+
+    /**
+     * Closest front-facing triangle hit by the ray o + t·d, t ∈ [0, maxT] (d unit). Returns t or −1,
+     * and the triangle index in [hitTriangle]. Möller–Trumbore, BVH walk with slab tests.
+     */
+    internal fun raycast(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, maxT: Float, stack: IntList): Float {
+        hitTriangle = -1
+        if (count == 0) return -1f
+        var best = maxT
+        val ix = 1f / dx; val iy = 1f / dy; val iz = 1f / dz
+        stack.clear(); stack.add(0)
+        while (stack.size > 0) {
+            val node = stack.pop(); val b = 6 * node
+            var t0 = 0f; var t1 = best
+            var ta = (bounds[b] - ox) * ix; var tb = (bounds[b + 3] - ox) * ix
+            t0 = maxOf(t0, minOf(ta, tb)); t1 = minOf(t1, maxOf(ta, tb))
+            ta = (bounds[b + 1] - oy) * iy; tb = (bounds[b + 4] - oy) * iy
+            t0 = maxOf(t0, minOf(ta, tb)); t1 = minOf(t1, maxOf(ta, tb))
+            ta = (bounds[b + 2] - oz) * iz; tb = (bounds[b + 5] - oz) * iz
+            t0 = maxOf(t0, minOf(ta, tb)); t1 = minOf(t1, maxOf(ta, tb))
+            if (t0 > t1) continue
+            if (left[node] >= 0) { stack.add(left[node]); stack.add(right[node]); continue }
+            for (i in first[node] until first[node] + span[node]) {
+                val t = order[i]; val o = 9 * t
+                if (dx * n[3 * t] + dy * n[3 * t + 1] + dz * n[3 * t + 2] >= 0f) continue      // back face
+                val e1x = v[o + 3] - v[o]; val e1y = v[o + 4] - v[o + 1]; val e1z = v[o + 5] - v[o + 2]
+                val e2x = v[o + 6] - v[o]; val e2y = v[o + 7] - v[o + 1]; val e2z = v[o + 8] - v[o + 2]
+                val px = dy * e2z - dz * e2y; val py = dz * e2x - dx * e2z; val pz = dx * e2y - dy * e2x
+                val det = e1x * px + e1y * py + e1z * pz
+                if (kotlin.math.abs(det) < 1e-12f) continue
+                val inv = 1f / det
+                val sx = ox - v[o]; val sy = oy - v[o + 1]; val sz = oz - v[o + 2]
+                val u = (sx * px + sy * py + sz * pz) * inv
+                if (u < 0f || u > 1f) continue
+                val qx = sy * e1z - sz * e1y; val qy = sz * e1x - sx * e1z; val qz = sx * e1y - sy * e1x
+                val w = (dx * qx + dy * qy + dz * qz) * inv
+                if (w < 0f || u + w > 1f) continue
+                val tt = (e2x * qx + e2y * qy + e2z * qz) * inv
+                if (tt in 0f..best) { best = tt; hitTriangle = t }
+            }
+        }
+        return if (hitTriangle >= 0) best else -1f
+    }
+
+    internal var hitTriangle = -1
+        private set
 }

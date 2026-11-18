@@ -6,11 +6,13 @@ import sillage.math.Vec3
 import sillage.physics.BodyType
 import sillage.physics.Body
 import sillage.physics.Box
-import sillage.physics.Capsule
+import sillage.physics.Character
 import sillage.physics.Material
 import sillage.physics.PhysicsWorld
 import sillage.physics.Sphere
 import sillage.physics.TriangleMesh
+import sillage.physics.groundBelow
+import sillage.physics.raycast
 import kotlin.math.*
 
 @DslMarker annotation class SillageDsl
@@ -20,8 +22,7 @@ class Monde {
     val objets = ArrayList<Objet>()
     /** Le ciel : un dôme en dégradé qui suit la caméra, dessiné derrière tout le reste. */
     val ciel = Objet(domeCiel()).also { objets.add(it) }
-    val physique = Physique()
-    /** Corps rigides : caisses, ballons… Le terrain et les obstacles y sont statiques, le héros y est cinématique. */
+    /** Corps rigides : caisses, ballons… Le terrain et les obstacles y sont statiques, le héros y est un personnage. */
     val corps = PhysicsWorld()
     private val lies = ArrayList<Pair<Objet, Body>>()
     /** Ombres portées : chaque disque suit son objet sur le sol, plus petit et plus pâle quand l'objet monte. */
@@ -38,14 +39,17 @@ class Monde {
     private fun placerOmbres() {
         for ((o, cible, rayon) in ombres) {
             val p = cible.position
-            val sol = physique.hauteur(p.x, p.z, p.y + .5f) ?: run { o.visible = false; null } ?: continue
+            // Premier objet sous lui (sol, dessus d'une caisse…), sauf lui-même et le héros.
+            val sous = corps.raycast(p.plus(0f, .25f, 0f), Vec3(0f, -1f, 0f), 30f,
+                filter = { it.tag !== cible && it.tag !is Character })
+            if (sous == null) { o.visible = false; continue }
+            val sol = sous.point.y
             val haut = (p.y - sol).coerceAtLeast(0f)
             o.visible = cible.visible && haut < 6f
             o.position = Vec3(p.x, sol + .03f, p.z)
             o.echelle = rayon * (1f + haut * .12f) / (1f + haut * .35f)
         }
     }
-    private var corpsHeros: Body? = null
     lateinit var joueur: Joueur
         private set
     val coquillages = ArrayList<Objet>()
@@ -55,6 +59,9 @@ class Monde {
     private val modeles = HashMap<String,Modele>()
     private val aplatis = HashMap<String,Maillage>()
     private var tempsEnLAir = 0f
+    private var celebration = 0f
+    private var atterrissage = 0f
+    private var attente = 0f
     /** Vrai quand le héros se déplace réellement (pas seulement quand on appuie contre un mur). */
     var enMouvement = false
         private set
@@ -73,7 +80,6 @@ class Monde {
      * bois, pierre, route, glace…, voir Material.named) ; [surfaces] permet d'en préciser ou d'en ajouter.
      */
     fun terrain(glb: String, surfaces: Map<String, Material> = emptyMap()): Objet = modele(glb).also {
-        physique.surfaces.addAll(it.maillage.triangles)
         val m = modeles.getValue(glb)
         val (positions, ids) = m.surfaces()
         val palette = m.materiaux.map { nom -> surfaces[nom] ?: Material.named(nom) } + Material.DEFAULT
@@ -81,12 +87,16 @@ class Monde {
     }
     /** Boîte de collision. [camera] = faux pour un objet fin (tronc, tonneau) que la caméra peut longer sans se rapprocher. */
     fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) {
-        physique.obstacles.add(Boite(Vec3(x-largeur/2,y,z-profondeur/2),Vec3(x+largeur/2,y+hauteur,z+profondeur/2),camera))
-        corps.add(Box(largeur/2,hauteur/2,profondeur/2),Vec3(x,y+hauteur/2,z),type=BodyType.STATIC)
+        val b=corps.add(Box(largeur/2,hauteur/2,profondeur/2),Vec3(x,y+hauteur/2,z),type=BodyType.STATIC)
+        if(!camera) b.tag=Mince
     }
 
     /** Lie un objet affiché à un corps rigide : l'objet suit le corps à chaque image. */
-    fun lier(objet: Objet, corps: Body): Objet { lies.add(objet to corps); objet.position=corps.position; objet.orientation=corps.rotation; return objet }
+    fun lier(objet: Objet, corps: Body): Objet {
+        lies.add(objet to corps); objet.position=corps.position; objet.orientation=corps.rotation
+        if(corps.tag==null) corps.tag=objet
+        return objet
+    }
 
     /** Une caisse de [taille] mètres posée sur le sol (ou [hauteur] mètres au-dessus), qu'on peut pousser. */
     fun caisse(x: Float, z: Float, hauteur: Float = 0f, taille: Float = .7f, angle: Float = 0f): Objet {
@@ -106,16 +116,16 @@ class Monde {
         return ombre(lier(o,b),rayon*1.1f)
     }
     /** Hauteur du terrain en (x, z), 0 hors de l'île. */
-    fun sol(x: Float, z: Float): Float = physique.hauteur(x,z) ?: 0f
+    fun sol(x: Float, z: Float): Float = corps.groundBelow(x,z,filter={ false })?.point?.y ?: 0f
     /** Obstacle posé sur le terrain : sa base suit le sol. */
     fun obstacleAuSol(x: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) =
         obstacle(x,sol(x,z),z,largeur,hauteur,profondeur,camera)
+    /** Le héros : un personnage du moteur physique (pentes, marches, caisses qu'on pousse ou qu'on escalade). */
     fun heros(glb: String, x: Float=0f, y: Float=3f, z: Float=4f, config: Joueur.() -> Unit = {}) {
-        joueur=Joueur(modele(glb),Vec3(x,y,z)).apply(config)
+        val depart=Vec3(x,y,z)
+        joueur=Joueur(modele(glb),Character(corps,depart),depart).apply(config)
+        joueur.objet.position=depart
         ombre(joueur.objet,.42f)
-        // Le héros pousse les corps rigides : une capsule cinématique qui suit le contrôleur de personnage.
-        val j=joueur
-        corpsHeros=corps.add(Capsule(j.rayon,(j.hauteur-2*j.rayon)/2),j.position.plus(0f,j.hauteur/2,0f),type=BodyType.KINEMATIC)
     }
     fun ocean() {
         val g=Geometrie()
@@ -137,7 +147,7 @@ class Monde {
         val top=Vec3(0f,.34f,0f); val bottom=Vec3(0f,-.24f,0f)
         val ring=Array(6) { i -> val a=i*PI.toFloat()/3; Vec3(cos(a)*.22f,0f,sin(a)*.22f) }
         for(i in 0..5) { g.triangle(top,ring[i],ring[(i+1)%6],color); g.triangle(bottom,ring[(i+1)%6],ring[i],color) }
-        val o=Objet(g.construire()); o.position=Vec3(x,(physique.hauteur(x,z) ?: 1f)+.65f,z)
+        val o=Objet(g.construire()); o.position=Vec3(x,sol(x,z)+.65f,z)
         objets.add(o); coquillages.add(o)
     }
     /** Rapproche l'angle [de] de [vers] d'au plus [pas] radians, par le plus court chemin. */
@@ -147,47 +157,59 @@ class Monde {
         return if(abs(d)<=pas) vers else de+sign(d)*pas
     }
 
-    /** Choisit le clip du héros (idle, run, jump, fall) d'après son mouvement réel. */
-    private fun animerHeros(avant: Vec3, dt: Float) {
+    /**
+     * Choisit le clip du héros d'après son mouvement réel : en l'air jump puis fall, land à l'atterrissage
+     * d'une vraie chute, celebrate quand il ramasse un coquillage, push quand il pousse un objet, walk ou
+     * run selon la vitesse, idle à l'arrêt et wave après un moment d'attente.
+     */
+    /** Pour les captures : force un clip du héros (--anim), sans tenir compte de son mouvement. */
+    internal var animationForcee: String? = null
+
+    private fun animerHeros(dt: Float) {
         val a=joueur.objet.animateur ?: return
+        animationForcee?.let { a.jouer(it,fondu=0f,vitesse=1f); return }
         val clips=a.modele.clips
+        val p=joueur.personnage
+        val enLAirAvant=tempsEnLAir
         tempsEnLAir=if(joueur.auSol) 0f else tempsEnLAir+dt
-        val dx=joueur.position.x-avant.x; val dz=joueur.position.z-avant.z
-        val vitesse=if(dt>0f) sqrt(dx*dx+dz*dz)/dt else 0f
+        if(joueur.auSol && enLAirAvant>.45f && "land" in clips) atterrissage=.22f
+        celebration=max(0f,celebration-dt); atterrissage=max(0f,atterrissage-dt)
+        val vitesse=sqrt(p.velocity.x*p.velocity.x+p.velocity.z*p.velocity.z)
         enMouvement=vitesse>.4f
+        attente=if(vitesse<.3f && joueur.auSol && celebration==0f) attente+dt else 0f
         when {
             joueur.vitesseY>0f && !joueur.auSol && "jump" in clips -> a.jouer("jump",boucle=false,fondu=.08f,vitesse=1f)
             tempsEnLAir>.12f && "fall" in clips -> a.jouer("fall",boucle=false,fondu=.2f,vitesse=1f)
             tempsEnLAir>.12f -> {}
-            vitesse>.4f && "run" in clips -> a.jouer("run",fondu=.12f,vitesse=(vitesse/joueur.vitesse).coerceIn(.5f,1.4f))
-            "idle" in clips -> a.jouer("idle",fondu=.2f,vitesse=1f)
+            celebration>0f && "celebrate" in clips -> a.jouer("celebrate",boucle=false,fondu=.1f,vitesse=1f)
+            atterrissage>0f -> a.jouer("land",boucle=false,fondu=.05f,vitesse=1f)
+            p.pushing!=null && vitesse>.05f && "push" in clips -> a.jouer("push",fondu=.15f,vitesse=(vitesse/1.2f).coerceIn(.4f,1.3f))
+            vitesse>2.6f && "run" in clips -> a.jouer("run",fondu=.12f,vitesse=(vitesse/joueur.vitesse).coerceIn(.5f,1.4f))
+            vitesse>.3f && "walk" in clips -> a.jouer("walk",fondu=.15f,vitesse=(vitesse/joueur.vitesseMarche).coerceIn(.5f,1.6f))
+            vitesse>.3f && "run" in clips -> a.jouer("run",fondu=.12f,vitesse=(vitesse/joueur.vitesse).coerceIn(.5f,1.4f))
+            attente>7f && "wave" in clips -> { a.jouer("wave",boucle=false,fondu=.25f,vitesse=1f); if(a.temps>=a.modele.clips.getValue("wave").duree) attente=0f }
+            "idle" in clips -> a.jouer("idle",fondu=.25f,vitesse=1f)
         }
     }
 
-    fun reinitialiser() {
-        joueur.reapparaitre(); recoltes=0; coquillages.forEach { it.visible=true }
-        corpsHeros?.position=joueur.position.plus(0f,joueur.hauteur/2,0f)
-    }
-    fun miseAJour(mouvement: Vec3, saut: Boolean, dt: Float) {
+    fun reinitialiser() { joueur.reapparaitre(); recoltes=0; coquillages.forEach { it.visible=true } }
+
+    /** Une image de jeu : [mouvement] voulu (−1..1 par axe, déjà tourné selon la caméra), [marche] avec Maj. */
+    fun miseAJour(mouvement: Vec3, saut: Boolean, dt: Float, marche: Boolean = false) {
         temps+=dt
-        val avant=joueur.position
-        physique.avancer(joueur,mouvement,saut,dt)
+        joueur.avancer(mouvement,saut,marche,dt)
         if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=tourner(joueur.objet.rotation,atan2(-mouvement.x,-mouvement.z),14f*dt)
-        animerHeros(avant,dt)
+        animerHeros(dt)
         for(o in objets) o.animateur?.avancer(dt)
-        // Corps rigides : la capsule du héros rejoint sa position, puis un pas de simulation.
-        val h=dt.coerceIn(1f/240f,1f/30f)
-        corpsHeros?.let { c ->
-            val cible=joueur.position.plus(0f,joueur.hauteur/2,0f)
-            // Une réapparition téléporte la capsule : traverser l'île d'un coup balaierait les caisses.
-            if(c.position.distanceTo(cible)>1f) { c.position=cible; c.velocity=Vec3.ZERO } else c.moveTo(cible,h)
-        }
-        corps.step(h)
+        corps.step(dt.coerceIn(1f/240f,1f/30f))
         for((o,b) in lies) { o.position=b.position; o.orientation=b.rotation }
         placerOmbres()
         coquillages.forEachIndexed { i,o ->
             o.rotation=temps*1.1f+i
-            if(o.visible && joueur.position.distanceTo(o.position)<1.15f) { o.visible=false; recoltes++; println("Coquillages : " + recoltes + "/" + coquillages.size) }
+            if(o.visible && joueur.position.plus(0f,.4f,0f).distanceTo(o.position)<1.15f) {
+                o.visible=false; recoltes++; celebration=.9f
+                println("Coquillages : " + recoltes + "/" + coquillages.size)
+            }
         }
     }
 }
@@ -209,7 +231,7 @@ class Camera {
 
     fun vue(monde: Monde, dt: Float): Mat4 {
         calmeSouris+=dt
-        val p=monde.physique
+        val p=monde.corps
         val cible=monde.joueur.position.plus(0f,1.1f,0f)
         // Relief derrière le héros (plage, colline) : lever la caméra plutôt que la rapprocher.
         var leveeVoulue=0f
