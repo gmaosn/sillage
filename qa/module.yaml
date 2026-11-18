@@ -1,0 +1,11 @@
+product: jvm/app
+
+settings:
+  jvm:
+    jdk:
+      version: 25
+    mainClass: sillage.qa.MainKt
+
+dependencies:
+  - //engine
+  - //demo

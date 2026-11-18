@@ -10,13 +10,17 @@ import sillage.platform.openWindow
 import java.nio.file.Path
 import kotlin.math.*
 
+/** Ce qu'a donné une partie : images, temps par image (calcul et rendu), position finale du héros. */
+class Bilan(val images: Int, val moyenneMs: Double, val p99Ms: Double, val maxMs: Double, val position: Vec3)
+
 internal class Game(private val titre: String,private val monde: Monde,private val args: Array<String>) {
-    fun run() {
+    fun run(): Bilan {
         if("--help" in args) {
             println("Sillage : --headless --smoke --frames N --capture chemin.png --look-at ex,ey,ez,cx,cy,cz --anim clip --validation")
             println("  son : --mute --audio-device NOM --record-audio fichier.wav (sans fenêtre) --export-sounds dossier")
+            println("  --taille LxH : taille de l'image sans fenêtre (1280x800 par défaut)")
             println("  --parcours \"x,z x,z j m p2 …\" : le héros suit ces points (j saute, m marche/court, pN attend N s)")
-            return
+            return Bilan(0,0.0,0.0,0.0,Vec3.ZERO)
         }
         val headless="--headless" in args
         val smoke="--smoke" in args
@@ -31,7 +35,9 @@ internal class Game(private val titre: String,private val monde: Monde,private v
         // Caméra fixe pour les captures : œil puis cible. Les déplacements restent relatifs à la caméra de jeu.
         option("--anim")?.let { monde.animationForcee=it }
         val lookAt=option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size==6) { "--look-at attend 6 nombres" } }
-        option("--export-sounds")?.let { exporterSons(Path.of(it)); return }
+        option("--export-sounds")?.let { exporterSons(Path.of(it)); return Bilan(0,0.0,0.0,0.0,Vec3.ZERO) }
+        val taille=option("--taille")?.split('x')?.map { it.trim().toInt() }?.also { require(it.size==2 && it.all { v -> v in 1..8192 }) { "--taille attend LxH" } }
+        val tempsImages=ArrayList<Double>()
         val enregistrement=option("--record-audio")?.let { Path.of(it) }
         val parcours=option("--parcours")?.let { Parcours(it) }
         val trace="--trace" in args
@@ -64,7 +70,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
         try {
             audio?.device?.let { println("SILLAGE_AUDIO device="+it+" latence="+(audio.latency*1000).roundToInt()+" ms") }
             if(!headless) window=openWindow(titre+" - Les Alizés",1280,800)
-            val r=VulkanRenderer(window,"--validation" in args)
+            val r=VulkanRenderer(window,"--validation" in args,taille?.get(0) ?: 1280,taille?.get(1) ?: 800)
             renderer=r; r.ouvrir()
             window?.mouseCaptured=true
             var last=System.nanoTime()
@@ -86,6 +92,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                     window.consumeScroll().let { if(it!=0f) monde.camera.zoom(it) }
                 }
                 val now=System.nanoTime()
+                val debutImage=now
                 val dt=if(smoke || headless) 1f/60f else ((now-last)/1e9).toFloat().coerceIn(0.0001f,.1f)
                 last=now
                 // Touches par position physique : ZQSD en AZERTY et WASD en QWERTY sont les mêmes touches.
@@ -122,6 +129,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 if(fpsTime>=.5f) { fps=(fpsFrames/fpsTime).roundToInt(); fpsTime=0f; fpsFrames=0 }
                 val capture=if(frame==frames-1 || parcours?.fini==true) screenshot else null
                 r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,window?.mouseCaptured ?: false),capture,oeil,monde.temps)
+                tempsImages.add((System.nanoTime()-debutImage)/1e6)
                 frame++
                 if(window!=null && frame%30==0) window.title=titre+" | "+monde.recoltes+"/"+monde.coquillages.size+" coquillages | "+fps+" FPS"
             }
@@ -133,6 +141,10 @@ internal class Game(private val titre: String,private val monde: Monde,private v
             }
             check(r.erreursValidation==0) { "Erreurs de validation Vulkan : " + r.erreursValidation }
             println("SILLAGE_RUN_OK frames="+frame+" smoke="+smoke+" position="+monde.joueur.position+" sol="+monde.joueur.auSol)
+            if(System.getenv("SILLAGE_TEMPS")!=null) println("SILLAGE_TEMPS "+tempsImages.withIndex().sortedByDescending { it.value }.take(12).joinToString { "#"+it.index+"="+"%.1f".format(it.value) })
+            val tri=tempsImages.drop(min(60,tempsImages.size/4)).sorted()        // sans les premières images (compilation)
+            return Bilan(frame,if(tri.isEmpty()) 0.0 else tri.average(),tri.getOrElse((tri.size*.99).toInt().coerceAtMost(tri.size-1)) { 0.0 },
+                tri.lastOrNull() ?: 0.0,monde.joueur.position)
             if(enregistrement!=null && enregistres>0) {
                 Sound(enregistre.copyOf(enregistres),2,rate).save(enregistrement)
                 println("SILLAGE_AUDIO_ENREGISTRE "+enregistrement+" "+"%.1f".format(enregistres/2f/rate)+" s")

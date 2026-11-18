@@ -276,13 +276,16 @@ class Monde {
     /** Une image de jeu : [mouvement] voulu (−1..1 par axe, déjà tourné selon la caméra), [marche] avec Maj. */
     fun miseAJour(mouvement: Vec3, saut: Boolean, dt: Float, marche: Boolean = false) {
         temps+=dt
-        joueur.avancer(mouvement,saut,marche,dt)
-        if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=tourner(joueur.objet.rotation,atan2(-mouvement.x,-mouvement.z),14f*dt)
-        animerHeros(dt)
-        for(o in objets) o.animateur?.avancer(dt)
+        // Le monde d'abord (décor animé, barque, caisses), puis le héros : il se pose là où les plateformes
+        // seront dessinées, sans s'y enfoncer d'une image.
+        for(o in objets) if(o!==joueur.objet) o.animateur?.avancer(dt)
         val h=dt.coerceIn(1f/240f,1f/30f)
         for(s in suivisNoeuds) { val (p,q)=poseNoeud(s.objet,s.noeud,s.centre); s.corps.moveTo(p,h,q) }
         corps.step(h)
+        joueur.avancer(mouvement,saut,marche,dt)
+        if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=tourner(joueur.objet.rotation,atan2(-mouvement.x,-mouvement.z),14f*dt)
+        animerHeros(dt)
+        joueur.objet.animateur?.avancer(dt)
         for((o,b) in lies) { o.position=b.position; o.orientation=b.rotation }
         placerOmbres()
         coquillages.forEachIndexed { i,o -> o.rotation=temps*1.1f+i }
@@ -336,9 +339,10 @@ class Camera {
     }
 }
 
-fun jeu(titre: String = "Sillage", args: Array<String> = emptyArray(), construire: Monde.() -> Unit) {
+/** Construit le monde et lance la partie ; rend le [Bilan] (images, temps par image) à la fin. */
+fun jeu(titre: String = "Sillage", args: Array<String> = emptyArray(), construire: Monde.() -> Unit): Bilan {
     val monde=Monde().apply(construire)
-    Game(titre,monde,args).run()
+    return Game(titre,monde,args).run()
 }
 
 /**

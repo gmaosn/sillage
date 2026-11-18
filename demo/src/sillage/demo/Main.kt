@@ -1,12 +1,16 @@
 package sillage.demo
 
+import sillage.Monde
 import sillage.jeu
 import sillage.math.Vec3
 import sillage.physics.Box
 import sillage.physics.Capsule
 
 /** Le jeu tient dans ce fichier ; les détails Vulkan restent dans le moteur. */
-fun main(args: Array<String>) = jeu("Sillage",args) {
+fun main(args: Array<String>) { jeu("Sillage",args,ile) }
+
+/** L'île des Alizés, aussi utilisée par le contrôle qualité (module qa). */
+val ile: Monde.() -> Unit = {
     ocean()
     terrain("models/terrain.glb")
     val village=modele("models/village.glb")

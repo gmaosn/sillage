@@ -162,4 +162,17 @@ class CharacterTest {
         val r = c.radius
         assertEquals(.27f - (r - sqrt(r * r - .1f * .1f)), c.position.y, .015f, "posé sur l'arête : ${c.position}")
     }
+
+    /** Trouvé par le contrôle qualité : apparu dans un bloc, le marin en était éjecté de 2,85 m vers le bas, à travers le sol. */
+    @Test fun apparaitreDansUnMurNEjectePasATraversLeSol() {
+        val w = world()
+        w.add(Box(1.5f, 1.25f, 1.5f), Vec3(0f, 1.25f, 0f), type = BodyType.STATIC)
+        val c = Character(w, Vec3(0f, .05f, 0f))
+        var bas = 9f; var bond = 0f
+        run(w, c, 3f) { bas = minOf(bas, c.position.y) }
+        var avant = c.position
+        run(w, c, 1f) { bond = maxOf(bond, (c.position - avant).length()); avant = c.position }
+        assertTrue(bas > -.02f, "passé sous le sol : $bas")
+        assertTrue(bond <= .7f, "bond de $bond m en une image")
+    }
 }

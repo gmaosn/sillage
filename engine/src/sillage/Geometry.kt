@@ -81,12 +81,21 @@ class Maillage(val sommets: FloatArray) {
 }
 
 class Geometrie {
-    private val data = ArrayList<Float>()
+    // Un tableau de flottants qui grandit (pas de ArrayList<Float> : un objet par nombre).
+    private var data = FloatArray(1024)
+    private var taille = 0
+    private fun ajouter(p: Vec3, n: Vec3, c: Couleur) {
+        if (taille + 9 > data.size) data = data.copyOf(data.size * 2)
+        data[taille] = p.x; data[taille + 1] = p.y; data[taille + 2] = p.z
+        data[taille + 3] = n.x; data[taille + 4] = n.y; data[taille + 5] = n.z
+        data[taille + 6] = c.r; data[taille + 7] = c.g; data[taille + 8] = c.b
+        taille += 9
+    }
     fun triangle(a: Vec3, b: Vec3, c: Vec3, couleur: Couleur) {
         val cross = (b - a) cross (c - a)
         if (cross.lengthSquared() < 1e-12f) return
         val n = cross.normalized()
-        for (p in arrayOf(a, b, c)) data.addAll(listOf(p.x, p.y, p.z, n.x, n.y, n.z, couleur.r, couleur.g, couleur.b))
+        ajouter(a, n, couleur); ajouter(b, n, couleur); ajouter(c, n, couleur)
     }
     fun quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3, couleur: Couleur) {
         triangle(a,b,c,couleur); triangle(a,c,d,couleur)
@@ -103,7 +112,7 @@ class Geometrie {
             triangle(Vec3(x,y,z), Vec3(x+cos(b)*rayon,y,z+sin(b)*rayon), Vec3(x+cos(a)*rayon,y,z+sin(a)*rayon),couleur)
         }
     }
-    fun construire() = Maillage(data.toFloatArray())
+    fun construire() = Maillage(data.copyOf(taille))
 }
 
 class Objet(val maillage: Maillage) {

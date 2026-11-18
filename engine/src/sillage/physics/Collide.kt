@@ -2,6 +2,7 @@ package sillage.physics
 
 import sillage.math.Vec3
 import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.sign
 import kotlin.math.sqrt
 
@@ -426,17 +427,24 @@ private fun triangleCapsule(t: Tri, cap: Capsule, pc: Pose, margin: Float, out: 
         range = range?.let { clipRange(e0, e1, side, v[j] dot side, it[0], it[1]) }
     }
     val start = out.count
+    var deepest = Float.MAX_VALUE
     if (range != null) {
         for ((i, u) in range.withIndex()) {
             if (i == 1 && range[1] - range[0] < 1e-4f) break
             val p = e0 + (e1 - e0) * u
             val s = ((p - t.a) dot t.n) - cap.radius
-            if (s <= margin && s > -3f * cap.radius) out.add(p - t.n * (cap.radius + s * .5f), t.n, s, i)
+            if (s <= margin && s > -3f * cap.radius) { out.add(p - t.n * (cap.radius + s * .5f), t.n, s, i); deepest = min(deepest, s) }
         }
     }
     if (out.count == start) {
         val u = minimise { triangleDistance(t, e0 + (e1 - e0) * it) }
         triangleSphere(t, e0 + (e1 - e0) * u, cap.radius, margin, out, 2)
+    } else if (minOf(h0, h1) < cap.radius * .5f) {
+        // Deep: the axis can pierce the plane just outside the triangle while the capsule still covers it.
+        // The part of the axis above the triangle then understates the overlap; the closest point does not.
+        val u = minimise { triangleDistance(t, e0 + (e1 - e0) * it) }
+        val c = e0 + (e1 - e0) * u
+        if (triangleDistance(t, c) - cap.radius < deepest - .01f) triangleSphere(t, c, cap.radius, margin, out, 2)
     }
 }
 

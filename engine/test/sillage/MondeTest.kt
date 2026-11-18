@@ -94,8 +94,10 @@ class MondeTest {
             Vec3(-1f, 0f, -1f) to Vec3(-.3f, 0f, -1f).normalized(),   // le long du mur, sous l'avant-toit
             Vec3(-3f, 0f, .2f) to Vec3(.2f, 0f, -1f).normalized())    // vers la porte
         var pire = 0f; var images = 0
+        // Un seul marin, téléporté au départ de chaque essai (en recréer un laisserait l'ancien dans le monde).
+        m.heros(racine().resolve("demo/resources/models/marin.glb").toString(), 0f, 3f, 4f)
         for ((depart, dir) in essais) for (saut in listOf(-1, 12, 40)) {
-            m.heros(racine().resolve("demo/resources/models/marin.glb").toString(), depart.x, m.sol(depart.x, depart.z) + 1.2f, depart.z)
+            m.joueur.position = Vec3(depart.x, m.sol(depart.x, depart.z) + 1.2f, depart.z)
             repeat(40) { m.miseAJour(Vec3.ZERO, false, 1f / 60f) }
             repeat(150) { f -> m.miseAJour(dir, f == saut, 1f / 60f); pire = max(pire, enfoncement(m)); images++ }
         }

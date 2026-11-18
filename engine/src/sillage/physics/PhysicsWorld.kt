@@ -21,6 +21,9 @@ private const val WX = 3; private const val WY = 4; private const val WZ = 5
 private const val IM = 6; private const val I0 = 7
 private const val DPX = 13; private const val DQX = 16; private const val DQW = 19
 
+/** One contact point of the last step, see [PhysicsWorld.contacts]. */
+class Contact(val a: Body?, val b: Body, val point: Vec3, val normal: Vec3, val separation: Float, val normalImpulse: Float)
+
 /** Handle to a body of a [PhysicsWorld]. Two handles to the same body are equal. */
 @ValueCandidate
 class Body internal constructor(private val world: PhysicsWorld, val id: Int) {
@@ -145,6 +148,18 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     /** Pairs and contact points of the last step (diagnostics). */
     val pairCount get() = pairsA.size
     val contactCount get() = previous.size
+    /**
+     * The contact points of the last step: [Contact.a] touches [Contact.b] (a is null for a static mesh),
+     * the normal points from a to b, a negative separation is an overlap (measured when the contact was
+     * found, at the start of the step). For debug drawing, gameplay (who touches whom) and checks.
+     */
+    fun contacts(): List<Contact> = List(previous.size) { k ->
+        val d = previous.d; val o = k * C
+        Contact(if (previous.a[k] >= 0) Body(this, previous.a[k]) else null, Body(this, previous.b[k]),
+            Vec3(previous.x[k], previous.y[k], previous.z[k]), Vec3(d[o + CNX], d[o + CNX + 1], d[o + CNX + 2]),
+            previous.sep[k], d[o + CLN])
+    }
+
     /** Sum of the normal impulses on [body] during the last substep (diagnostics; ≈ m·g·h at rest). */
     internal fun normalImpulseOn(body: Int): Float {
         var t = 0f
@@ -339,9 +354,20 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val di = types[i] == BodyType.DYNAMIC; val dj = types[j] == BodyType.DYNAMIC
         if (!di && !dj) return
         if (!moving(i) && !moving(j)) return
-        // A moving body reaching a sleeping one wakes it.
-        if (di && sleeping[i]) wake(i)
-        if (dj && sleeping[j]) wake(j)
+        // A sleeping body is woken only by something really coming at it: a moving kinematic body, or a
+        // body above the sleep speed (its clock was reset). A slow neighbour resting against it does not
+        // wake it — otherwise two neighbours in separate islands would wake each other forever.
+        if ((di && sleeping[i]) || (dj && sleeping[j])) {
+            val other = if (di && sleeping[i]) j else i
+            val coming = when (types[other]) {
+                BodyType.KINEMATIC -> moving(other)
+                BodyType.DYNAMIC -> !sleeping[other] && sleepClock[other] == 0f
+                BodyType.STATIC -> false
+            }
+            if (!coming) return
+            if (di && sleeping[i]) wake(i)
+            if (dj && sleeping[j]) wake(j)
+        }
         pairsA.add(min(i, j)); pairsB.add(max(i, j))
     }
 

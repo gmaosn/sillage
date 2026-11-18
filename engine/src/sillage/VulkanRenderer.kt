@@ -72,6 +72,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var msaa: Image?=null           // image multi-échantillonnée où l'on dessine
     private var depth: Image?=null
     private var hudBuffer: Buffer?=null
+    private var hudEnvoye: Maillage?=null
     private val meshes=IdentityHashMap<Maillage,Buffer>()
     private var ferme=false
     var nomGpu=""
@@ -98,7 +99,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             }
             createRenderPass()
             createPipeline()
-            hudBuffer=buffer(4L*1024*1024,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+            hudBuffer=buffer(4L*1024*1024,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); hudEnvoye=null
             if(surface != 0L) recreateSwapchain() else createTargets()
             println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " msaa=" + echantillons + " validation=" + validation)
         } catch(e: Throwable) { close(); throw e }
@@ -400,7 +401,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             upload(b,m.sommets); meshes[m]=b
         }
         for(o in objets) if(o.visible) { prepare(o.maillage); for(p in o.parties) prepare(p.maillage) }
-        upload(hudBuffer!!,hud.sommets)
+        if(hud!==hudEnvoye) { upload(hudBuffer!!,hud.sommets); hudEnvoye=hud }
         val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
         try {
             dev.resetCommandBuffer(command,0)

@@ -7,6 +7,8 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
+ * Call [update] after [PhysicsWorld.step]: the character then stands where moving platforms really are.
+ *
  * A walking character on the physics world, in the spirit of Jolt's virtual character: a capsule that
  * is moved by the game, not by forces. It slides along walls, walks up gentle slopes and slides down
  * steep ones, climbs low steps, sticks to the ground when walking downhill, stands on bodies (and
@@ -95,7 +97,16 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         val intended = Vec3(vx * h, 0f, vz * h)
         var p = position + Vec3(vx, vy, vz) * h
         var blockedByWall = false
-        // Push out of everything, at most four rounds.
+        // Push out of everything, at most four rounds. The pushes share a budget: what this substep's
+        // motion can have pushed in, plus MAX_PUSH. Deep inside a wall (spawned or teleported there), the
+        // character thus comes out gradually, instead of being thrown metres in one go — through a floor.
+        var budget = (p - position).length() + MAX_PUSH
+        fun spend(v: Vec3): Vec3 {
+            val l = v.length()
+            if (l <= budget) { budget -= l; return v }
+            val r = if (l > 0f) v * (budget / l) else v
+            budget = 0f; return r
+        }
         for (round in 0 until 4) {
             gather(p)
             var moved = false
@@ -110,17 +121,30 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
                 val skin = if (dynamic) .005f else 0f
                 if (n.y >= cosSlope) {
                     // Walkable: rise straight up, the slope does not drag the character down.
-                    p = p.plus(0f, (-s + skin) / n.y, 0f)
+                    p += spend(Vec3(0f, (-s + skin) / n.y, 0f))
                     if (fall < 0f) fall = 0f
                 } else {
                     if (dynamic && round == 0) push(Body(world, b), n, touches.points[k], walk, h)
                     else if (!dynamic && n.y > -.3f) blockedByWall = true
-                    p += n * (-s + skin)
+                    // Standing, a push from above does not drive the character into the ground: only its
+                    // sideways part is kept.
+                    var push = n * (-s + skin)
+                    if (wasOnGround && push.y < 0f) push = Vec3(push.x, 0f, push.z)
+                    p += spend(push)
                     if (n.y < -.3f && fall > 0f) fall = 0f       // ceiling
                 }
                 moved = true
             }
             if (!moved) break
+        }
+        // A gap narrower than the capsule: the pushes out of each side undo each other and leave it
+        // squeezed. Then the move is refused — the character stays where it was, and if it was falling
+        // in, it stands on the rims.
+        var onRims = false
+        val squeeze = embedded(p)
+        if (squeeze > .005f && embedded(position) < squeeze - .001f) {
+            if (p.y < position.y - 1e-5f) { onRims = true; fall = 0f }
+            p = position
         }
         // Low step: up, forward, down.
         if (wasOnGround && blockedByWall && intended.lengthSquared() > 1e-10f) {
@@ -142,7 +166,8 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
             if (n.y < cosSlope || touches.separations[k] > .04f) continue
             gn += n; ground = touches.bodies[k]; material = touches.materials[k]; groundPoint = touches.points[k]
         }
-        onGround = ground != -2 && fall <= .01f
+        onGround = (ground != -2 && fall <= .01f) || onRims
+        if (onRims && ground == -2) gn = Vec3.UP
         if (onGround) {
             groundNormal = gn.normalized(); groundMaterial = material
             groundBody = if (ground >= 0) Body(world, ground) else null
@@ -183,6 +208,18 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
     /** Feet height when resting on [hit] from [groundUnder] at [feet]. */
     private fun rest(feet: Vec3, hit: RayHit) = feet.y + LIFT - hit.distance
 
+    /** Deepest overlap with what does not move by itself (static, kinematic, meshes), in metres. */
+    private fun embedded(feet: Vec3): Float {
+        gather(feet, 0f)
+        var worst = 0f
+        for (k in 0 until touches.size) {
+            val b = touches.bodies[k]
+            if (b >= 0 && world.types[b] == BodyType.DYNAMIC) continue
+            worst = max(worst, -touches.separations[k])
+        }
+        return worst
+    }
+
     private fun penetrating(feet: Vec3): Boolean {
         gather(feet, 0f)
         for (k in 0 until touches.size) if (touches.separations[k] < -.003f) return true
@@ -203,6 +240,8 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
             val q = up + dir * forward
             if (penetrating(q)) return null
             val hit = groundUnder(q, stepHeight + .05f) ?: return null
+            // The step's height is where the capsule touches it (its edge or top), not where it would rest.
+            if (hit.point.y - position.y > stepHeight + .01f) return null
             if (hit.normal.y < cosSlope) continue
             val y = rest(q, hit)
             val rise = y - position.y
@@ -214,5 +253,6 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
     private companion object {
         val DOWN = Vec3(0f, -1f, 0f)
         const val LIFT = .05f
+        const val MAX_PUSH = .25f
     }
 }

@@ -8,6 +8,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** What a ray met: [distance] along the ray, the [point] and surface [normal], then the [body] or the mesh [material]. */
+/** What a ray or a sphere sweep met: [distance] travelled, [point] where it touches (on the surface), [normal] there. */
 class RayHit(val distance: Float, val point: Vec3, val normal: Vec3, val body: Body?, val material: Material?)
 
 /** Pose of body [i] from its current position and rotation (queries run between steps). */
@@ -37,7 +38,7 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
             is Capsule -> rayCapsule(origin, d, pose.p - pose.ay * shape.halfHeight, pose.p + pose.ay * shape.halfHeight, shape.radius + radius)
             is Box -> rayBox(origin, d, pose, shape.halfX + radius, shape.halfY + radius, shape.halfZ + radius)
         } ?: continue
-        if (r.first < best) { best = r.first; hit = RayHit(r.first, origin + d * r.first, r.second, Body(this, i), null) }
+        if (r.first < best) { best = r.first; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, Body(this, i), null) }
     }
     if (meshes && radius > 0f) {
         val stack = IntList(); val found = IntList()
@@ -51,7 +52,7 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
                 val t = found[f]; val o = 9 * t
                 val r = sweepTriangle(origin, d, radius, Vec3(v[o], v[o + 1], v[o + 2]), Vec3(v[o + 3], v[o + 4], v[o + 5]),
                     Vec3(v[o + 6], v[o + 7], v[o + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), best) ?: continue
-                if (r.first <= best) { best = r.first; hit = RayHit(r.first, origin + d * r.first, r.second, null, mesh.palette[mesh.material[t]]) }
+                if (r.first <= best) { best = r.first; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, null, mesh.palette[mesh.material[t]]) }
             }
         }
     } else if (meshes) {
@@ -154,6 +155,21 @@ private fun rayBox(o: Vec3, d: Vec3, pose: Pose, hx: Float, hy: Float, hz: Float
     }
     if (axis < 0) return 0f to -d                       // origin inside the box
     return t0 to pose.axis(axis) * sign
+}
+
+/** What a shape placed somewhere touches: see [PhysicsWorld.overlaps]. */
+class Overlap(val body: Body?, val material: Material?, val point: Vec3, val normal: Vec3, val separation: Float)
+
+/**
+ * Contacts of [shape] placed at [position] and [rotation] with the world, without adding it: bodies
+ * (except [exclude]) and static meshes (null [Overlap.body]) closer than [margin]. Normals point from
+ * the obstacle to the shape; a negative separation is an overlap. Mesh triangles count only from the
+ * front, as for bodies.
+ */
+fun PhysicsWorld.overlaps(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, margin: Float = 0f, exclude: Body? = null): List<Overlap> {
+    val t = Touches()
+    touching(shape, poseOf(position, rotation.normalized()), margin, exclude?.id ?: -1, t)
+    return List(t.size) { k -> Overlap(if (t.bodies[k] >= 0) Body(this, t.bodies[k]) else null, t.materials[k], t.points[k], t.normals[k], t.separations[k]) }
 }
 
 /** Contacts of [shape] placed at [pose] with the world, normals pointing from the obstacle to the shape. */

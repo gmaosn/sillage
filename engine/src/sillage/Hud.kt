@@ -27,7 +27,18 @@ internal object Hud {
         ':' to "00000/00100/00100/00000/00100/00100/00000", '.' to "00000/00000/00000/00000/00000/00100/00100"
     ).mapValues { it.value.split('/') }
 
+    private var cle: List<Any>? = null
+    private var dernier: Maillage? = null
+
+    /** L'interface ne change que quand ce qu'elle affiche change : elle n'est refaite qu'alors. */
     fun construire(monde: Monde, fps: Int, captureSouris: Boolean): Maillage {
+        val k=listOf(monde.recoltes,monde.coquillages.size,fps,captureSouris)
+        dernier?.let { if(k==cle) return it }
+        cle=k
+        return refaire(monde,fps,captureSouris).also { dernier=it }
+    }
+
+    private fun refaire(monde: Monde, fps: Int, captureSouris: Boolean): Maillage {
         val g=Geometrie()
         val ink=Couleur.srgb(0x153d48); val paper=Couleur.srgb(0xffedbe); val gold=Couleur.srgb(0xffce6e)
         fun rect(x: Float,y: Float,w: Float,h: Float,c: Couleur) {

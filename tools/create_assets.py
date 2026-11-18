@@ -51,7 +51,10 @@ def norm(a):
 class Mesh:
     def __init__(self): self.groups = {}
 
-    def tri(self, a, b, c, mat): self.groups.setdefault(mat, []).extend([a, b, c])
+    def tri(self, a, b, c, mat):
+        n = cross(sub(b, a), sub(c, a))
+        if dot(n, n) < 1e-16: return              # triangle sans aire (pointe d'un cône, pôle d'une sphère)
+        self.groups.setdefault(mat, []).extend([a, b, c])
     def quad(self, a, b, c, d, mat): self.tri(a, b, c, mat); self.tri(a, c, d, mat)
 
     def face(self, pts, mat, toward):
