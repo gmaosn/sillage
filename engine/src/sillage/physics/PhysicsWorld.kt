@@ -139,6 +139,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     /** Pairs and contact points of the last step (diagnostics). */
     val pairCount get() = pairsA.size
     val contactCount get() = previous.size
+    /** Sum of the normal impulses on [body] during the last substep (diagnostics; ≈ m·g·h at rest). */
+    internal fun normalImpulseOn(body: Int): Float {
+        var t = 0f
+        for (k in 0 until previous.size) if (previous.a[k] == body || previous.b[k] == body) t += previous.d[k * C + CLN]
+        return t
+    }
 
     // ------------------------------------------------------------------ bodies
 
@@ -461,10 +467,18 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 if (mB > 0f) { val rb = rB cross dir; kk += rb dot mulInvInertia(b, rb) }
                 return if (kk > 0f) 1f / kk else 0f
             }
-            val t1 = tangent(n); val t2 = n cross t1
+            // First friction direction along the sliding velocity (Bullet's choice): a sliding contact is
+            // then braked by exactly μ·N whatever its direction, the second direction barely works.
+            relative(a, b, o)
+            val vn0 = rvx * n.x + rvy * n.y + rvz * n.z
+            val vt = Vec3(rvx - vn0 * n.x, rvy - vn0 * n.y, rvz - vn0 * n.z)
+            val t1 = if (vt.lengthSquared() > 1e-4f) vt.normalized() else tangent(n)
+            val t2 = n cross t1
             d[o + CT1] = t1.x; d[o + CT1 + 1] = t1.y; d[o + CT1 + 2] = t1.z
             d[o + CT2] = t2.x; d[o + CT2 + 1] = t2.y; d[o + CT2 + 2] = t2.z
             d[o + CNM] = effectiveMass(n); d[o + CT1M] = effectiveMass(t1); d[o + CT2M] = effectiveMass(t2)
+            val f = Vec3(d[o + CWF], d[o + CWF + 1], d[o + CWF + 2])
+            d[o + CLT1] = f dot t1; d[o + CLT2] = f dot t2
             relative(a, b, o)
             d[o + CREL] = rvx * n.x + rvy * n.y + rvz * n.z
             d[o + CMAXN] = 0f
@@ -491,7 +505,45 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             st[o + 1] = (st[o + 1] + h * (gy * gs + fy[i] * m)) * ld
             st[o + 2] = (st[o + 2] + h * (gz * gs + fz[i] * m)) * ld
             st[o + 3] *= ad; st[o + 4] *= ad; st[o + 5] *= ad
+            if (gyroscopic) gyroscopic(i, h)
         }
+    }
+
+    /** Includes the gyroscopic torque −ω × (Iω), so a body spinning alone keeps its angular momentum. */
+    var gyroscopic = true
+
+    /**
+     * Implicit gyroscopic step (E. Catto, GDC 2015): one Newton iteration in body space,
+     * ω' = ω − J⁻¹ f with f = h ω × (Iω) and J = I + h ([ω]× I − [Iω]×). Stable at any spin rate.
+     */
+    private fun gyroscopic(i: Int, h: Float) {
+        val a = ilx[i]; val b = ily[i]; val c = ilz[i]
+        if (a == b && b == c) return                                   // sphere-like: no gyroscopic torque
+        val o = i * S
+        val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
+        // ω in body space: Rᵀ ω.
+        val wx0 = st[o + 3]; val wy0 = st[o + 4]; val wz0 = st[o + 5]
+        val tx = 2f * (-y * wz0 + z * wy0); val ty = 2f * (-z * wx0 + x * wz0); val tz = 2f * (-x * wy0 + y * wx0)
+        val bx = wx0 + w * tx + (-y * tz + z * ty); val by = wy0 + w * ty + (-z * tx + x * tz); val bz = wz0 + w * tz + (-x * ty + y * tx)
+        val ix = 1f / a; val iy = 1f / b; val iz = 1f / c
+        val lx = ix * bx; val ly = iy * by; val lz = iz * bz                // I ω
+        val fx = h * (by * lz - bz * ly); val fy = h * (bz * lx - bx * lz); val fz = h * (bx * ly - by * lx)
+        // J = I + h (skew(ω) I − skew(Iω)), skew(v) u = v × u.
+        val j00 = ix; val j01 = h * (-bz * iy + lz); val j02 = h * (by * iz - ly)
+        val j10 = h * (bz * ix - lz); val j11 = iy; val j12 = h * (-bx * iz + lx)
+        val j20 = h * (-by * ix + ly); val j21 = h * (bx * iy - lx); val j22 = iz
+        val det = j00 * (j11 * j22 - j12 * j21) - j01 * (j10 * j22 - j12 * j20) + j02 * (j10 * j21 - j11 * j20)
+        if (abs(det) < 1e-12f) return
+        val inv = 1f / det
+        val dx = inv * ((j11 * j22 - j12 * j21) * fx + (j02 * j21 - j01 * j22) * fy + (j01 * j12 - j02 * j11) * fz)
+        val dy = inv * ((j12 * j20 - j10 * j22) * fx + (j00 * j22 - j02 * j20) * fy + (j02 * j10 - j00 * j12) * fz)
+        val dz = inv * ((j10 * j21 - j11 * j20) * fx + (j01 * j20 - j00 * j21) * fy + (j00 * j11 - j01 * j10) * fz)
+        val nx = bx - dx; val ny = by - dy; val nz = bz - dz
+        // Back to world space: R ω.
+        val ux = 2f * (y * nz - z * ny); val uy = 2f * (z * nx - x * nz); val uz = 2f * (x * ny - y * nx)
+        st[o + 3] = nx + w * ux + (y * uz - z * uy)
+        st[o + 4] = ny + w * uy + (z * ux - x * uz)
+        st[o + 5] = nz + w * uz + (x * uy - y * ux)
     }
 
     private fun integratePositions(h: Float) {
@@ -641,6 +693,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             val a = c.a[k]; val b = c.b[k]; val o = k * C
             val limit = d[o + CFR] * d[o + CLN]
             relative(a, b, o)
+            // Friction, one direction after the other (Gauss–Seidel), each bounded by μ·λn. Since the
+            // first direction follows the sliding velocity, sliding friction is isotropic and exact.
             val t1x = d[o + CT1]; val t1y = d[o + CT1 + 1]; val t1z = d[o + CT1 + 2]
             val old1 = d[o + CLT1]
             val new1 = (old1 - d[o + CT1M] * (rvx * t1x + rvy * t1y + rvz * t1z)).coerceIn(-limit, limit)
@@ -727,12 +781,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
 // Solver data of one contact point, contiguous (C floats): normal, anchors, tangents, masses,
 // accumulated impulses, material.
-private const val C = 32
+private const val C = 36
 private const val CNX = 0; private const val CRA = 3; private const val CRB = 6; private const val CT1 = 9; private const val CT2 = 12
 private const val CADJ = 15; private const val CNM = 16; private const val CT1M = 17; private const val CT2M = 18
 private const val CLN = 19; private const val CLT1 = 20; private const val CLT2 = 21; private const val CMAXN = 22
 private const val CFR = 23; private const val CSTATIC = 24; private const val CRL = 25; private const val CRM = 26
-private const val CLR = 27; private const val CREL = 30; private const val CREST = 31
+private const val CLR = 27; private const val CREL = 30; private const val CREST = 31; private const val CWF = 33  // last step's friction impulse, world
 
 /** Contact points of one step: solver data packed per point, plus what warm starting needs. */
 internal class ContactSet {
@@ -782,7 +836,9 @@ internal class ContactSet {
                 }
                 if (bestJ >= 0) {
                     val p = bestJ * C; val pd = prev.d
-                    d[o + CLN] = pd[p + CLN]; d[o + CLT1] = pd[p + CLT1]; d[o + CLT2] = pd[p + CLT2]
+                    d[o + CLN] = pd[p + CLN]
+                    // The friction basis follows the sliding velocity: carry the impulse over as a world vector.
+                    for (j in 0..2) d[o + CWF + j] = pd[p + CT1 + j] * pd[p + CLT1] + pd[p + CT2 + j] * pd[p + CLT2]
                     d[o + CLR] = pd[p + CLR]; d[o + CLR + 1] = pd[p + CLR + 1]; d[o + CLR + 2] = pd[p + CLR + 2]
                 }
             }
