@@ -392,8 +392,14 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             val margin = min(1f, speculativeDistance + (speed(i) + speed(j)) * dt)
             scratch.clear()
             collide(shapes[i]!!, poses[i]!!, shapes[j]!!, poses[j]!!, margin, scratch)
+            // A kinematic body sets the bounce of what it touches: a character is soft (0), a paddle may be bouncy.
+            val e = when {
+                types[i] == BodyType.KINEMATIC -> restitution[i]
+                types[j] == BodyType.KINEMATIC -> restitution[j]
+                else -> max(restitution[i], restitution[j])
+            }
             if (scratch.count > 0) points.addAll(scratch, i, j, (i.toLong() shl 32) or j.toLong(),
-                sqrt(friction[i] * friction[j]), max(restitution[i], restitution[j]), poses[j]!!, previous)
+                sqrt(friction[i] * friction[j]), e, poses[j]!!, previous)
         }
         for ((m, mesh) in meshes.withIndex()) {
             val v = mesh.v; val n = mesh.n

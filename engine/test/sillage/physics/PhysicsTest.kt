@@ -182,4 +182,32 @@ class PhysicsTest {
         assertTrue(hypot(top.x, top.z) < .02f, "le haut de la pile a bougé : $top")
         assertEquals(.35f + 2 * .7f, top.y, .03f)
     }
+
+    /** Le ballon de la démo, poussé par le héros (capsule cinématique à 4,4 m/s). */
+    private fun ballonPousse(): Pair<Float, Float> {
+        val w = PhysicsWorld(); ground(w)
+        val ball = w.add(Sphere(.35f), Vec3(0f, .36f, 0f), mass = .6f, friction = .5f, restitution = .65f, rollingResistance = .05f)
+        ball.angularDamping = .1f
+        ball.linearDamping = BALLON_AIR
+        val hero = w.add(Capsule(.28f, .62f), Vec3(-2f, .9f, 0f), type = BodyType.KINEMATIC)
+        var vmax = 0f; var t = 0f; var after1s = -1f; var hit = -1f
+        while (t < 3f) {
+            if (t < 1.2f) hero.moveTo(hero.position + Vec3(4.4f * dt, 0f, 0f), dt) else hero.velocity = Vec3.ZERO
+            w.step(dt); t += dt
+            val v = ball.velocity.length()
+            if (v > .1f && hit < 0f) hit = t
+            vmax = max(vmax, v)
+            if (after1s < 0f && t > 2.2f) after1s = v          // une seconde après l'arrêt du héros
+        }
+        return vmax to after1s
+    }
+
+    @Test fun leHerosPousseLeBallonSansLeFaireGicler() {
+        val (vmax, after) = ballonPousse()
+        println("BALLON vitesse max ${"%.2f".format(vmax)} m/s, une seconde après l'arrêt du héros ${"%.2f".format(after)} m/s")
+        assertTrue(vmax < 4.4f * 1.15f, "le ballon part plus vite que le héros : $vmax m/s")
+        assertTrue(after < 3f, "le ballon ne ralentit pas : $after m/s")
+    }
 }
+
+private const val BALLON_AIR = .8f

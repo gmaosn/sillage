@@ -72,6 +72,7 @@ class Monde {
         val b = corps.add(Sphere(rayon), Vec3(x,sol(x,z)+rayon+hauteur+.01f,z), mass = .6f, friction = .5f, restitution = .65f,
             rollingResistance = .05f)
         b.angularDamping = .1f
+        b.linearDamping = .8f        // un ballon de plage léger freine vite dans l'air
         return lier(o,b)
     }
     /** Hauteur du terrain en (x, z), 0 hors de l'île. */
