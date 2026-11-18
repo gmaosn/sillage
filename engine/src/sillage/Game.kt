@@ -4,9 +4,33 @@ import sillage.math.Mat4
 import sillage.math.Vec3
 import org.lwjgl.glfw.GLFW.*
 import org.lwjgl.glfw.GLFWErrorCallback
+import org.lwjgl.glfw.GLFWNativeWayland
+import org.lwjgl.glfw.GLFWNativeX11
 import org.lwjgl.glfw.Callbacks.glfwFreeCallbacks
+import sillage.vk.*
+import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.nio.file.Path
 import kotlin.math.*
+
+/** Fenêtre GLFW provisoire (remplacée à l'étape 2) : ne fournit que les poignées natives Wayland ou X11. */
+private class GlfwSurface(private val window: Long) : SurfaceSource {
+    private val wayland = glfwGetPlatform() == GLFW_PLATFORM_WAYLAND
+    override val instanceExtensions = listOf(VK_KHR_SURFACE_EXTENSION_NAME,
+        if (wayland) VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME else VK_KHR_XLIB_SURFACE_EXTENSION_NAME)
+    override fun createSurface(vk: VkInstanceApi, stack: NativeStack): Long = stack.frame { s ->
+        val out = s.allocate(JAVA_LONG)
+        if (wayland) vk.createWaylandSurfaceKHR(s.struct(VkWaylandSurfaceCreateInfoKHR,
+            "display" to GLFWNativeWayland.glfwGetWaylandDisplay(), "surface" to GLFWNativeWayland.glfwGetWaylandWindow(window)), out)
+        else vk.createXlibSurfaceKHR(s.struct(VkXlibSurfaceCreateInfoKHR,
+            "dpy" to GLFWNativeX11.glfwGetX11Display(), "window" to GLFWNativeX11.glfwGetX11Window(window)), out)
+        out.get(JAVA_LONG, 0)
+    }
+    override fun framebufferSize(): IntArray {
+        val w = IntArray(1); val h = IntArray(1)
+        glfwGetFramebufferSize(window, w, h)
+        return intArrayOf(w[0], h[0])
+    }
+}
 
 internal class Game(private val titre: String,private val monde: Monde,private val args: Array<String>) {
     fun run() {
@@ -37,7 +61,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 window=glfwCreateWindow(1280,800,titre+" - Les Alizés",0L,0L)
                 check(window!=0L) { "Création de fenêtre impossible" }
             }
-            val r=VulkanRenderer(window,"--validation" in args)
+            val r=VulkanRenderer(if(window!=0L) GlfwSurface(window) else null,"--validation" in args)
             renderer=r; r.ouvrir()
             var captured=!headless
             var focused=true

@@ -4,10 +4,12 @@ settings:
   jvm:
     jdk:
       version: 25
+    test:
+      freeJvmArgs:
+        - --enable-native-access=ALL-UNNAMED
 
 dependencies:
   - org.lwjgl:lwjgl:3.3.6
   - org.lwjgl:lwjgl-glfw:3.3.6
-  - org.lwjgl:lwjgl-vulkan:3.3.6
   - org.lwjgl:lwjgl:3.3.6:natives-linux: runtime-only
   - org.lwjgl:lwjgl-glfw:3.3.6:natives-linux: runtime-only
