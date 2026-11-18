@@ -396,9 +396,11 @@ private fun triangleSphere(t: Tri, c: Vec3, r: Float, margin: Float, out: Contac
     if (l > r + margin) return
     val mask = edgeMask(t, q)
     if (mask != 0 && (mask and t.edges) == 0) {
-        // Seam between flat neighbours: take the face normal, not the one towards the edge.
+        // Seam between flat neighbours: take the face normal, not the one towards the edge. The point
+        // must lie under the centre along that normal: an off-centre point would turn with a rolling
+        // ball and fake a penetration (the ball then jumps at the seam).
         val s = height - r
-        if (s <= margin) out.add(q + t.n * (s * .5f), t.n, s, feature)
+        if (s <= margin) out.add(c - t.n * (r + s * .5f), t.n, s, feature)
         return
     }
     val n = if (l > 1e-6f) d / l else t.n

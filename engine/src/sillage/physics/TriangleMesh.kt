@@ -19,8 +19,19 @@ class IntList(capacity: Int = 16) {
  * Triangles are one-sided: the front is the side of the counter-clockwise normal (b − a) × (c − a);
  * bodies are pushed out towards the front. Degenerate triangles are dropped.
  */
-class TriangleMesh(triangles: FloatArray) {
-    init { require(triangles.size % 9 == 0) { "A triangle mesh needs 9 floats per triangle" } }
+class TriangleMesh(triangles: FloatArray, materialIds: IntArray? = null, palette: List<Material> = listOf(Material.DEFAULT)) {
+    init {
+        require(triangles.size % 9 == 0) { "A triangle mesh needs 9 floats per triangle" }
+        require(materialIds == null || materialIds.size == triangles.size / 9) { "One material index per triangle" }
+        require(palette.isNotEmpty()) { "A mesh needs at least one material" }
+    }
+
+    /** One material for every triangle. */
+    constructor(triangles: FloatArray, material: Material) : this(triangles, null, listOf(material))
+
+    internal val palette: List<Material> = palette.toList()
+    /** Material of each kept triangle, as an index in [palette]. */
+    internal val material: IntArray
 
     /** a, b, c of each kept triangle. */
     internal val v: FloatArray
@@ -43,7 +54,7 @@ class TriangleMesh(triangles: FloatArray) {
     private var nodes = 0
 
     init {
-        val keptV = ArrayList<Float>(); val keptN = ArrayList<Float>()
+        val keptV = ArrayList<Float>(); val keptN = ArrayList<Float>(); val keptM = ArrayList<Int>()
         for (t in 0 until triangles.size / 9) {
             val o = t * 9
             val ux = triangles[o + 3] - triangles[o]; val uy = triangles[o + 4] - triangles[o + 1]; val uz = triangles[o + 5] - triangles[o + 2]
@@ -53,7 +64,9 @@ class TriangleMesh(triangles: FloatArray) {
             if (l < 1e-9f) continue
             for (k in 0 until 9) keptV.add(triangles[o + k])
             keptN.add(nx / l); keptN.add(ny / l); keptN.add(nz / l)
+            keptM.add((materialIds?.get(t) ?: 0).let { if (it in palette.indices) it else 0 })
         }
+        material = keptM.toIntArray()
         v = keptV.toFloatArray(); n = keptN.toFloatArray(); count = n.size / 3
         edges = activeEdges()
         val maxNodes = maxOf(1, 2 * count)

@@ -7,6 +7,7 @@ import sillage.physics.BodyType
 import sillage.physics.Body
 import sillage.physics.Box
 import sillage.physics.Capsule
+import sillage.physics.Material
 import sillage.physics.PhysicsWorld
 import sillage.physics.Sphere
 import sillage.physics.TriangleMesh
@@ -44,10 +45,16 @@ class Monde {
         o.position=Vec3(x,y,z); o.echelle=taille; objets.add(o)
         return o
     }
-    fun terrain(glb: String): Objet = modele(glb).also {
+    /**
+     * Sol du monde. Chaque matériau du GLB devient une surface physique d'après son nom (herbe, sable,
+     * bois, pierre, route, glace…, voir Material.named) ; [surfaces] permet d'en préciser ou d'en ajouter.
+     */
+    fun terrain(glb: String, surfaces: Map<String, Material> = emptyMap()): Objet = modele(glb).also {
         physique.surfaces.addAll(it.maillage.triangles)
-        val v = it.maillage.sommets
-        corps.addMesh(TriangleMesh(FloatArray(v.size / 3) { k -> v[(k / 3) * 9 + k % 3] }))
+        val m = modeles.getValue(glb)
+        val (positions, ids) = m.surfaces()
+        val palette = m.materiaux.map { nom -> surfaces[nom] ?: Material.named(nom) } + Material.DEFAULT
+        corps.addMesh(TriangleMesh(positions, IntArray(ids.size) { k -> if (ids[k] >= 0) ids[k] else palette.size - 1 }, palette))
     }
     /** Boîte de collision. [camera] = faux pour un objet fin (tronc, tonneau) que la caméra peut longer sans se rapprocher. */
     fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) {

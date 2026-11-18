@@ -169,4 +169,79 @@ class RealismeTest {
         println("REALISME 100 kg posés sur 1 kg (8 sous-pas) : enfoncement ${"%.1f".format(s100 * 1000)} mm, dérive ${"%.1f".format(d100 * 1000)} mm")
         assertTrue(s100 < .04f && d100 < .01f)
     }
+
+    // ------------------------------------------------------------------ surfaces
+
+    private fun plane(w: PhysicsWorld, material: Material) =
+        w.addMesh(TriangleMesh(floatArrayOf(-60f, 0f, -60f, -60f, 0f, 60f, 60f, 0f, 60f, -60f, 0f, -60f, 60f, 0f, 60f, 60f, 0f, -60f), material))
+
+    /** A ball (r = 0.3 m, no rolling resistance of its own) launched rolling at [v] m/s: distance until it stops. */
+    private fun rollDistance(material: Material, v: Float): Float {
+        val w = PhysicsWorld(); plane(w, material)
+        val ball = w.add(Sphere(.3f), Vec3(-55f, .3f, 0f), rollingResistance = 0f)
+        repeat(5) { w.step(dt) }
+        ball.velocity = Vec3(v, 0f, 0f); ball.angularVelocity = Vec3(0f, 0f, -v / .3f)
+        val start = ball.position.x
+        var steps = 0
+        while (steps < 60 * 60 && (steps < 10 || ball.velocity.length() > .02f)) { w.step(dt); steps++ }
+        return ball.position.x - start
+    }
+
+    @Test fun uneBalleRouleMoinsLoinDansLHerbeQueSurLaRoute() {
+        fun theory(rr: Float, v: Float) = v * v / (2f * 5f / 7f * rr * g)
+        val road = report("boule lancée à 3 m/s sur la route, distance (m)", rollDistance(Material.ROAD, 3f), theory(.015f, 3f))
+        val grass = report("boule lancée à 3 m/s dans l'herbe, distance (m)", rollDistance(Material.GRASS, 3f), theory(.12f, 3f))
+        val sand = report("boule lancée à 3 m/s dans le sable, distance (m)", rollDistance(Material.SAND, 3f), theory(.3f, 3f))
+        assertTrue(road < .1f && grass < .1f && sand < .1f)
+    }
+
+    @Test fun uneBalleQuiQuitteLaRoutePourLHerbe() {
+        val w = PhysicsWorld()
+        // Route pour x < 0, herbe pour x > 0.
+        w.addMesh(TriangleMesh(floatArrayOf(
+            -60f, 0f, -60f, -60f, 0f, 60f, 0f, 0f, 60f, -60f, 0f, -60f, 0f, 0f, 60f, 0f, 0f, -60f,
+            0f, 0f, -60f, 0f, 0f, 60f, 60f, 0f, 60f, 0f, 0f, -60f, 60f, 0f, 60f, 60f, 0f, -60f),
+            intArrayOf(0, 0, 1, 1), listOf(Material.ROAD, Material.GRASS)))
+        val ball = w.add(Sphere(.3f), Vec3(-5f, .3f, 0f), rollingResistance = 0f)
+        repeat(5) { w.step(dt) }
+        ball.velocity = Vec3(3f, 0f, 0f); ball.angularVelocity = Vec3(0f, 0f, -10f)
+        repeat(60 * 15) { w.step(dt) }
+        val vAtEdge = sqrt(9f - 2f * 5f / 7f * .015f * g * 5f)
+        assertTrue(report("boule passant de la route à l'herbe, arrêt après la lisière (m)", ball.position.x, vAtEdge * vAtEdge / (2f * 5f / 7f * .12f * g)) < .1f)
+    }
+
+    @Test fun uneCaisseGlisseLoinSurLaGlace() {
+        fun slide(material: Material): Float {
+            val w = PhysicsWorld(); plane(w, material)
+            val b = w.add(Box(.4f, .4f, .4f), Vec3(-50f, .4f, 0f), friction = .6f)
+            repeat(10) { w.step(dt) }
+            b.velocity = Vec3(3f, 0f, 0f)
+            repeat(60 * 6) { w.step(dt) }
+            return b.position.x + 50f
+        }
+        val ice = report("caisse lancée à 3 m/s sur la glace, distance (m)", slide(Material.ICE), 9f / (2f * sqrt(.03f * .6f) * g))
+        val grass = report("caisse lancée à 3 m/s sur l'herbe, distance (m)", slide(Material.GRASS), 9f / (2f * sqrt(.7f * .6f) * g))
+        assertTrue(ice < .05f && grass < .05f)
+    }
+
+    @Test fun lHerbeAmortitLesRebonds() {
+        fun apex(material: Material): Float {
+            val w = PhysicsWorld(); plane(w, material)
+            val s = w.add(Sphere(.5f), Vec3(0f, 2.5f, 0f), restitution = .8f, rollingResistance = 0f)
+            var touched = false; var top = 0f
+            repeat(150) { w.step(dt); if (s.velocity.y > 0f) touched = true; if (touched) top = max(top, s.position.y) }
+            return top - .5f
+        }
+        val stone = report("rebond e=0,8 sur la pierre, hauteur reprise sur 2 m (m)", apex(Material.STONE), 2f * .8f * .8f)
+        val grass = report("rebond e=0,8 dans l'herbe (×0,6), hauteur reprise (m)", apex(Material.GRASS), 2f * .48f * .48f)
+        assertTrue(stone < .06f && grass < .06f)
+    }
+
+    @Test fun lesNomsDeMateriauxDeBlenderDonnentDesSurfaces() {
+        assertEquals(Material.GRASS, Material.named("herbe"))
+        assertEquals(Material.SAND, Material.named("Sable.001"))
+        assertEquals(Material.WOOD, Material.named("bois"))
+        assertEquals(Material.ROAD, Material.named("Asphalt"))
+        assertEquals(Material.DEFAULT, Material.named("lin"))
+    }
 }

@@ -123,6 +123,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     internal var friction = FloatArray(0); internal var restitution = FloatArray(0)
     internal var linearDamping = FloatArray(0); internal var angularDamping = FloatArray(0); internal var gravityScale = FloatArray(0)
     internal var rolling = FloatArray(0); private var rollRadius = FloatArray(0)
+    /** Spheres look the same however they turn: their contact anchors need not rotate. */
+    private var round = BooleanArray(0)
     internal var sleeping = BooleanArray(0); private var sleepClock = FloatArray(0)
     private var fx = FloatArray(0); private var fy = FloatArray(0); private var fz = FloatArray(0)
     private var q0 = FloatArray(0)
@@ -130,7 +132,6 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private var poses = arrayOfNulls<Pose>(0)
 
     private val meshes = ArrayList<TriangleMesh>()
-    private val meshFriction = ArrayList<Float>()
 
     val bodyCount get() = count
     /** When true, [phaseNanos] accumulates time per phase: bodies, pairs, contacts, prepare, warm start, solve, relax, sleep. */
@@ -158,7 +159,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         ilx = ilx.copyOf(c); ily = ily.copyOf(c); ilz = ilz.copyOf(c)
         friction = friction.copyOf(c); restitution = restitution.copyOf(c)
         linearDamping = linearDamping.copyOf(c); angularDamping = angularDamping.copyOf(c); gravityScale = gravityScale.copyOf(c)
-        rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c)
+        rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c); round = round.copyOf(c)
         sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c)
         fx = fx.copyOf(c); fy = fy.copyOf(c); fz = fz.copyOf(c)
         q0 = q0.copyOf(4 * c); box = box.copyOf(6 * c); poses = poses.copyOf(c)
@@ -188,14 +189,20 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         this.friction[i] = friction; this.restitution[i] = restitution; gravityScale[i] = 1f
         // Les boules et capsules finissent par s'arrêter de rouler (sinon un tas ne s'endort jamais).
         rollRadius[i] = when (shape) { is Sphere -> shape.radius; is Capsule -> shape.radius; else -> 0f }
+        round[i] = shape is Sphere
         rolling[i] = rollingResistance ?: if (rollRadius[i] > 0f) .02f else 0f
         return Body(this, i)
     }
 
     fun body(id: Int): Body { require(id in 0 until count); return Body(this, id) }
 
-    /** Adds static triangles (terrain, buildings). */
-    fun addMesh(mesh: TriangleMesh, friction: Float = .6f) { meshes.add(mesh); meshFriction.add(friction) }
+    /** Adds static triangles (terrain, buildings); each triangle carries its [Material]. */
+    fun addMesh(mesh: TriangleMesh) { meshes.add(mesh) }
+
+    /** Adds static triangles that all have the sliding friction [friction] (default material otherwise). */
+    fun addMesh(mesh: TriangleMesh, friction: Float) {
+        meshes.add(TriangleMesh(mesh.v, null, listOf(Material(friction = friction))))
+    }
 
     internal fun wake(i: Int) { sleeping[i] = false; sleepClock[i] = 0f }
 
@@ -422,9 +429,11 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                         Vec3(v[9 * t + 6], v[9 * t + 7], v[9 * t + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), mesh.edges[t])
                     scratch.clear()
                     collideTriangle(tri, shapes[b]!!, poses[b]!!, margin, scratch)
+                    val surface = mesh.palette[mesh.material[t]]
                     if (scratch.count > 0) points.addAll(scratch, -1, b,
                         Long.MIN_VALUE or (m.toLong() shl 55) or (b.toLong() shl 24) or t.toLong(),
-                        sqrt(meshFriction[m] * friction[b]), restitution[b], poses[b]!!, previous)
+                        sqrt(surface.friction * friction[b]), restitution[b] * surface.bounce, poses[b]!!, previous,
+                        surface.rollingResistance)
                 }
             }
         }
@@ -483,7 +492,9 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             d[o + CREL] = rvx * n.x + rvy * n.y + rvz * n.z
             d[o + CMAXN] = 0f
             // Résistance au roulement : couple borné par μr × rayon × force normale.
-            val rl = max(if (a >= 0) rolling[a] * rollRadius[a] else 0f, rolling[b] * rollRadius[b])
+            // Ground surface (soft grass, sand) or the body itself, whichever resists rolling more.
+            val rl = max(max(if (a >= 0) rolling[a] * rollRadius[a] else 0f, rolling[b] * rollRadius[b]),
+                d[o + CRL] * rollRadius[b])
             d[o + CRL] = rl
             if (rl > 0f) {
                 var tr = 0f
@@ -641,7 +652,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private fun addRotated(i: Int, r: Int, sign: Float) {
         val d = points.d
         val x = d[r]; val y = d[r + 1]; val z = d[r + 2]
-        if (i < 0) { sx += sign * x; sy += sign * y; sz += sign * z; return }
+        // A turning sphere keeps the same surface under the contact: rotating its anchor would fake a gap.
+        if (i < 0 || round[i]) { sx += sign * x; sy += sign * y; sz += sign * z; return }
         val q = i * S + DQX
         val qx = st[q]; val qy = st[q + 1]; val qz = st[q + 2]; val qw = st[q + 3]
         val tx = 2f * (qy * z - qz * y); val ty = 2f * (qz * x - qx * z); val tz = 2f * (qx * y - qy * x)
@@ -809,7 +821,8 @@ internal class ContactSet {
     }
 
     /** Adds the points of one pair and picks up last step's impulses for matching points (warm start). */
-    fun addAll(src: ContactPoints, ia: Int, ib: Int, pairKey: Long, mu: Float, e: Float, poseB: Pose, prev: ContactSet) {
+    fun addAll(src: ContactPoints, ia: Int, ib: Int, pairKey: Long, mu: Float, e: Float, poseB: Pose, prev: ContactSet,
+               surfaceRolling: Float = 0f) {
         ensure(size + src.count)
         val prevStart = prev.byKey.get(pairKey)
         for (i in 0 until src.count) {
@@ -818,7 +831,7 @@ internal class ContactSet {
             x[k] = src.x[i]; y[k] = src.y[i]; z[k] = src.z[i]; sep[k] = src.sep[i]
             java.util.Arrays.fill(d, o, o + C, 0f)
             d[o + CNX] = src.nx[i]; d[o + CNX + 1] = src.ny[i]; d[o + CNX + 2] = src.nz[i]
-            d[o + CFR] = mu; d[o + CREST] = e
+            d[o + CFR] = mu; d[o + CREST] = e; d[o + CRL] = surfaceRolling
             val dx0 = x[k] - poseB.p.x; val dy0 = y[k] - poseB.p.y; val dz0 = z[k] - poseB.p.z
             val lxk = dx0 * poseB.ax.x + dy0 * poseB.ax.y + dz0 * poseB.ax.z
             val lyk = dx0 * poseB.ay.x + dy0 * poseB.ay.y + dz0 * poseB.ay.z

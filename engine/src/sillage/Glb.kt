@@ -95,7 +95,7 @@ object Glb {
                 when(type) {5121 -> buffer.get(o).toInt() and 255; 5123 -> buffer.getShort(o).toInt() and 65535; else -> buffer.getInt(o)}
             }
         }
-        /** Triangles of one glTF mesh in node space: 9 position floats then r, g, b per triangle. */
+        /** Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index. */
         fun triangles(meshIndex: Int): FloatArray {
             val out = ArrayList<Float>()
             val mesh = requireNotNull(doc.arr("meshes")) { "Maillages GLB absents" }.obj(meshIndex)
@@ -124,6 +124,7 @@ object Glb {
                             color.b * (cs[a][2].toDouble() + cs[b][2] + cs[c][2]).toFloat()/3) } ?: color
                     for (v in intArrayOf(a, b, c)) for (j in 0..2) out.add(positions[v][j])
                     out.add(vc.r); out.add(vc.g); out.add(vc.b)
+                    out.add((p.int("material") ?: -1).toFloat())
                 }
             }
             return out.toFloatArray()
@@ -182,6 +183,7 @@ object Glb {
             val nom = anim.string("name") ?: "animation$index"
             clips[nom] = Clip(nom, canaux)
         }
-        return Modele(noeuds, racines, clips)
+        val materialNames = doc.arr("materials")?.map { (it as Json.Obj).string("name") ?: "" } ?: emptyList()
+        return Modele(noeuds, racines, clips, materialNames)
     }
 }

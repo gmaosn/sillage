@@ -15,7 +15,7 @@ class Noeud internal constructor(
     val echelle: Vec3,
     /** Set when the GLB gives a `matrix` instead of TRS; such a node cannot be animated. */
     val matrice: Mat4?,
-    /** Per triangle: a, b, c (9 floats) then the colour r, g, b. */
+    /** Per triangle ([TRI] floats): a, b, c (9 floats), the colour r, g, b, then the material index (−1: none). */
     internal val triangles: FloatArray,
 ) {
     val local: Mat4 get() = matrice ?: Mat4.trs(translation, rotation, echelle)
@@ -38,7 +38,11 @@ class Clip internal constructor(val nom: String, val canaux: List<Canal>) {
 }
 
 /** A GLB scene kept as a hierarchy, with its animations. */
-class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray, val clips: Map<String, Clip>) {
+internal const val TRI = 13
+
+class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray, val clips: Map<String, Clip>,
+                                  /** Material names of the GLB, by index (as named in Blender). */
+                                  val materiaux: List<String> = emptyList()) {
     /** Node indices with every parent before its children, in scene order. */
     val ordre: IntArray = ArrayList<Int>().also { out ->
         val vus = BooleanArray(noeuds.size)
@@ -54,7 +58,7 @@ class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray
     private val maillagesLocaux: Map<Int, Maillage> by lazy {
         ordre.filter { noeuds[it].triangles.isNotEmpty() }.associateWith { i ->
             val g = Geometrie(); val t = noeuds[i].triangles
-            for (k in t.indices step 12)
+            for (k in t.indices step TRI)
                 g.triangle(Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]),
                     Couleur(t[k + 9], t[k + 10], t[k + 11]))
             g.construire()
@@ -69,7 +73,7 @@ class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray
             val monde = parent * n.local
             val miroir = monde.determinant3x3() < 0
             val t = n.triangles
-            for (k in t.indices step 12) {
+            for (k in t.indices step TRI) {
                 val a = monde.transformPoint(Vec3(t[k], t[k + 1], t[k + 2]))
                 val b = monde.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
                 val c = monde.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
@@ -81,6 +85,28 @@ class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray
         }
         for (r in racines) visiter(r, Mat4.IDENTITY)
         return g.construire()
+    }
+
+    /**
+     * The scene in its rest pose as world-space triangles for collision (9 floats each, same winding
+     * as [aplatir]) and, for each triangle, its material index in [materiaux] (−1: none).
+     */
+    fun surfaces(): Pair<FloatArray, IntArray> {
+        val pos = ArrayList<Float>(); val mat = ArrayList<Int>()
+        fun visiter(i: Int, parent: Mat4) {
+            val n = noeuds[i]
+            val monde = parent * n.local
+            val miroir = monde.determinant3x3() < 0
+            val t = n.triangles
+            for (k in t.indices step TRI) {
+                val pts = (0..2).map { v -> monde.transformPoint(Vec3(t[k + 3 * v], t[k + 3 * v + 1], t[k + 3 * v + 2])) }
+                for (p in if (miroir) listOf(pts[0], pts[2], pts[1]) else pts) { pos.add(p.x); pos.add(p.y); pos.add(p.z) }
+                mat.add(t[k + 12].toInt())
+            }
+            for (e in n.enfants) visiter(e, monde)
+        }
+        for (r in racines) visiter(r, Mat4.IDENTITY)
+        return pos.toFloatArray() to mat.toIntArray()
     }
 
     /** New parts for one instance: one per node that has triangles. */
