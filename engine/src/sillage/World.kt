@@ -19,6 +19,9 @@ class Monde {
     private val modeles = HashMap<String,Modele>()
     private val aplatis = HashMap<String,Maillage>()
     private var tempsEnLAir = 0f
+    /** Vrai quand le héros se déplace réellement (pas seulement quand on appuie contre un mur). */
+    var enMouvement = false
+        private set
 
     /** Place un modèle GLB. Un modèle qui contient des animations garde ses pièces et peut être animé. */
     fun modele(glb: String, x: Float = 0f, y: Float = 0f, z: Float = 0f, taille: Float = 1f): Objet {
@@ -30,14 +33,15 @@ class Monde {
         return o
     }
     fun terrain(glb: String): Objet = modele(glb).also { physique.surfaces.addAll(it.maillage.triangles) }
-    fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float) {
-        physique.obstacles.add(Boite(Vec3(x-largeur/2,y,z-profondeur/2),Vec3(x+largeur/2,y+hauteur,z+profondeur/2)))
+    /** Boîte de collision. [camera] = faux pour un objet fin (tronc, tonneau) que la caméra peut longer sans se rapprocher. */
+    fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) {
+        physique.obstacles.add(Boite(Vec3(x-largeur/2,y,z-profondeur/2),Vec3(x+largeur/2,y+hauteur,z+profondeur/2),camera))
     }
     /** Hauteur du terrain en (x, z), 0 hors de l'île. */
     fun sol(x: Float, z: Float): Float = physique.hauteur(x,z) ?: 0f
     /** Obstacle posé sur le terrain : sa base suit le sol. */
-    fun obstacleAuSol(x: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float) =
-        obstacle(x,sol(x,z),z,largeur,hauteur,profondeur)
+    fun obstacleAuSol(x: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) =
+        obstacle(x,sol(x,z),z,largeur,hauteur,profondeur,camera)
     fun heros(glb: String, x: Float=0f, y: Float=3f, z: Float=4f, config: Joueur.() -> Unit = {}) {
         joueur=Joueur(modele(glb),Vec3(x,y,z)).apply(config)
     }
@@ -78,6 +82,7 @@ class Monde {
         tempsEnLAir=if(joueur.auSol) 0f else tempsEnLAir+dt
         val dx=joueur.position.x-avant.x; val dz=joueur.position.z-avant.z
         val vitesse=if(dt>0f) sqrt(dx*dx+dz*dz)/dt else 0f
+        enMouvement=vitesse>.4f
         when {
             joueur.vitesseY>0f && !joueur.auSol && "jump" in clips -> a.jouer("jump",boucle=false,fondu=.08f,vitesse=1f)
             tempsEnLAir>.12f && "fall" in clips -> a.jouer("fall",boucle=false,fondu=.2f,vitesse=1f)
@@ -107,12 +112,36 @@ class Camera {
     var elevation=.38f
     var distance=7f
     var position=Vec3(0f,5f,10f)
-    fun tourner(dx: Float, dy: Float) { azimut-=dx*.0035f; elevation=(elevation+dy*.003f).coerceIn(.08f,1.25f) }
+    /** Élévation ajoutée pour passer au-dessus du relief, lissée. */
+    private var levee=0f
+    /** Secondes depuis le dernier mouvement de souris : la caméra ne pivote seule que si la souris est calme. */
+    private var calmeSouris=10f
+
+    fun tourner(dx: Float, dy: Float) { azimut-=dx*.0035f; elevation=(elevation+dy*.003f).coerceIn(.08f,1.25f); calmeSouris=0f }
     fun zoom(delta: Float) { distance=(distance-delta*.6f).coerceIn(2.5f,12f) }
+
+    private fun direction(az: Float, el: Float) = Vec3(sin(az)*cos(el),sin(el),cos(az)*cos(el))
+
     fun vue(monde: Monde, dt: Float): Mat4 {
+        calmeSouris+=dt
+        val p=monde.physique
         val cible=monde.joueur.position.plus(0f,1.1f,0f)
-        val dir=Vec3(sin(azimut)*cos(elevation),sin(elevation),cos(azimut)*cos(elevation))
-        val libre=monde.physique.distanceCamera(cible,dir,distance)
+        // Relief derrière le héros (plage, colline) : lever la caméra plutôt que la rapprocher.
+        var leveeVoulue=0f
+        if(p.libreRelief(cible,direction(azimut,elevation),distance)<distance*.95f)
+            leveeVoulue=(1..9).map { it*.12f }.firstOrNull { l ->
+                p.libreRelief(cible,direction(azimut,(elevation+l).coerceAtMost(1.35f)),distance)>=distance*.95f } ?: 1.08f
+        levee+=(leveeVoulue-levee)*(1-exp(-6f*dt))
+        val el=(elevation+levee).coerceAtMost(1.35f)
+        // Bâtiment entre le héros et la caméra : pivoter doucement vers la vue dégagée la plus proche,
+        // seulement quand le héros avance et que la souris ne tourne pas.
+        if(monde.enMouvement && calmeSouris>.4f && p.libreObstacles(cible,direction(azimut,el),distance)<distance*.6f) {
+            floatArrayOf(.15f,-.15f,.3f,-.3f,.45f,-.45f,.6f,-.6f,.8f,-.8f,1f,-1f)
+                .firstOrNull { p.libreObstacles(cible,direction(azimut+it,el),distance)>=distance*.9f }
+                ?.let { azimut+=sign(it)*min(abs(it),2.5f*dt) }
+        }
+        val dir=direction(azimut,el)
+        val libre=p.distanceCamera(cible,dir,distance)
         val desired=dir*libre+cible
         // Couper immédiatement un obstacle, lisser seulement le retour.
         position = if(position.distanceTo(cible)>libre) desired else position.lerp(desired,1-exp(-12f*dt))

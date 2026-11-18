@@ -73,31 +73,57 @@ class Physique {
         return h != null && h > y + .32f && (old == null || h > old + .03f)
     }
 
-    /** Distance libre sur le segment caméra, avec marge pour son volume. */
+    /**
+     * Distance libre sur le segment caméra, avec marge pour son volume.
+     * Les boîtes pleines (bâtiments) rapprochent la caméra. Les objets fins ne la gênent que si elle
+     * tomberait dedans : elle recule alors juste derrière eux. Le relief rapproche aussi la caméra
+     * (la caméra préfère se lever, voir Camera.vue).
+     */
     fun distanceCamera(cible: Vec3, direction: Vec3, distance: Float): Float {
-        var libre = distance
-        for (b in obstacles) {
-            var proche = 0f; var loin = distance
-            for(axis in 0..2) {
-                val o=cible.get(axis); val d=direction.get(axis)
-                val mn=b.min.get(axis)-.18f; val mx=b.max.get(axis)+.18f
-                if(abs(d)<1e-6f) { if(o<mn || o>mx) { proche=distance+1; break } }
-                else {
-                    val t1=(mn-o)/d; val t2=(mx-o)/d
-                    proche=max(proche,min(t1,t2)); loin=min(loin,max(t1,t2))
-                }
-            }
-            if(proche <= loin && proche <= distance && loin >= 0) libre=min(libre,max(.35f,proche-.12f))
+        var voulu = distance
+        // Objet fin autour du point visé : reculer derrière lui (au plus un mètre de plus).
+        for (b in obstacles) if (!b.camera) {
+            val (proche, loin) = traversee(b, cible, direction, distance + 1f) ?: continue
+            if (proche <= voulu && voulu <= loin) voulu = minOf(loin + .12f, distance + 1f)
         }
-        // Le relief, lui aussi, doit arrêter la caméra.
-        var t=.3f
-        while(t < libre) {
-            val pos=direction*t+cible
-            val terrain=hauteur(pos.x,pos.z)
-            if(terrain != null && pos.y < terrain+.2f) { libre=max(.35f,t-.2f); break }
-            t+=.12f
+        return minOf(libreObstacles(cible, direction, voulu), libreRelief(cible, direction, voulu))
+    }
+
+    /** Distance libre en ne tenant compte que des boîtes pleines. */
+    fun libreObstacles(cible: Vec3, direction: Vec3, distance: Float): Float {
+        var libre = distance
+        for (b in obstacles) if (b.camera) {
+            val (proche, _) = traversee(b, cible, direction, distance) ?: continue
+            libre = min(libre, max(.35f, proche - .12f))
         }
         return libre
+    }
+
+    /** Distance libre en ne tenant compte que du terrain. */
+    fun libreRelief(cible: Vec3, direction: Vec3, distance: Float): Float {
+        var t = .3f
+        while (t < distance) {
+            val pos = direction * t + cible
+            val terrain = hauteur(pos.x, pos.z)
+            if (terrain != null && pos.y < terrain + .2f) return max(.35f, t - .2f)
+            t += .12f
+        }
+        return distance
+    }
+
+    /** Entrée et sortie du rayon dans la boîte élargie de la marge caméra, ou null s'il la manque avant [distance]. */
+    private fun traversee(b: Boite, o: Vec3, d: Vec3, distance: Float): Pair<Float, Float>? {
+        var proche = 0f; var loin = distance
+        for (axis in 0..2) {
+            val oa = o.get(axis); val da = d.get(axis)
+            val mn = b.min.get(axis) - .18f; val mx = b.max.get(axis) + .18f
+            if (abs(da) < 1e-6f) { if (oa < mn || oa > mx) return null }
+            else {
+                val t1 = (mn - oa) / da; val t2 = (mx - oa) / da
+                proche = max(proche, min(t1, t2)); loin = min(loin, max(t1, t2))
+            }
+        }
+        return if (proche <= loin && loin >= 0) proche to loin else null
     }
 }
 
