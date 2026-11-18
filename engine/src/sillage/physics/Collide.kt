@@ -127,7 +127,7 @@ private fun sphereBox(c: Vec3, r: Float, box: Box, pose: Pose, margin: Float, ou
     val l = pose.toLocal(c)
     val q = Vec3(l.x.coerceIn(-box.halfX, box.halfX), l.y.coerceIn(-box.halfY, box.halfY), l.z.coerceIn(-box.halfZ, box.halfZ))
     val nBox: Vec3; val s: Float; val surface: Vec3
-    if (q == l) {
+    if (q.x == l.x && q.y == l.y && q.z == l.z) {
         // Centre inside the box: leave through the nearest face.
         val depth = FloatArray(3) { box.half(it) - abs(l[it]) }
         val k = (0..2).minBy { depth[it] }
@@ -173,7 +173,7 @@ private inline fun minimise(f: (Float) -> Float): Float {
     val g = .618034f
     var x1 = hi - g * (hi - lo); var x2 = lo + g * (hi - lo)
     var f1 = f(x1); var f2 = f(x2)
-    repeat(24) {
+    repeat(16) {
         if (f1 < f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - g * (hi - lo); f1 = f(x1) }
         else { lo = x1; x1 = x2; f1 = f2; x2 = lo + g * (hi - lo); f2 = f(x2) }
     }
@@ -188,16 +188,75 @@ private fun boxDistance(p: Vec3, box: Box, pose: Pose): Float {
     return if (dx == 0f && dy == 0f && dz == 0f) -inside else sqrt(dx * dx + dy * dy + dz * dz)
 }
 
-/** Capsule against box: both end spheres, plus the closest interior point when it is closer still. */
+/**
+ * Parameter of the segment point closest to the box (both in box space), by alternating projections:
+ * box point nearest the segment point, then segment point nearest that box point. When the segment
+ * goes through the box, the deepest point along it (largest margin to the nearest face) is kept.
+ */
+private fun segmentBoxParam(a: Vec3, b: Vec3, box: Box): Float {
+    val dx = b.x - a.x; val dy = b.y - a.y; val dz = b.z - a.z
+    val len2 = dx * dx + dy * dy + dz * dz
+    if (len2 < 1e-12f) return 0f
+    var t = .5f
+    repeat(8) {
+        val px = a.x + dx * t; val py = a.y + dy * t; val pz = a.z + dz * t
+        val qx = px.coerceIn(-box.halfX, box.halfX); val qy = py.coerceIn(-box.halfY, box.halfY); val qz = pz.coerceIn(-box.halfZ, box.halfZ)
+        if (qx == px && qy == py && qz == pz) {
+            // Inside: move towards the point of the segment deepest in the box (sampled, then kept).
+            var best = t; var depth = -1f
+            for (k in 0..8) {
+                val u = k / 8f
+                val x = a.x + dx * u; val y = a.y + dy * u; val z = a.z + dz * u
+                val dpt = minOf(box.halfX - abs(x), box.halfY - abs(y), box.halfZ - abs(z))
+                if (dpt > depth) { depth = dpt; best = u }
+            }
+            return best
+        }
+        t = (((qx - a.x) * dx + (qy - a.y) * dy + (qz - a.z) * dz) / len2).coerceIn(0f, 1f)
+    }
+    return t
+}
+
+/** Range of t ∈ [lo, hi] where a + (b − a)·t satisfies dot(x, n) ≤ d, or null when empty. */
+private fun clipRange(a: Vec3, b: Vec3, n: Vec3, d: Float, lo: Float, hi: Float): FloatArray? {
+    val da = (a dot n) - d; val db = (b dot n) - d
+    if (da <= 0f && db <= 0f) return floatArrayOf(lo, hi)
+    if (da > 0f && db > 0f) return null
+    val t = da / (da - db)
+    return if (da > 0f) (if (t > hi) null else floatArrayOf(maxOf(lo, t), hi)) else (if (t < lo) null else floatArrayOf(lo, minOf(hi, t)))
+}
+
+/**
+ * Capsule against box, after Box2D's capsule–polygon: the reference face is found from the closest
+ * point; the segment is clipped by that face's sides, giving two steady points when the capsule lies
+ * on the face. Outside a face region (edges, corners), one point at the closest approach.
+ */
 private fun capsuleBox(c: Capsule, pc: Pose, box: Box, pb: Pose, margin: Float, out: ContactPoints) {
     val e0 = segStart(c, pc); val e1 = segEnd(c, pc)
-    sphereBox(e0, c.radius, box, pb, margin, out, 0, true)
-    sphereBox(e1, c.radius, box, pb, margin, out, 1, true)
-    val t = minimise { boxDistance(e0 + (e1 - e0) * it, box, pb) }
-    if (t > .02f && t < .98f) {
-        val m = e0 + (e1 - e0) * t
-        if (boxDistance(m, box, pb) < minOf(boxDistance(e0, box, pb), boxDistance(e1, box, pb)) - 1e-3f)
-            sphereBox(m, c.radius, box, pb, margin, out, 2, true)
+    val t = segmentBoxParam(pb.toLocal(e0), pb.toLocal(e1), box)
+    val m = e0 + (e1 - e0) * t
+    val l = pb.toLocal(m)
+    val saturated = (0..2).count { abs(l[it]) >= box.half(it) }
+    val k: Int; val sgn: Float
+    when {
+        saturated == 1 -> { k = (0..2).first { abs(l[it]) >= box.half(it) }; sgn = if (l[k] > 0f) 1f else -1f }
+        saturated == 0 -> { k = (0..2).minBy { box.half(it) - abs(l[it]) }; sgn = if (l[k] >= 0f) 1f else -1f }
+        else -> { sphereBox(m, c.radius, box, pb, margin, out, 9, true); return }   // arête ou coin : un seul point
+    }
+    val f = pb.axis(k) * sgn                                   // face normal, out of the box towards the capsule
+    var range: FloatArray? = floatArrayOf(0f, 1f)
+    for (side in listOf((k + 1) % 3, (k + 2) % 3)) {
+        val ax = pb.axis(side); val h = box.half(side)
+        range = range?.let { clipRange(e0, e1, ax, (pb.p dot ax) + h, it[0], it[1]) }
+        range = range?.let { clipRange(e0, e1, -ax, -(pb.p dot ax) + h, it[0], it[1]) }
+    }
+    if (range == null) { sphereBox(m, c.radius, box, pb, margin, out, 9, true); return }
+    val faceD = (pb.p dot f) + box.half(k)
+    for ((i, u) in range.withIndex()) {
+        if (i == 1 && range[1] - range[0] < 1e-4f) break
+        val p = e0 + (e1 - e0) * u
+        val s = (p dot f) - faceD - c.radius
+        if (s <= margin) out.add(p - f * (c.radius + s * .5f), -f, s, k * 4 + (if (sgn > 0f) 2 else 0) + i)
     }
 }
 
@@ -335,15 +394,29 @@ private fun triangleDistance(t: Tri, p: Vec3): Float {
     return if (h < 0f && (p - t.n * h - q).lengthSquared() < 1e-6f) h else (p - q).length()
 }
 
+/** Capsule on a triangle: the segment clipped by the triangle's sides gives up to two face points; otherwise one point at the closest approach. */
 private fun triangleCapsule(t: Tri, cap: Capsule, pc: Pose, margin: Float, out: ContactPoints) {
     val e0 = segStart(cap, pc); val e1 = segEnd(cap, pc)
-    triangleSphere(t, e0, cap.radius, margin, out, 0)
-    triangleSphere(t, e1, cap.radius, margin, out, 1)
-    val u = minimise { triangleDistance(t, e0 + (e1 - e0) * it) }
-    if (u > .02f && u < .98f) {
-        val m = e0 + (e1 - e0) * u
-        if (triangleDistance(t, m) < minOf(triangleDistance(t, e0), triangleDistance(t, e1)) - 1e-3f)
-            triangleSphere(t, m, cap.radius, margin, out, 2)
+    val h0 = (e0 - t.a) dot t.n; val h1 = (e1 - t.a) dot t.n
+    if (minOf(h0, h1) > cap.radius + margin || maxOf(h0, h1) < -2f * cap.radius) return
+    var range: FloatArray? = floatArrayOf(0f, 1f)
+    val v = arrayOf(t.a, t.b, t.c)
+    for (j in 0..2) {
+        val side = ((v[(j + 1) % 3] - v[j]) cross t.n).normalized()
+        range = range?.let { clipRange(e0, e1, side, v[j] dot side, it[0], it[1]) }
+    }
+    val start = out.count
+    if (range != null) {
+        for ((i, u) in range.withIndex()) {
+            if (i == 1 && range[1] - range[0] < 1e-4f) break
+            val p = e0 + (e1 - e0) * u
+            val s = ((p - t.a) dot t.n) - cap.radius
+            if (s <= margin && s > -3f * cap.radius) out.add(p - t.n * (cap.radius + s * .5f), t.n, s, i)
+        }
+    }
+    if (out.count == start) {
+        val u = minimise { triangleDistance(t, e0 + (e1 - e0) * it) }
+        triangleSphere(t, e0 + (e1 - e0) * u, cap.radius, margin, out, 2)
     }
 }
 
