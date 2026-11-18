@@ -1,6 +1,9 @@
 package sillage.demo
 
 import sillage.jeu
+import sillage.math.Vec3
+import sillage.physics.Box
+import sillage.physics.Capsule
 
 /** Le jeu tient dans ce fichier ; les détails Vulkan restent dans le moteur. */
 fun main(args: Array<String>) = jeu("Sillage",args) {
@@ -9,7 +12,11 @@ fun main(args: Array<String>) = jeu("Sillage",args) {
     modele("models/village.glb")
     // Modèles animés : les clips viennent des fichiers GLB.
     modele("models/palmiers.glb").animer("vent")
-    modele("models/port.glb").animer("vie")
+    val port=modele("models/port.glb").animer("vie")
+    // La barque se visite et tangue avec la houle : son pont elliptique en deux boîtes, son mât.
+    corpsSurNoeud(port,"bateau",Box(.7f,.25f,.75f),Vec3(0f,-.04f,0f))
+    corpsSurNoeud(port,"bateau",Box(.42f,.25f,1.4f),Vec3(0f,-.04f,0f))
+    corpsSurNoeud(port,"bateau",Capsule(.07f,1.75f),Vec3(0f,1.85f,.2f))
     modele("models/ciel.glb").animer("vol")
     // Volumes simples séparés du décor : modifier ces valeurs pour aménager l'île.
     obstacle(-3f,1.45f,-2f,2.7f,2.8f,2.4f)                  // maison

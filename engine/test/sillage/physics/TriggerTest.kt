@@ -1,6 +1,7 @@
 package sillage.physics
 
 import sillage.math.Vec3
+import kotlin.math.sqrt
 import kotlin.test.*
 
 class TriggerTest {
@@ -42,5 +43,22 @@ class TriggerTest {
         w.step(1f / 60f); zone.enabled = false; w.step(1f / 60f); zone.enabled = true; w.step(1f / 60f)
         assertEquals(2, n)
         assertEquals(listOf(b), zone.inside)
+    }
+
+    @Test fun uneSphereBalayeeRencontreLaFaceOuLArete() {
+        val w = PhysicsWorld()
+        // Une marche maillée : dessus à y = 0,3 pour x > 1.
+        w.addMesh(TriangleMesh(floatArrayOf(1f, .3f, -5f, 1f, .3f, 5f, 6f, .3f, 5f, 1f, .3f, -5f, 6f, .3f, 5f, 6f, .3f, -5f,
+            1f, -1f, -5f, 1f, -1f, 5f, 1f, .3f, 5f, 1f, -1f, -5f, 1f, .3f, 5f, 1f, .3f, -5f)))
+        val bas = Vec3(0f, -1f, 0f)
+        // Au-dessus du dessus : la sphère touche la face à 2 − 0,3 − 0,25.
+        val face = w.raycast(Vec3(3f, 2f, 0f), bas, 5f, radius = .25f)!!
+        assertEquals(2f - .3f - .25f, face.distance, 1e-4f); assertEquals(1f, face.normal.y, 1e-5f)
+        // Centre 15 cm avant le bord : elle repose sur l'arête, normale inclinée vers elle.
+        val arete = w.raycast(Vec3(.85f, 2f, 0f), bas, 5f, radius = .25f)!!
+        assertEquals(2f - .3f - sqrt(.25f * .25f - .15f * .15f), arete.distance, 1e-3f)
+        assertEquals(-.15f / .25f, arete.normal.x, 1e-3f)
+        // Un rayon fin au même endroit passe à côté de la marche.
+        assertNull(w.raycast(Vec3(.85f, 2f, 0f), bas, 1.9f))
     }
 }

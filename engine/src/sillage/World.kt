@@ -1,5 +1,6 @@
 package sillage
 
+import sillage.audio.Audio
 import sillage.math.Mat4
 import sillage.math.Quat
 import sillage.math.Vec3
@@ -9,6 +10,7 @@ import sillage.physics.Box
 import sillage.physics.Character
 import sillage.physics.Material
 import sillage.physics.PhysicsWorld
+import sillage.physics.Shape
 import sillage.physics.Sphere
 import sillage.physics.Trigger
 import sillage.physics.TriangleMesh
@@ -52,6 +54,19 @@ class Monde {
             o.echelle = rayon * (1f + haut * .12f) / (1f + haut * .35f)
         }
     }
+    /** Le son du jeu, posé par le lanceur ; nul = silence. Les sons du monde n'ont rien à régler. */
+    var audio: Audio? = null
+        set(v) {
+            field = v
+            sons = v?.let { a -> SonsDuMonde(this, a).also { s -> chocs.forEach { (b, c) -> s.suivre(b, c) }; s.rivage.addAll(rivage) } }
+        }
+    private var sons: SonsDuMonde? = null
+    private val chocs = ArrayList<Pair<Body, Choc>>()
+    /** Bruit des pas sur les corps (caisses, barque…) : wood, stone… */
+    internal val surfacesCorps = HashMap<Body, String>()
+    private class SuiviNoeud(val objet: Objet, val noeud: String, val centre: Vec3, val corps: Body)
+    private val suivisNoeuds = ArrayList<SuiviNoeud>()
+    private val rivage = ArrayList<Vec3>()
     lateinit var joueur: Joueur
         private set
     val coquillages = ArrayList<Objet>()
@@ -101,11 +116,34 @@ class Monde {
         return objet
     }
 
+    /**
+     * Un corps qui suit le nœud [noeud] d'un modèle animé — une barque qui tangue, une plateforme qui
+     * monte : on peut s'y tenir et il pousse ce qu'il rencontre. [centre] : centre de [forme] dans le
+     * repère du nœud ; [surface] : le bruit des pas dessus (wood, stone, grass…).
+     */
+    fun corpsSurNoeud(objet: Objet, noeud: String, forme: Shape, centre: Vec3 = Vec3.ZERO, surface: String = "wood"): Body {
+        val a = requireNotNull(objet.animateur) { "corpsSurNoeud : ce modèle n'est pas animé" }
+        requireNotNull(a.noeud(noeud)) { "Nœud « $noeud » absent (nœuds : ${a.modele.noeuds.mapNotNull { it.nom }.joinToString()})" }
+        val (p,q) = poseNoeud(objet,noeud,centre)
+        val b = corps.add(forme,p,q,type=BodyType.KINEMATIC)
+        b.tag = objet; surfacesCorps[b] = surface
+        suivisNoeuds.add(SuiviNoeud(objet,noeud,centre,b))
+        return b
+    }
+
+    private fun poseNoeud(objet: Objet, noeud: String, centre: Vec3): Pair<Vec3,Quat> {
+        val m = objet.matrice() * objet.animateur!!.noeud(noeud)!!
+        val ax = m.transformDirection(Vec3.X).normalized(); var ay = m.transformDirection(Vec3.Y)
+        ay = (ay - ax * (ay dot ax)).normalized()
+        return m.transformPoint(centre) to Quat.fromAxes(ax, ay, ax cross ay)
+    }
+
     /** Une caisse de [taille] mètres posée sur le sol (ou [hauteur] mètres au-dessus), qu'on peut pousser. */
     fun caisse(x: Float, z: Float, hauteur: Float = 0f, taille: Float = .7f, angle: Float = 0f): Objet {
         val o = modele("models/caisse.glb", taille = taille)
         val b = corps.add(Box(taille/2,taille/2,taille/2), Vec3(x,sol(x,z)+taille/2+hauteur+.01f,z), Quat.rotationY(angle),
             mass = 40f*taille*taille*taille, friction = .7f)
+        chocs.add(b to Choc.BOIS); surfacesCorps[b]="wood"
         return ombre(lier(o,b),taille*.75f)
     }
 
@@ -116,6 +154,7 @@ class Monde {
             rollingResistance = .05f)
         b.angularDamping = .1f
         b.linearDamping = .8f        // un ballon de plage léger freine vite dans l'air
+        chocs.add(b to Choc.BALLON)
         return ombre(lier(o,b),rayon*1.1f)
     }
     /** Hauteur du terrain en (x, z), 0 hors de l'île. */
@@ -144,6 +183,8 @@ class Monde {
         // Liseré du rivage, sous la plage, sans cacher le terrain.
         val foam=Geometrie(); foam.disque(0f,-.22f,0f,12.5f,Couleur.hex(0x94dfce),96)
         objets.add(Objet(foam.construire()).also { it.echelle=1f })
+        // La mer se fait entendre tout autour du rivage.
+        for(k in 0 until 8) { val a=k*PI.toFloat()/4+.2f; rivage.add(Vec3(cos(a)*12.3f,0f,sin(a)*12.3f)) }
     }
     fun coquillage(x: Float, z: Float) {
         val g=Geometrie(); val color=Couleur.hex(0xffcb66)
@@ -156,7 +197,7 @@ class Monde {
         val zone=corps.addTrigger(Sphere(.8f),o.position)
         zone.filter={ it.tag is Character }
         zone.onEnter={
-            zone.enabled=false; o.visible=false; recoltes++; celebration=.9f
+            zone.enabled=false; o.visible=false; recoltes++; celebration=.9f; sons?.coquillageRamasse()
             println("Coquillages : " + recoltes + "/" + coquillages.size)
         }
         zonesCoquillages.add(zone)
@@ -215,10 +256,13 @@ class Monde {
         if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=tourner(joueur.objet.rotation,atan2(-mouvement.x,-mouvement.z),14f*dt)
         animerHeros(dt)
         for(o in objets) o.animateur?.avancer(dt)
-        corps.step(dt.coerceIn(1f/240f,1f/30f))
+        val h=dt.coerceIn(1f/240f,1f/30f)
+        for(s in suivisNoeuds) { val (p,q)=poseNoeud(s.objet,s.noeud,s.centre); s.corps.moveTo(p,h,q) }
+        corps.step(h)
         for((o,b) in lies) { o.position=b.position; o.orientation=b.rotation }
         placerOmbres()
         coquillages.forEachIndexed { i,o -> o.rotation=temps*1.1f+i }
+        sons?.miseAJour(dt)
     }
 }
 

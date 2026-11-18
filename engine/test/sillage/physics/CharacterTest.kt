@@ -111,4 +111,55 @@ class CharacterTest {
         assertTrue(vCrate < 3f, "la caisse de 50 kg suit le marin trop facilement")
         assertTrue(heavy < .05f, "une caisse de 140 kg (frottement 824 N > 400 N) ne devrait pas bouger : $heavy m")
     }
+
+    /** Triangles of an axis-aligned box from [lo] to [hi], facing out (as a level would model a pier). */
+    private fun boxTriangles(lo: Vec3, hi: Vec3): FloatArray {
+        val out = ArrayList<Float>(); val c = (lo + hi) / 2f
+        fun v(x: Int, y: Int, z: Int) = Vec3(if (x == 0) lo.x else hi.x, if (y == 0) lo.y else hi.y, if (z == 0) lo.z else hi.z)
+        val faces = listOf(listOf(v(0,1,0), v(0,1,1), v(1,1,1), v(1,1,0)), listOf(v(0,0,0), v(1,0,0), v(1,0,1), v(0,0,1)),
+            listOf(v(0,0,0), v(0,1,0), v(1,1,0), v(1,0,0)), listOf(v(0,0,1), v(1,0,1), v(1,1,1), v(0,1,1)),
+            listOf(v(0,0,0), v(0,0,1), v(0,1,1), v(0,1,0)), listOf(v(1,0,0), v(1,1,0), v(1,1,1), v(1,0,1)))
+        for (f in faces) {
+            val centre = (f[0] + f[1] + f[2] + f[3]) / 4f
+            for ((a, b, cc) in listOf(Triple(f[0], f[1], f[2]), Triple(f[0], f[2], f[3]))) {
+                val flip = (((b - a) cross (cc - a)) dot (centre - c)) < 0f
+                for (p in if (flip) listOf(a, cc, b) else listOf(a, b, cc)) { out.add(p.x); out.add(p.y); out.add(p.z) }
+            }
+        }
+        return out.toFloatArray()
+    }
+
+    /** Le défaut trouvé sur le ponton de la démo : un plancher maillé de 27 cm, abordé par le côté. */
+    @Test fun onMonteSurUnPontonMailleParLeCoteEtOnEnDescend() {
+        val w = world()
+        w.addMesh(TriangleMesh(boxTriangles(Vec3(1.5f, -.2f, -3f), Vec3(4f, .27f, 3f))))
+        val c = Character(w, Vec3(0f, 0f, .4f)); run(w, c, .3f)
+        run(w, c, 1.2f, Vec3(3f, 0f, 0f))
+        assertEquals(.27f, c.position.y, .01f, "pas monté sur le ponton : ${c.position}")
+        assertTrue(c.onGround && c.position.x > 2.5f)
+        // Puis on avance jusqu'au bord opposé et on en descend.
+        run(w, c, 1.2f, Vec3(3f, 0f, 0f))
+        assertEquals(0f, c.position.y, .01f, "redescendu au sol : ${c.position}")
+    }
+
+    /** Second défaut du ponton : en retombant sur un plancher maillé fermé, ses faces arrière éjectaient le marin. */
+    @Test fun retomberSurUnPlancherFermeNEjectePas() {
+        val w = world()
+        w.addMesh(TriangleMesh(boxTriangles(Vec3(-2f, .91f, -3f), Vec3(2f, 1.09f, 3f))))
+        val c = Character(w, Vec3(0f, 2.5f, 0f))
+        var ecart = 0f; var avant = c.position
+        // Chute de 1,4 m, puis un saut (0,73 s en l'air) en marchant à 1 m/s : on reste sur le plancher (z < 3).
+        run(w, c, 2.2f, Vec3(0f, 0f, 1f), jumpAt = 50) { ecart = maxOf(ecart, (c.position - avant).length()); avant = c.position }
+        assertTrue(ecart < .25f, "saut de $ecart m en une image")
+        assertEquals(1.09f, c.position.y, .01f); assertTrue(c.onGround)
+    }
+
+    @Test fun lePiedReposeSurLArretDUnPlancherSansFlotter() {
+        val w = world()
+        w.addMesh(TriangleMesh(boxTriangles(Vec3(1.5f, -.2f, -3f), Vec3(4f, .27f, 3f))))
+        // Le centre 10 cm au-delà du bord : la sphère du bas repose sur l'arête, un peu plus bas que le plancher.
+        val c = Character(w, Vec3(1.4f, .5f, 0f)); run(w, c, .6f)
+        val r = c.radius
+        assertEquals(.27f - (r - sqrt(r * r - .1f * .1f)), c.position.y, .015f, "posé sur l'arête : ${c.position}")
+    }
 }

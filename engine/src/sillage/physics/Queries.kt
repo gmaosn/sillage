@@ -14,9 +14,9 @@ class RayHit(val distance: Float, val point: Vec3, val normal: Vec3, val body: B
 internal fun PhysicsWorld.poseOf(i: Int): Pose = poseOf(Vec3(px[i], py[i], pz[i]), Quat(qx[i], qy[i], qz[i], qw[i]))
 
 /**
- * Casts a ray from [origin] along [direction] up to [maxDistance]. With [radius] > 0 the ray is a
- * sphere sweep against bodies (meshes still take the bare ray). [filter] skips bodies; [meshes] = false
- * ignores static meshes. A ray starting inside a body hits it at distance 0.
+ * Casts a ray from [origin] along [direction] up to [maxDistance]. With [radius] > 0 it sweeps a sphere
+ * instead (against boxes, the box grown by the radius). [filter] skips bodies; [meshes] = false ignores
+ * static meshes, whose triangles are one-sided (seen from the front). Starting inside gives distance 0.
  */
 fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radius: Float = 0f,
                          meshes: Boolean = true, filter: ((Body) -> Boolean)? = null): RayHit? {
@@ -39,7 +39,22 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
         } ?: continue
         if (r.first < best) { best = r.first; hit = RayHit(r.first, origin + d * r.first, r.second, Body(this, i), null) }
     }
-    if (meshes) {
+    if (meshes && radius > 0f) {
+        val stack = IntList(); val found = IntList()
+        val e = origin + d * best
+        for (mesh in this.meshes) {
+            found.clear()
+            mesh.query(min(origin.x, e.x) - radius, min(origin.y, e.y) - radius, min(origin.z, e.z) - radius,
+                max(origin.x, e.x) + radius, max(origin.y, e.y) + radius, max(origin.z, e.z) + radius, found, stack)
+            val v = mesh.v; val n = mesh.n
+            for (f in 0 until found.size) {
+                val t = found[f]; val o = 9 * t
+                val r = sweepTriangle(origin, d, radius, Vec3(v[o], v[o + 1], v[o + 2]), Vec3(v[o + 3], v[o + 4], v[o + 5]),
+                    Vec3(v[o + 6], v[o + 7], v[o + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), best) ?: continue
+                if (r.first <= best) { best = r.first; hit = RayHit(r.first, origin + d * r.first, r.second, null, mesh.palette[mesh.material[t]]) }
+            }
+        }
+    } else if (meshes) {
         val stack = IntList()
         for (mesh in this.meshes) {
             val t = mesh.raycast(origin.x, origin.y, origin.z, d.x, d.y, d.z, best, stack)
@@ -51,6 +66,35 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
         }
     }
     return hit
+}
+
+/**
+ * A sphere of radius [r] swept from [o] along the unit direction [d] against the triangle (a, b, c) of
+ * unit normal [n], seen from its front: distance travelled and contact normal, or null beyond [maxT].
+ * The sphere meets the face (the plane raised by r) or else an edge or a corner (capsules around edges).
+ */
+internal fun sweepTriangle(o: Vec3, d: Vec3, r: Float, a: Vec3, b: Vec3, c: Vec3, n: Vec3, maxT: Float): Pair<Float, Vec3>? {
+    val dist = (o - a) dot n
+    val dn = d dot n
+    if (dist < 0f || (dist >= r && dn >= 0f)) return null          // behind, or moving away
+    if (dist < r) {
+        if (inside(o - n * dist, a, b, c, n)) return 0f to n         // already touching the face
+    } else {
+        val t = (r - dist) / dn
+        if (t > maxT) return null
+        if (inside(o + d * t - n * r, a, b, c, n)) return t to n     // the face comes first when hit inside
+    }
+    var best: Pair<Float, Vec3>? = null
+    for ((p, q) in arrayOf(a to b, b to c, c to a)) {
+        val h = rayCapsule(o, d, p, q, r) ?: continue
+        if (h.first <= maxT && (best == null || h.first < best.first)) best = h
+    }
+    return best
+}
+
+private fun inside(p: Vec3, a: Vec3, b: Vec3, c: Vec3, n: Vec3): Boolean {
+    val s1 = ((b - a) cross (p - a)) dot n; val s2 = ((c - b) cross (p - b)) dot n; val s3 = ((a - c) cross (p - c)) dot n
+    return (s1 >= 0f && s2 >= 0f && s3 >= 0f) || (s1 <= 0f && s2 <= 0f && s3 <= 0f)
 }
 
 /** Height of the first surface below (x, [fromY], z) within [depth] metres, or null. */
@@ -147,6 +191,9 @@ internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, excl
         mesh.query(pose.p.x - reach, pose.p.y - reach, pose.p.z - reach, pose.p.x + reach, pose.p.y + reach, pose.p.z + reach, found, stack)
         for (f in 0 until found.size) {
             val t = found[f]; val v = mesh.v; val n = mesh.n
+            // Triangles are one-sided: a shape whose centre is behind one (inside a closed mesh such as a
+            // pier, under a floor) does not touch it, or it would be thrown out through the far side.
+            if ((pose.p.x - v[9 * t]) * n[3 * t] + (pose.p.y - v[9 * t + 1]) * n[3 * t + 1] + (pose.p.z - v[9 * t + 2]) * n[3 * t + 2] < 0f) continue
             val tri = Tri(Vec3(v[9 * t], v[9 * t + 1], v[9 * t + 2]), Vec3(v[9 * t + 3], v[9 * t + 4], v[9 * t + 5]),
                 Vec3(v[9 * t + 6], v[9 * t + 7], v[9 * t + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), mesh.edges[t])
             scratch.clear()

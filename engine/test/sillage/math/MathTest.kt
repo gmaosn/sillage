@@ -94,4 +94,12 @@ class MathTest {
         assertEquals(listOf(7f, 8f, 9f, 1f), a.slice(16..19))
         assertEquals(m, Mat4.fromColumnMajor(a, 4))
     }
+
+    @Test fun quaternionDepuisSesAxes() {
+        for (q in listOf(Quat.IDENTITY, Quat.axisAngle(Vec3(1f, 2f, -.5f).normalized(), 2.4f), Quat.axisAngle(Vec3.Y, 3.1f),
+                Quat.axisAngle(Vec3.X, -3f), Quat.axisAngle(Vec3(0f, 1f, 1f).normalized(), 3.13f))) {
+            val r = Quat.fromAxes(q.rotate(Vec3.X), q.rotate(Vec3.Y), q.rotate(Vec3.Z))
+            assertEquals(1f, kotlin.math.abs(r dot q), 1e-5f, "$q → $r")
+        }
+    }
 }

@@ -47,6 +47,20 @@ class Quat(val x: Float, val y: Float, val z: Float, val w: Float) {
     companion object {
         val IDENTITY = Quat(0f, 0f, 0f, 1f)
 
+        /** The rotation that takes X, Y, Z onto the orthonormal axes [ax], [ay], [az] (Shepperd's method). */
+        fun fromAxes(ax: Vec3, ay: Vec3, az: Vec3): Quat {
+            val r00 = ax.x; val r10 = ax.y; val r20 = ax.z
+            val r01 = ay.x; val r11 = ay.y; val r21 = ay.z
+            val r02 = az.x; val r12 = az.y; val r22 = az.z
+            val trace = r00 + r11 + r22
+            return when {
+                trace > 0f -> { val s = kotlin.math.sqrt(trace + 1f) * 2f; Quat((r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s, .25f * s) }
+                r00 > r11 && r00 > r22 -> { val s = kotlin.math.sqrt(1f + r00 - r11 - r22) * 2f; Quat(.25f * s, (r01 + r10) / s, (r02 + r20) / s, (r21 - r12) / s) }
+                r11 > r22 -> { val s = kotlin.math.sqrt(1f + r11 - r00 - r22) * 2f; Quat((r01 + r10) / s, .25f * s, (r12 + r21) / s, (r02 - r20) / s) }
+                else -> { val s = kotlin.math.sqrt(1f + r22 - r00 - r11) * 2f; Quat((r02 + r20) / s, (r12 + r21) / s, .25f * s, (r10 - r01) / s) }
+            }.normalized()
+        }
+
         /** Rotation of [angle] radians around the unit [axis]. */
         fun axisAngle(axis: Vec3, angle: Float): Quat {
             val s = sin(angle * .5f); val c = cos(angle * .5f)

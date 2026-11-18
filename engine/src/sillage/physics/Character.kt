@@ -129,7 +129,10 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         }
         // Stick to the ground when walking down a slope or off a small ledge.
         if (wasOnGround && jumpSpeed <= 0f && fall <= 0f) {
-            groundUnder(p, snapDistance)?.let { y -> val drop = p.y - y; if (drop > 0f && drop <= snapDistance) p = Vec3(p.x, y, p.z) }
+            groundUnder(p, snapDistance)?.let { hit ->
+                val y = rest(p, hit); val drop = p.y - y
+                if (drop > 0f && drop <= snapDistance && hit.normal.y >= cosSlope) p = Vec3(p.x, y, p.z)
+            }
         }
         // Ground: walkable contacts just below.
         gather(p, .04f)
@@ -166,14 +169,19 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         b.applyImpulse(dir * min(pushForce * h, b.mass * missing), point)
     }
 
-    /** First surface under the feet: a sphere sweep slightly thinner than the capsule (bodies) or a ray (meshes). */
-    private fun groundUnder(feet: Vec3, depth: Float): Float? {
-        val sweep = radius * .9f
-        val hit = world.raycast(center(feet), Vec3(0f, -1f, 0f), height / 2 + depth, radius = sweep,
-            filter = { it.id != body.id }) ?: return null
-        if (hit.normal.y < cosSlope) return null
-        return if (hit.body != null) hit.point.y - sweep else hit.point.y
+    /**
+     * What the character's rounded bottom would rest on below [feet], within [depth]: a sphere a hair
+     * thinner than the capsule swept down from 5 cm above. On a slope or an edge it rests a little higher
+     * than a single ray would say, and the contact normal tells whether it can stand there.
+     */
+    private fun groundUnder(feet: Vec3, depth: Float): RayHit? {
+        val r = radius * .98f
+        val hit = world.raycast(feet.plus(0f, r + LIFT, 0f), DOWN, LIFT + depth, radius = r, filter = { it.id != body.id }) ?: return null
+        return if (hit.distance > 0f) hit else null
     }
+
+    /** Feet height when resting on [hit] from [groundUnder] at [feet]. */
+    private fun rest(feet: Vec3, hit: RayHit) = feet.y + LIFT - hit.distance
 
     private fun penetrating(feet: Vec3): Boolean {
         gather(feet, 0f)
@@ -181,18 +189,30 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         return false
     }
 
-    /** Tries to walk up a low step: returns the new feet position, or null. */
+    /**
+     * Tries to walk up a low step: up, forward, down onto it. Forward by this substep's motion, or a few
+     * centimetres more when the rounded bottom would only rest on the step's edge, too steep to stand on.
+     * Returns the new feet position, or null (a wall, a steep slope, nothing higher).
+     */
     private fun climbStep(intended: Vec3): Vec3? {
         val up = position.plus(0f, stepHeight, 0f)
         if (penetrating(up)) return null
-        // Probe a little ahead: one substep alone barely reaches over the edge.
-        val ahead = intended.normalized() * max(intended.length(), radius * .5f)
-        var q = up + ahead
-        if (penetrating(q)) return null
-        // Come down onto the step.
-        val y = groundUnder(q, stepHeight + .05f) ?: return null
-        q = Vec3(q.x, y, q.z)
-        val rise = q.y - position.y
-        return if (rise > .005f && rise <= stepHeight + .01f && !penetrating(q.plus(0f, .01f, 0f))) q else null
+        val dir = intended.normalized(); val len = intended.length()
+        for (forward in floatArrayOf(len, .06f, .1f, .15f)) {
+            if (forward < len) continue
+            val q = up + dir * forward
+            if (penetrating(q)) return null
+            val hit = groundUnder(q, stepHeight + .05f) ?: return null
+            if (hit.normal.y < cosSlope) continue
+            val y = rest(q, hit)
+            val rise = y - position.y
+            return if (rise > .005f && rise <= stepHeight + .01f) Vec3(q.x, y, q.z) else null
+        }
+        return null
+    }
+
+    private companion object {
+        val DOWN = Vec3(0f, -1f, 0f)
+        const val LIFT = .05f
     }
 }

@@ -141,6 +141,9 @@ class Animateur(val modele: Modele, private val parties: List<Partie>) {
 
     init { repos(); poser() }
 
+    /** Current pose of the node named [nom] in the model's space, or null when the model has no such node. */
+    fun noeud(nom: String): Mat4? = modele.noeuds.indexOfFirst { it.nom == nom }.takeIf { it >= 0 }?.let { monde[it] }
+
     /** Starts [nom] unless it is already playing; [fondu] seconds of cross-fade from the current pose. */
     fun jouer(nom: String, boucle: Boolean = true, fondu: Float = .15f, vitesse: Float = this.vitesse) {
         val c = modele.clips[nom] ?: throw IllegalArgumentException(

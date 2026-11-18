@@ -18,6 +18,9 @@ object Key {
     const val D = 32
     const val Z = 44
     const val SHIFT = 42
+    /** M en QWERTY (50) et en AZERTY (39, la touche « ; » du QWERTY). */
+    const val M = 50
+    const val M_AZERTY = 39
     const val RIGHT_SHIFT = 54
     const val SPACE = 57
     const val UP = 103
