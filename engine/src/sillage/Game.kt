@@ -45,7 +45,8 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                     window.poll()
                     if(window.isDown(Key.ESCAPE)) break
                     if(window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
-                    if(!window.focused && !smoke) { window.waitEvents(.05); last=System.nanoTime(); continue }
+                    // Mise en pause sans focus, mais jamais avant la première image : sous Wayland, la fenêtre n'existe qu'après.
+                    if(!window.focused && !smoke && frame>0) { window.waitEvents(.05); last=System.nanoTime(); continue }
                     val (dx,dy)=window.consumeMouseDelta().let { it[0] to it[1] }
                     if(dx!=0f || dy!=0f) monde.camera.tourner(dx,dy)
                     window.consumeScroll().let { if(it!=0f) monde.camera.zoom(it) }

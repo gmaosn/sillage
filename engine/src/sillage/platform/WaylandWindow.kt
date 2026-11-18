@@ -176,7 +176,9 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     private val keys = BooleanArray(Key.COUNT)
 
     override var shouldClose = false; private set
-    override var focused = false; private set
+    // Une fenêtre Wayland n'apparaît qu'après sa première image, et n'a le focus qu'une fois apparue :
+    // elle est donc réputée active jusqu'au premier « leave », sinon le jeu attendrait sans jamais dessiner.
+    override var focused = true; private set
 
     override var title: String = title
         set(v) { field = v; if (toplevel != NULL) { request(toplevel, "set_title", null, 0, v); flush() } }
