@@ -32,10 +32,10 @@ class Body internal constructor(private val world: PhysicsWorld, val id: Int) {
     val shape: Shape get() = world.shapes[id]!!
     var position: Vec3
         get() = Vec3(world.px[id], world.py[id], world.pz[id])
-        set(v) { world.px[id] = v.x; world.py[id] = v.y; world.pz[id] = v.z; world.wake(id) }
+        set(v) { world.px[id] = v.x; world.py[id] = v.y; world.pz[id] = v.z; world.wake(id); world.queryGrid.valid = false }
     var rotation: Quat
         get() = Quat(world.qx[id], world.qy[id], world.qz[id], world.qw[id])
-        set(q) { val u = q.normalized(); world.qx[id] = u.x; world.qy[id] = u.y; world.qz[id] = u.z; world.qw[id] = u.w; world.wake(id) }
+        set(q) { val u = q.normalized(); world.qx[id] = u.x; world.qy[id] = u.y; world.qz[id] = u.z; world.qw[id] = u.w; world.wake(id); world.queryGrid.valid = false }
     var velocity: Vec3
         get() = Vec3(world.st[o + VX], world.st[o + VY], world.st[o + VZ])
         set(v) { world.st[o + VX] = v.x; world.st[o + VY] = v.y; world.st[o + VZ] = v.z; world.wake(id) }
@@ -203,6 +203,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     fun add(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, type: BodyType = BodyType.DYNAMIC,
             density: Float = 1000f, mass: Float? = null, friction: Float = .6f, restitution: Float = 0f,
             rollingResistance: Float? = null): Body {
+        queryGrid.valid = false
         val i = if (free.size > 0) free.pop() else { if (count == capacity) grow(); count++ }
         // A reused slot starts afresh.
         removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null
@@ -245,6 +246,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 box[p + 4] >= box[o + 1] - .05f && box[p + 2] <= box[o + 5] + .05f && box[p + 5] >= box[o + 2] - .05f) wake(j)
         }
         removed[i] = true; types[i] = BodyType.STATIC; sleeping[i] = false; tags[i] = null
+        queryGrid.valid = false
         java.util.Arrays.fill(st, i * S, i * S + 6, 0f)
         free.add(i)
     }
@@ -303,6 +305,15 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     internal val triggerScratch = Touches()
     // Scratch for the queries (single-threaded, not reentrant: a query's filter must not query again).
     internal val queryStack = IntList(); internal val queryFound = IntList(); internal val queryScratch = ContactPoints()
+    internal val queryGrid = QueryGrid(); internal val queryBodies = IntList()
+
+    /** The grid of the bodies for a query, built if bodies moved since; null for a small world (searched body by body). */
+    internal var queryGridEnabled = true
+    internal fun gridFor(): QueryGrid? {
+        if (!queryGridEnabled || count - free.size < QueryGrid.MIN_BODIES) return null
+        if (!queryGrid.valid) queryGrid.build(this)
+        return queryGrid
+    }
     private val events = ArrayList<() -> Unit>()
 
     /** Advances the simulation by [dt] seconds, then tells the [Trigger]s who came in and who left. */
@@ -330,6 +341,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val spare = previous; previous = points; points = spare
         patches.keep()
         val spareP = previousPatches; previousPatches = patches; patches = spareP
+        queryGrid.valid = false
         // Zones last, and their callbacks after every zone is checked: a callback may move or add things.
         if (triggers.isNotEmpty()) {
             events.clear()

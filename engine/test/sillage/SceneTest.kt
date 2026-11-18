@@ -95,7 +95,7 @@ class SceneTest {
         s.run(30)
         assertEquals(CameraMode.FIRST_PERSON, s.camera.mode)
         assertEquals(1.65f, s.camera.position.y, .02f, "les yeux à la hauteur du joueur moins 15 cm")
-        assertTrue(p !in s.drawList(s.camera.position), "le joueur ne se voit pas lui-même")
+        assertSame(p, s.hiddenNode, "le joueur ne se voit pas lui-même")
         // On avance où l'on regarde : un quart de tour à gauche, puis tout droit.
         s.camera.yaw = 90f
         s.run(30, move = s.camera.moveDirection(0f, 1f))

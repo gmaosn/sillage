@@ -107,6 +107,8 @@ internal val VkCommandBufferAllocateInfo = t("VkCommandBufferAllocateInfo", VK_S
     "commandPool" to U64, "level" to U32, "commandBufferCount" to U32)
 internal val VkSemaphoreCreateInfo = t("VkSemaphoreCreateInfo", VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, "flags" to U32)
 internal val VkFenceCreateInfo = t("VkFenceCreateInfo", VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, "flags" to U32)
+internal val VkQueryPoolCreateInfo = t("VkQueryPoolCreateInfo", VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+    "flags" to U32, "queryType" to U32, "queryCount" to U32, "pipelineStatistics" to U32)
 internal val VkBufferCreateInfo = t("VkBufferCreateInfo", VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     "flags" to U32, "size" to U64, "usage" to U32, "sharingMode" to U32, "queueFamilyIndexCount" to U32, "pQueueFamilyIndices" to Ptr)
 internal val VkMemoryAllocateInfo = t("VkMemoryAllocateInfo", VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -229,7 +231,7 @@ internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D
     VkWaylandSurfaceCreateInfoKHR, VkXcbSurfaceCreateInfoKHR, VkQueueFamilyProperties, VkPhysicalDeviceLimits,
     VkPhysicalDeviceSparseProperties, VkPhysicalDeviceProperties, VkFormatProperties, VkMemoryType, VkMemoryHeap,
     VkPhysicalDeviceMemoryProperties, VkMemoryRequirements, VkDeviceQueueCreateInfo, VkDeviceCreateInfo,
-    VkCommandPoolCreateInfo, VkCommandBufferAllocateInfo, VkSemaphoreCreateInfo, VkFenceCreateInfo, VkBufferCreateInfo,
+    VkCommandPoolCreateInfo, VkCommandBufferAllocateInfo, VkSemaphoreCreateInfo, VkFenceCreateInfo, VkQueryPoolCreateInfo, VkBufferCreateInfo,
     VkMemoryAllocateInfo, VkImageCreateInfo, VkImageViewCreateInfo, VkAttachmentDescription, VkAttachmentReference,
     VkSubpassDescription, VkSubpassDependency, VkRenderPassCreateInfo, VkFramebufferCreateInfo, VkShaderModuleCreateInfo,
     VkPipelineShaderStageCreateInfo, VkVertexInputBindingDescription, VkVertexInputAttributeDescription,

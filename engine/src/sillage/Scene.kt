@@ -432,9 +432,11 @@ class Scene {
     internal fun drawList(eye: Vec3): List<Node> {
         if (sky.mesh.triangleCount == 0) sky.mesh = lighting.skyDome()
         sky.position = eye
-        val hidden = if (camera.mode == CameraMode.FIRST_PERSON) camera.target else null
-        return if (hidden == null) all else all.filter { it !== hidden }
+        return all
     }
+
+    /** The node not to draw: the first-person player (one does not see oneself). */
+    internal val hiddenNode: Node? get() = if (camera.mode == CameraMode.FIRST_PERSON) camera.target else null
 }
 
 /** A zone made by [Scene.zone]. */

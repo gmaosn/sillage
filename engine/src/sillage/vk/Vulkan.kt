@@ -59,6 +59,11 @@ internal object Sig {
     @JvmField val V_PJIJIP = h(null, P, J, I, J, I, P)
     @JvmField val V_PIIIIPIPIP = h(null, P, I, I, I, I, P, I, P, I, P)
     @JvmField val V_PJIJIIPI = h(null, P, J, I, J, I, I, P, I)
+    @JvmField val I_PIPIJ = h(I, P, I, P, I, J)
+    @JvmField val I_PIP = h(I, P, I, P)
+    @JvmField val V_PJII = h(null, P, J, I, I)
+    @JvmField val V_PIJI = h(null, P, I, J, I)
+    @JvmField val I_PJIIJPJI = h(I, P, J, I, I, J, P, J, I)
 }
 
 private val NULL: MemorySegment = MemorySegment.NULL
@@ -233,6 +238,15 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     private val pCmdBlitImage = proc("vkCmdBlitImage")
     private val pCmdSetViewport = proc("vkCmdSetViewport")
     private val pCmdSetScissor = proc("vkCmdSetScissor")
+    private val pCreateFence = proc("vkCreateFence")
+    private val pDestroyFence = proc("vkDestroyFence")
+    private val pWaitForFences = proc("vkWaitForFences")
+    private val pResetFences = proc("vkResetFences")
+    private val pCreateQueryPool = proc("vkCreateQueryPool")
+    private val pDestroyQueryPool = proc("vkDestroyQueryPool")
+    private val pCmdResetQueryPool = proc("vkCmdResetQueryPool")
+    private val pCmdWriteTimestamp = proc("vkCmdWriteTimestamp")
+    private val pGetQueryPoolResults = proc("vkGetQueryPoolResults")
     private val pCreateSwapchainKHR = optional("vkCreateSwapchainKHR")
     private val pDestroySwapchainKHR = optional("vkDestroySwapchainKHR")
     private val pGetSwapchainImagesKHR = optional("vkGetSwapchainImagesKHR")
@@ -312,6 +326,20 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
 
     fun cmdSetViewport(cmd: MemorySegment, viewports: MemorySegment) { Sig.V_PIIP.invokeExact(pCmdSetViewport, cmd, 0, 1, viewports) }
     fun cmdSetScissor(cmd: MemorySegment, scissors: MemorySegment) { Sig.V_PIIP.invokeExact(pCmdSetScissor, cmd, 0, 1, scissors) }
+
+    fun createFence(info: MemorySegment, out: MemorySegment) = create(pCreateFence, "vkCreateFence", info, out)
+    fun destroyFence(h: Long) = destroy(pDestroyFence, h)
+    /** Waits until every fence of [fences] is signalled (or [timeout] ns). */
+    fun waitForFences(count: Int, fences: MemorySegment, timeout: Long) =
+        (Sig.I_PIPIJ.invokeExact(pWaitForFences, handle, count, fences, VK_TRUE, timeout) as Int).vkCheck("vkWaitForFences")
+    fun resetFences(count: Int, fences: MemorySegment) = (Sig.I_PIP.invokeExact(pResetFences, handle, count, fences) as Int).vkCheck("vkResetFences")
+    fun createQueryPool(info: MemorySegment, out: MemorySegment) = create(pCreateQueryPool, "vkCreateQueryPool", info, out)
+    fun destroyQueryPool(h: Long) = destroy(pDestroyQueryPool, h)
+    fun cmdResetQueryPool(cmd: MemorySegment, pool: Long, first: Int, count: Int) { Sig.V_PJII.invokeExact(pCmdResetQueryPool, cmd, pool, first, count) }
+    fun cmdWriteTimestamp(cmd: MemorySegment, stage: Int, pool: Long, query: Int) { Sig.V_PIJI.invokeExact(pCmdWriteTimestamp, cmd, stage, pool, query) }
+    /** Returns the raw VkResult: VK_NOT_READY when the queries have not all finished. */
+    fun getQueryPoolResults(pool: Long, first: Int, count: Int, size: Long, data: MemorySegment, stride: Long, flags: Int): Int =
+        Sig.I_PJIIJPJI.invokeExact(pGetQueryPoolResults, handle, pool, first, count, size, data, stride, flags) as Int
 
     fun createSwapchainKHR(info: MemorySegment, out: MemorySegment) = create(pCreateSwapchainKHR, "vkCreateSwapchainKHR", info, out)
     fun destroySwapchainKHR(h: Long) = destroy(pDestroySwapchainKHR, h)

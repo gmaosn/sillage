@@ -4,7 +4,7 @@
 layout(location=0) in vec3 normal;
 layout(location=1) in vec3 color;
 layout(location=2) in vec3 world;
-layout(push_constant) uniform Push { mat4 mvp; vec4 row0; vec4 row1; vec4 row2; vec4 eye; } pc;
+layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; } pc;
 layout(location=0) out vec4 outColor;
 
 // The scene's light and haze (Lighting): specialisation constants, set when the pipeline is made.

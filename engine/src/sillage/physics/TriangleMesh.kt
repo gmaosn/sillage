@@ -14,6 +14,7 @@ class IntList(capacity: Int = 16) {
     operator fun get(i: Int) = data[i]
     fun pop(): Int = data[--size]
     fun clear() { size = 0 }
+    fun sort() { data.sort(0, size) }
 }
 
 /**

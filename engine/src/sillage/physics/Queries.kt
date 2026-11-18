@@ -22,26 +22,66 @@ internal fun PhysicsWorld.poseOf(i: Int): Pose = poseOf(Vec3(px[i], py[i], pz[i]
 fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radius: Float = 0f,
                          meshes: Boolean = true, filter: ((Body) -> Boolean)? = null): RayHit? {
     val d = direction.normalized()
-    var best = maxDistance; var hit: RayHit? = null
-    for (i in 0 until count) {
-        if (removed[i]) continue
+    var best = maxDistance; var hit: RayHit? = null; var hitBody = Int.MAX_VALUE
+    fun consider(i: Int) {
+        if (removed[i]) return
         val shape = shapes[i]!!
         // Quick rejection by the bounding sphere, on scalars (no vector for the bodies far from the ray).
         val reach = shape.boundingRadius + radius
         val cx = px[i] - origin.x; val cy = py[i] - origin.y; val cz = pz[i] - origin.z
         val m = cx * d.x + cy * d.y + cz * d.z
-        if (m < -reach || m > best + reach) continue
+        if (m < -reach || m > best + reach) return
         val ex = cx - d.x * m; val ey = cy - d.y * m; val ez = cz - d.z * m
-        if (ex * ex + ey * ey + ez * ez > reach * reach) continue
-        if (filter != null && !filter(Body(this, i))) continue
+        if (ex * ex + ey * ey + ez * ez > reach * reach) return
+        if (filter != null && !filter(Body(this, i))) return
         val c = Vec3(px[i], py[i], pz[i])
         val pose = poseOf(i)
         val r = when (shape) {
             is Sphere -> raySphere(origin, d, c, shape.radius + radius)
             is Capsule -> rayCapsule(origin, d, pose.p - pose.ay * shape.halfHeight, pose.p + pose.ay * shape.halfHeight, shape.radius + radius)
             is Box -> if (radius > 0f) sweepBox(origin, d, pose, shape, radius) else rayBox(origin, d, pose, shape.halfX, shape.halfY, shape.halfZ)
-        } ?: continue
-        if (r.first < best) { best = r.first; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, Body(this, i), null) }
+        } ?: return
+        // Equal distances: the lowest body wins, as when every body is tried in order.
+        if (r.first < best || (r.first == best && hit != null && i < hitBody)) {
+            best = r.first; hitBody = i; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, Body(this, i), null)
+        }
+    }
+    val grid = if (radius <= QueryGrid.PAD) gridFor() else null
+    if (grid == null) for (i in 0 until count) consider(i)
+    else {
+        // Walk the cells along the ray (Amanatides–Woo), within the grid's bounds, until no closer body can come.
+        grid.begin()
+        val cand = queryBodies; cand.clear()
+        for (k in 0 until grid.large.size) consider(grid.large[k])
+        var t0 = 0f; var t1 = best
+        for (axis in 0..2) {
+            val o = when (axis) { 0 -> origin.x; 1 -> origin.y; else -> origin.z }
+            val v = when (axis) { 0 -> d.x; 1 -> d.y; else -> d.z }
+            val lo = when (axis) { 0 -> grid.minX; 1 -> grid.minY; else -> grid.minZ }
+            val hi = when (axis) { 0 -> grid.maxX; 1 -> grid.maxY; else -> grid.maxZ }
+            if (abs(v) < 1e-12f) { if (o < lo || o > hi) t1 = -1f }
+            else { val a = (lo - o) / v; val b = (hi - o) / v; t0 = max(t0, min(a, b)); t1 = min(t1, max(a, b)) }
+        }
+        if (t0 <= t1) {
+            val s = grid.size
+            val sx = origin.x + d.x * t0; val sy = origin.y + d.y * t0; val sz = origin.z + d.z * t0
+            var x = grid.cell(sx); var y = grid.cell(sy); var z = grid.cell(sz)
+            val stepX = if (d.x > 0f) 1 else -1; val stepY = if (d.y > 0f) 1 else -1; val stepZ = if (d.z > 0f) 1 else -1
+            fun boundary(c: Int, step: Int) = (c - 4096 + (if (step > 0) 1 else 0)) * s
+            var tx = if (abs(d.x) < 1e-12f) Float.MAX_VALUE else (boundary(x, stepX) - origin.x) / d.x
+            var ty = if (abs(d.y) < 1e-12f) Float.MAX_VALUE else (boundary(y, stepY) - origin.y) / d.y
+            var tz = if (abs(d.z) < 1e-12f) Float.MAX_VALUE else (boundary(z, stepZ) - origin.z) / d.z
+            val dx = if (abs(d.x) < 1e-12f) Float.MAX_VALUE else s / abs(d.x)
+            val dy = if (abs(d.y) < 1e-12f) Float.MAX_VALUE else s / abs(d.y)
+            val dz = if (abs(d.z) < 1e-12f) Float.MAX_VALUE else s / abs(d.z)
+            while (true) {
+                cand.clear(); grid.collect(x, y, z, cand); cand.sort()
+                for (k in 0 until cand.size) consider(cand[k])
+                val next = min(tx, min(ty, tz))
+                if (next > best || next > t1) break
+                if (tx <= ty && tx <= tz) { x += stepX; tx += dx } else if (ty <= tz) { y += stepY; ty += dy } else { z += stepZ; tz += dz }
+            }
+        }
     }
     if (meshes && radius > 0f) {
         val stack = queryStack; val found = queryFound
@@ -233,7 +273,12 @@ internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, excl
     out.clear()
     val scratch = queryScratch
     val reach = shape.boundingRadius + margin
-    for (i in 0 until count) {
+    val grid = gridFor()
+    val cand = queryBodies
+    if (grid != null) grid.bodiesIn(pose.p.x - reach, pose.p.y - reach, pose.p.z - reach, pose.p.x + reach, pose.p.y + reach, pose.p.z + reach, cand)
+    val n = if (grid != null) cand.size else count
+    for (k in 0 until n) {
+        val i = if (grid != null) cand[k] else k
         if (i == exclude || removed[i]) continue
         val r = shapes[i]!!.boundingRadius + reach
         val dx = px[i] - pose.p.x; val dy = py[i] - pose.p.y; val dz = pz[i] - pose.p.z

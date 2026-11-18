@@ -10,7 +10,19 @@ import java.nio.file.Path
 import kotlin.math.*
 
 /** What a run gave: frames drawn, time per frame (update and drawing), where the first player ended. */
-class RunReport(val frames: Int, val meanMs: Double, val p99Ms: Double, val maxMs: Double, val playerPosition: Vec3)
+/**
+ * What a run measured: frames drawn, CPU time per frame (mean, 99th percentile, worst; without the first
+ * frames, while the JIT compiles), the GPU's time per frame (median, 0 if the GPU cannot time) and where
+ * the player ended.
+ */
+class RunReport(val frames: Int, val meanMs: Double, val p99Ms: Double, val maxMs: Double, val playerPosition: Vec3, val gpuMs: Double = 0.0)
+
+/** Frame times kept in a primitive array: measuring must not allocate. */
+private class Times {
+    var values = DoubleArray(1024); var size = 0
+    fun add(v: Double) { if (size == values.size) values = values.copyOf(size * 2); values[size++] = v }
+    fun list(): List<Double> = values.copyOf(size).toList()
+}
 
 /**
  * Opens a window and plays the scene built by [setup] until the window closes (or Escape). Tab
@@ -79,7 +91,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 }
             }
         }
-        val frameTimes = ArrayList<Double>()
+        val frameTimes = Times(); val gpuTimes = Times()
         var window: Window? = null
         var renderer: VulkanRenderer? = null
         try {
@@ -134,8 +146,10 @@ internal class Runtime(private val title: String, private val args: Array<String
                 fpsFrames++; fpsTime += dt
                 if (fpsTime >= .5f) { fps = (fpsFrames / fpsTime).roundToInt(); fpsTime = 0f; fpsFrames = 0; scene.fps = fps }
                 val capture = if (frame == frames - 1 || route?.done == true) screenshot else null
-                r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: false), capture, eye, scene.time)
+                r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: false), capture, eye, scene.time,
+                    scene.hiddenNode)
                 frameTimes.add((System.nanoTime() - frameStart) / 1e6)
+                if (r.gpuMs > 0.0) gpuTimes.add(r.gpuMs)
                 frame++
                 if (window != null && frame % 30 == 0) window.title = title
                 // Another scene asked for: build it, free the old meshes on the GPU, keep the window and the sound.
@@ -159,15 +173,17 @@ internal class Runtime(private val title: String, private val args: Array<String
                 check(p.position.isFinite()) { "Player position not finite" }
             }
             check(r.erreursValidation == 0) { "Vulkan validation errors: " + r.erreursValidation }
-            println("SILLAGE_RUN_OK frames=" + frame + " smoke=" + smoke + " position=" + (p?.position ?: Vec3.ZERO) + " ground=" + (p?.onGround ?: false))
-            if (System.getenv("SILLAGE_FRAME_TIMES") != null) println("SILLAGE_FRAME_TIMES " + frameTimes.withIndex().sortedByDescending { it.value }.take(12).joinToString { "#" + it.index + "=" + "%.1f".format(it.value) })
+            val gpu = gpuTimes.list().drop(min(60, gpuTimes.size / 4)).sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
+            println("SILLAGE_RUN_OK frames=" + frame + " smoke=" + smoke + " position=" + (p?.position ?: Vec3.ZERO) + " ground=" + (p?.onGround ?: false) +
+                " gpu=" + "%.2f".format(gpu) + "ms")
+            if (System.getenv("SILLAGE_FRAME_TIMES") != null) println("SILLAGE_FRAME_TIMES " + frameTimes.list().withIndex().sortedByDescending { it.value }.take(12).joinToString { "#" + it.index + "=" + "%.1f".format(it.value) })
             if (recording != null && recordedCount > 0) {
                 Sound(recorded.copyOf(recordedCount), 2, rate).save(recording)
                 println("SILLAGE_AUDIO_RECORDED " + recording + " " + "%.1f".format(recordedCount / 2f / rate) + " s")
             }
-            val sorted = frameTimes.drop(min(60, frameTimes.size / 4)).sorted()        // without the first frames (compilation)
+            val sorted = frameTimes.list().drop(min(60, frameTimes.size / 4)).sorted()        // without the first frames (compilation)
             return RunReport(frame, if (sorted.isEmpty()) 0.0 else sorted.average(), sorted.getOrElse((sorted.size * .99).toInt().coerceAtMost(sorted.size - 1)) { 0.0 },
-                sorted.lastOrNull() ?: 0.0, p?.position ?: Vec3.ZERO)
+                sorted.lastOrNull() ?: 0.0, p?.position ?: Vec3.ZERO, gpu)
         } finally {
             renderer?.close()
             window?.close()

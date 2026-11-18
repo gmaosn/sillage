@@ -1,5 +1,9 @@
 package sillage.qa
 
+import sillage.Color
+import sillage.game
+import sillage.vec
+
 import sillage.Scene
 import sillage.demo.island
 import sillage.math.Vec3
@@ -86,8 +90,29 @@ fun Qa.performance() {
             " (99e centile ${f2(b.p99Ms)}, pire ${f1(b.maxMs)}, ramasse-miettes $gc ms sur la partie)")
     }
 
-    if (base.isEmpty() || refaire) {
+    // Scènes lourdes : 10 000 caisses à dessiner (une par appel avant les instances), puis un tas de 3 000 en jeu.
+    run {
+        val r = game("QA", arrayOf("--headless", "--mute", "--frames", "300", "--look-at", "0,40,70,0,0,0")) {
+            ground()
+            for (i in 0 until 100) for (j in 0 until 100) box(.6, color = if ((i + j) % 2 == 0) Color.WOOD else Color.ORANGE, at = vec(i - 50, .3, j - 50))
+        }
+        mesure("rendu.caisses10000", "image de 10 000 caisses (processeur)", "ms", r.meanMs, " (GPU ${f2(r.gpuMs)} ms, 99e centile ${f2(r.p99Ms)})")
+    }
+    run {
+        val r = game("QA", arrayOf("--headless", "--mute", "--frames", "360", "--look-at", "0,22,30,0,0,0")) {
+            ground()
+            for ((x, z, w, d) in listOf(arrayOf(-13f, 0f, .5f, 13.5f), arrayOf(13f, 0f, .5f, 13.5f), arrayOf(0f, -13f, 13.5f, .5f), arrayOf(0f, 13f, 13.5f, .5f)))
+                box(w * 2, 4, d * 2, Color.STONE, at = vec(x, 2, z)).solid()
+            for (n in 0 until 3000) { val l = n / 400; val i = (n / 20) % 20; val j = n % 20; box(.6, at = vec((i - 10) * 1.2f, 1 + l * 1.2f, (j - 10) * 1.2f)).dynamic() }
+        }
+        mesure("jeu.tas3000", "image d'un tas de 3 000 caisses en jeu (physique, ombres, rendu)", "ms", r.meanMs, " (GPU ${f2(r.gpuMs)} ms, 99e centile ${f2(r.p99Ms)})")
+    }
+
+    val manquantes = nouvelles.keys.filter { it !in base }
+    if (base.isEmpty() || refaire || manquantes.isNotEmpty()) {
+        // Les mesures nouvelles s'ajoutent à la base sans toucher aux anciennes (sauf avec --refaire-references).
+        val ecrire = if (base.isEmpty() || refaire) nouvelles else LinkedHashMap(base).apply { for (k in manquantes) put(k, nouvelles.getValue(k)) }
         Files.createDirectories(chemin.parent)
-        Files.writeString(chemin, "# Base de vitesse de cette machine, écrite par le contrôle qualité (ms).\n" + nouvelles.entries.joinToString("\n") { "${it.key}=${"%.4f".format(java.util.Locale.ROOT, it.value)}" } + "\n")
+        Files.writeString(chemin, "# Base de vitesse de cette machine, écrite par le contrôle qualité (ms).\n" + ecrire.entries.joinToString("\n") { "${it.key}=${"%.4f".format(java.util.Locale.ROOT, it.value)}" } + "\n")
     }
 }

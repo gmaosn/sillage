@@ -6,3 +6,5 @@ ile.miseajour=0.1415
 ile.miseajour.alloc=66.2637
 rendu.1280.moyenne=2.7380
 rendu.2560.moyenne=3.1362
+rendu.caisses10000=4.7603
+jeu.tas3000=53.6058
