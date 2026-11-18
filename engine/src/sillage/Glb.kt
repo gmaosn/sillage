@@ -9,20 +9,28 @@ import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Chargeur glTF 2 binaire, entièrement JVM. Aucun moteur natif ni Assimp.
- * Lit la hiérarchie des nœuds, les couleurs de matériau ou de sommet et les animations TRS. */
+/**
+ * glTF 2.0 binary (.glb) loader, in Kotlin. It reads the node hierarchy, the material or vertex
+ * colours, the material names and the node animations (translation, rotation, scale; linear or step).
+ * Textures, skins and cubic-spline curves are refused with a message that says so. A path is looked
+ * up on disk first, then in the classpath resources.
+ */
 object Glb {
+    /** The model in its rest pose as one mesh (static scenery). */
     fun load(path: String): Mesh = loadModel(path).flatten().also {
         require(it.triangleCount > 0) { "GLB without triangles: $path" } }
 
+    /** The model with its hierarchy and animations. */
     fun loadModel(path: String): Model = readModel(bytes(path))
 
+    /** [load] from the bytes of a file. */
     fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }
 
     private fun bytes(path: String): ByteArray =
         if (Files.exists(Path.of(path))) Files.readAllBytes(Path.of(path))
         else Glb::class.java.getResourceAsStream("/" + path)?.use { it.readAllBytes() } ?: error("GLB not found (file or resource): " + path)
 
+    /** [loadModel] from the bytes of a file. */
     fun readModel(bytes: ByteArray): Model {
         require(bytes.size >= 20) { "Truncated GLB" }
         val file = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)

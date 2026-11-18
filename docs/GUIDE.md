@@ -19,6 +19,8 @@ fun main(args: Array<String>) {
 
 The two demos show the whole API at work: `playground/` is made of shapes only (crates, balls, a ramp, a lift, stars to collect), `demo/` is an island built from glTF models (animated scenery, a rocking boat, shells, sea sounds).
 
+This guide tours the engine by topic. The [tutorial](TUTORIAL.md) builds a first game step by step, [PHYSICS.md](PHYSICS.md) covers the physics engine, [REFERENCE.md](REFERENCE.md) lists the whole public API, and [ARCHITECTURE.md](ARCHITECTURE.md) explains how the engine is built.
+
 ## Running
 
 The project builds with the Kotlin Toolchain (`./kotlin`); a game is a module whose `module.yaml` depends on `//engine`.
@@ -109,7 +111,7 @@ When a model is animated, a collider can follow one of its parts: `port.collider
 
 The world is `physics`, a `PhysicsWorld`: `raycast(origin, direction, distance, radius)` for rays and sphere sweeps, `overlaps(shape, position)` for what a shape would touch, `groundBelow(x, z)`, and gravity. `groundHeight(x, z)` is the height of the solid meshes below a point, handy to put things on a terrain.
 
-The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours. Fast thin objects can still tunnel (there is no continuous collision yet).
+The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours. Fast thin objects can still tunnel (there is no continuous collision yet). [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
 
 ## The player
 
@@ -232,6 +234,7 @@ What the engine does by itself:
 - **One draw call per mesh.** Every copy of a mesh is drawn in one call, with its model matrices in an instance buffer. Primitives of the same size and colour share their mesh, so a thousand `box(.5)` cost one draw; for your own meshes, build one `Mesh` and give it to many nodes (`mesh(crate, at = …)`). To change one node's look, give it another mesh rather than editing a shared one.
 - **Two frames in flight.** The CPU prepares the next frame while the GPU draws the last one.
 - **Queries through a grid.** Rays, sphere sweeps and contact queries (the player, shadows, the camera) only look at the bodies near them.
+- **No garbage in the hot loops.** Collision tests, rays and sweeps work on plain numbers and create no objects; the physics step, the mixer and the frame recording reuse their buffers. The garbage collector has little to do while the game runs.
 
 Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo island takes about 0.6 ms of CPU and 0.3 ms of GPU per frame; 10,000 crates on screen, 1.4 ms CPU and 0.4 ms GPU; a heap of 3,000 falling crates with shadows, 7 ms per frame; 10,000 awake bodies in a heap, about 22 ms per physics step.
 
