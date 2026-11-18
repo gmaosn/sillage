@@ -135,10 +135,12 @@ internal class VkInstanceApi(val handle: MemorySegment) {
     private val pGetPhysicalDeviceFormatProperties = proc("vkGetPhysicalDeviceFormatProperties")
     private val pGetPhysicalDeviceMemoryProperties = proc("vkGetPhysicalDeviceMemoryProperties")
     private val pCreateDevice = proc("vkCreateDevice")
+    private val pEnumerateDeviceExtensionProperties = proc("vkEnumerateDeviceExtensionProperties")
     private val pGetDeviceProcAddr = proc("vkGetDeviceProcAddr")
     private val pGetPhysicalDeviceSurfaceSupportKHR = optional("vkGetPhysicalDeviceSurfaceSupportKHR")
     private val pGetPhysicalDeviceSurfaceCapabilitiesKHR = optional("vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
     private val pGetPhysicalDeviceSurfaceFormatsKHR = optional("vkGetPhysicalDeviceSurfaceFormatsKHR")
+    private val pGetPhysicalDeviceSurfacePresentModesKHR = optional("vkGetPhysicalDeviceSurfacePresentModesKHR")
     private val pDestroySurfaceKHR = optional("vkDestroySurfaceKHR")
     private val pCreateWaylandSurfaceKHR = optional("vkCreateWaylandSurfaceKHR")
     private val pCreateXcbSurfaceKHR = optional("vkCreateXcbSurfaceKHR")
@@ -160,6 +162,14 @@ internal class VkInstanceApi(val handle: MemorySegment) {
         Sig.V_PP.invokeExact(pGetPhysicalDeviceMemoryProperties, pd, props) }
     fun createDevice(pd: MemorySegment, info: MemorySegment, out: MemorySegment) =
         (Sig.I_PPPP.invokeExact(pCreateDevice, pd, info, NULL, out) as Int).vkCheck("vkCreateDevice")
+    /** The extensions [pd] offers. */
+    fun deviceExtensionNames(pd: MemorySegment): List<String> = Arena.ofConfined().use { a ->
+        val n = a.allocate(JAVA_INT)
+        (Sig.I_PPPP.invokeExact(pEnumerateDeviceExtensionProperties, pd, NULL, n, NULL) as Int).vkCheck("vkEnumerateDeviceExtensionProperties")
+        val props = a.structs(VkExtensionProperties, n.get(JAVA_INT, 0))
+        (Sig.I_PPPP.invokeExact(pEnumerateDeviceExtensionProperties, pd, NULL, n, props) as Int).vkCheck("vkEnumerateDeviceExtensionProperties")
+        List(n.get(JAVA_INT, 0)) { props.at(VkExtensionProperties, it).chars(VkExtensionProperties, "extensionName") }
+    }
     fun deviceProc(device: MemorySegment, name: String): MemorySegment = Arena.ofConfined().use { a ->
         Sig.P_PP.invokeExact(pGetDeviceProcAddr, device, a.allocateFrom(name)) as MemorySegment
     }
@@ -173,6 +183,9 @@ internal class VkInstanceApi(val handle: MemorySegment) {
     fun getPhysicalDeviceSurfaceFormatsKHR(pd: MemorySegment, surface: Long, count: MemorySegment, formats: MemorySegment) =
         (Sig.I_PJPP.invokeExact(need(pGetPhysicalDeviceSurfaceFormatsKHR, "vkGetPhysicalDeviceSurfaceFormatsKHR"), pd, surface, count, formats) as Int)
             .vkCheck("vkGetPhysicalDeviceSurfaceFormatsKHR")
+    fun getPhysicalDevicePresentModesKHR(pd: MemorySegment, surface: Long, count: MemorySegment, modes: MemorySegment) =
+        (Sig.I_PJPP.invokeExact(need(pGetPhysicalDeviceSurfacePresentModesKHR, "vkGetPhysicalDeviceSurfacePresentModesKHR"), pd, surface, count, modes) as Int)
+            .vkCheck("vkGetPhysicalDeviceSurfacePresentModesKHR")
     fun destroySurfaceKHR(surface: Long) {
         Sig.V_PJP.invokeExact(need(pDestroySurfaceKHR, "vkDestroySurfaceKHR"), handle, surface, NULL) }
     fun createWaylandSurfaceKHR(info: MemorySegment, out: MemorySegment) =
@@ -189,7 +202,7 @@ internal class VkInstanceApi(val handle: MemorySegment) {
 }
 
 /** Device-level functions, resolved with vkGetDeviceProcAddr for [handle]. */
-internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, swapchain: Boolean) {
+internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, swapchain: Boolean, presentWait: Boolean = false) {
     private val proc = { name: String -> instance.deviceProc(handle, name).also { require(it != NULL) { "$name missing" } } }
     private val optional = { name: String -> if (swapchain) proc(name) else NULL }
 
@@ -265,6 +278,7 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     private val pGetSwapchainImagesKHR = optional("vkGetSwapchainImagesKHR")
     private val pAcquireNextImageKHR = optional("vkAcquireNextImageKHR")
     private val pQueuePresentKHR = optional("vkQueuePresentKHR")
+    private val pWaitForPresentKHR = if (presentWait) proc("vkWaitForPresentKHR") else NULL
 
     fun destroyDevice() { Sig.V_PP.invokeExact(pDestroyDevice, handle, NULL) }
     fun getDeviceQueue(family: Int, index: Int, out: MemorySegment) { Sig.V_PIIP.invokeExact(pGetDeviceQueue, handle, family, index, out) }
@@ -375,6 +389,9 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     /** Returns the raw VkResult: VK_SUBOPTIMAL_KHR and VK_ERROR_OUT_OF_DATE_KHR are for the caller to handle. */
     fun acquireNextImageKHR(swapchain: Long, timeout: Long, semaphore: Long, fence: Long, index: MemorySegment): Int =
         Sig.I_PJJJJP.invokeExact(pAcquireNextImageKHR, handle, swapchain, timeout, semaphore, fence, index) as Int
+    /** Waits until the present numbered [presentId] (VkPresentIdKHR) is on screen, or [timeout] ns; returns the raw VkResult (VK_TIMEOUT…). */
+    fun waitForPresentKHR(swapchain: Long, presentId: Long, timeout: Long): Int =
+        Sig.I_PJJJ.invokeExact(pWaitForPresentKHR, handle, swapchain, presentId, timeout) as Int
     /** Returns the raw VkResult, like [acquireNextImageKHR]. */
     fun queuePresentKHR(queue: MemorySegment, info: MemorySegment): Int = Sig.I_PP.invokeExact(pQueuePresentKHR, queue, info) as Int
 }

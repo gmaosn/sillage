@@ -67,6 +67,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     private var scroll = 0f
     private var resized = false
     private val keys = BooleanArray(KEY_COUNT)
+    private val pressed = BooleanArray(KEY_COUNT)          // went down since the game last looked
 
     override var shouldClose = false; private set
     // Sans gestionnaire de fenêtres (Xvfb), aucun FocusIn n'arrive : la fenêtre est réputée active.
@@ -162,7 +163,10 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
                 when ((ev.get(JAVA_BYTE, 0).toInt() and 0x7f)) {
                     Xcb.KEY_PRESS, Xcb.KEY_RELEASE -> {
                         val code = (ev.get(JAVA_BYTE, 1).toInt() and 0xff) - 8  // X11 = evdev + 8
-                        if (code in 0 until KEY_COUNT) keys[code] = (ev.get(JAVA_BYTE, 0).toInt() and 0x7f) == Xcb.KEY_PRESS
+                        if (code in 0 until KEY_COUNT) {
+                            val down = (ev.get(JAVA_BYTE, 0).toInt() and 0x7f) == Xcb.KEY_PRESS
+                            keys[code] = down; if (down) pressed[code] = true
+                        }
                     }
                     Xcb.BUTTON_PRESS -> when (ev.get(JAVA_BYTE, 1).toInt() and 0xff) {
                         1 -> if (!mouseCaptured) mouseCaptured = true
@@ -176,7 +180,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
                         if (dx != 0 || dy != 0) warp = true
                     }
                     Xcb.FOCUS_IN -> focused = true
-                    Xcb.FOCUS_OUT -> { focused = false; keys.fill(false) }
+                    Xcb.FOCUS_OUT -> { focused = false; keys.fill(false); pressed.fill(false) }
                     Xcb.CONFIGURE_NOTIFY -> {
                         val w = ev.get(JAVA_SHORT, 20).toInt() and 0xffff; val h = ev.get(JAVA_SHORT, 22).toInt() and 0xffff
                         if (w != width || h != height) { width = w; height = h; resized = true }
@@ -194,7 +198,8 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
         poll()
     }
 
-    override fun isDown(key: Int) = key in 0 until KEY_COUNT && keys[key]
+    override fun isDown(key: Int) = key in 0 until KEY_COUNT && (keys[key] || pressed[key])
+    override fun clearPresses() = pressed.fill(false)
     override fun consumeMouseDelta(): FloatArray { val d = floatArrayOf(mouseDx, mouseDy); mouseDx = 0f; mouseDy = 0f; return d }
     override fun consumeScroll(): Float { val s = scroll; scroll = 0f; return s }
     override fun consumeResize(): Boolean { val r = resized; resized = false; return r }

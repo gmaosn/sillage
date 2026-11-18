@@ -19,6 +19,9 @@ class StructsTest {
         check(VkDescriptorSetAllocateInfo, 40, "descriptorPool" to 16, "pSetLayouts" to 32)
         check(VkDescriptorImageInfo, 24, "imageLayout" to 16)
         check(VkDescriptorBufferInfo, 24, "offset" to 8, "range" to 16)
+        check(VkPresentIdKHR, 32, "swapchainCount" to 16, "pPresentIds" to 24)
+        check(VkPhysicalDevicePresentIdFeaturesKHR, 24, "presentId" to 16)
+        check(VkPhysicalDevicePresentWaitFeaturesKHR, 24, "presentWait" to 16)
         check(VkWriteDescriptorSet, 64, "pBufferInfo" to 48, "dstSet" to 16, "descriptorType" to 36, "pImageInfo" to 40, "pTexelBufferView" to 56)
     }
 }

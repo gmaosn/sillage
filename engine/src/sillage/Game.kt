@@ -118,6 +118,12 @@ internal class Runtime(private val title: String, private val args: Array<String
                     if (window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
                     // Paused without focus, but never before the first frame: under Wayland the window only exists after it.
                     if (!window.focused && !smoke && frame > 0) { window.waitEvents(.05); last = System.nanoTime(); continue }
+                }
+                // Waits until the last frame is on screen, then reads what came meanwhile: the keys and the mouse act
+                // on the very next picture, instead of waiting behind the frames queued for the screen.
+                if (!r.attendre()) continue
+                if (window != null) {
+                    window.poll()
                     val (dx, dy) = window.consumeMouseDelta().let { it[0] to it[1] }
                     scene.input.mouseDelta = dx to dy
                     if (dx != 0f || dy != 0f) scene.camera.turn(dx, dy)
@@ -128,6 +134,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 val dt = if (smoke || headless) 1f / 60f else ((now - last) / 1e9).toFloat().coerceIn(.0001f, .1f)
                 last = now
                 scene.input.poll()
+                window?.clearPresses()                 // a tap between two frames counted once
                 scene.input.mouseCaptured = window?.mouseCaptured ?: false
                 if (window != null && scene.input.pressed(Key.TAB)) window.mouseCaptured = !window.mouseCaptured
                 // Scripted drivers for checks and recordings.

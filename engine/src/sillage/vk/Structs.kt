@@ -202,6 +202,11 @@ internal val VkSwapchainCreateInfoKHR = t("VkSwapchainCreateInfoKHR", VK_STRUCTU
 internal val VkPresentInfoKHR = t("VkPresentInfoKHR", VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
     "waitSemaphoreCount" to U32, "pWaitSemaphores" to Ptr, "swapchainCount" to U32, "pSwapchains" to Ptr,
     "pImageIndices" to Ptr, "pResults" to Ptr)
+internal val VkPresentIdKHR = t("VkPresentIdKHR", VK_STRUCTURE_TYPE_PRESENT_ID_KHR, "swapchainCount" to U32, "pPresentIds" to Ptr)
+internal val VkPhysicalDevicePresentIdFeaturesKHR = t("VkPhysicalDevicePresentIdFeaturesKHR",
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, "presentId" to U32)
+internal val VkPhysicalDevicePresentWaitFeaturesKHR = t("VkPhysicalDevicePresentWaitFeaturesKHR",
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, "presentWait" to U32)
 
 internal val VkCommandBufferBeginInfo = t("VkCommandBufferBeginInfo", VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     "flags" to U32, "pInheritanceInfo" to Ptr)
@@ -262,4 +267,5 @@ internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D
     VkClearValue, VkClearDepthStencilValue, VkRenderPassBeginInfo, VkImageMemoryBarrier, VkMemoryBarrier,
     VkBufferImageCopy, VkImageBlit, VkSubmitInfo, VkSamplerCreateInfo, VkDescriptorSetLayoutBinding,
     VkDescriptorSetLayoutCreateInfo, VkDescriptorPoolSize, VkDescriptorPoolCreateInfo, VkDescriptorSetAllocateInfo,
-    VkDescriptorImageInfo, VkDescriptorBufferInfo, VkWriteDescriptorSet)
+    VkDescriptorImageInfo, VkDescriptorBufferInfo, VkWriteDescriptorSet, VkPresentIdKHR, VkPhysicalDevicePresentIdFeaturesKHR,
+    VkPhysicalDevicePresentWaitFeaturesKHR)

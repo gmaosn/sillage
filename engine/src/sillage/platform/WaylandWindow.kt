@@ -174,6 +174,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     private var scroll = 0f
     private var discreteThisFrame = false
     private val keys = BooleanArray(KEY_COUNT)
+    private val pressed = BooleanArray(KEY_COUNT)          // went down since the game last looked
 
     override var shouldClose = false; private set
     // Une fenêtre Wayland n'apparaît qu'après sa première image, et n'a le focus qu'une fois apparue :
@@ -305,12 +306,12 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
                 val data = array.get(ADDRESS, 16).reinterpret(size)
                 for (k in 0 until (size / 4)) setKey(data.get(JAVA_INT, 4 * k), true)
             }
-            "leave" -> { focused = false; keys.fill(false) }
+            "leave" -> { focused = false; keys.fill(false); pressed.fill(false) }
             "key" -> setKey(a.u(2), a.u(3) != 0)
         }
     }
 
-    private fun setKey(code: Int, down: Boolean) { if (code in 0 until KEY_COUNT) keys[code] = down }
+    private fun setKey(code: Int, down: Boolean) { if (code in 0 until KEY_COUNT) { keys[code] = down; if (down) pressed[code] = true } }
 
     private fun applyCapture() {
         if (pointer == NULL) return
@@ -360,7 +361,8 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
         checkHealth()
     }
 
-    override fun isDown(key: Int) = key in 0 until KEY_COUNT && keys[key]
+    override fun isDown(key: Int) = key in 0 until KEY_COUNT && (keys[key] || pressed[key])
+    override fun clearPresses() = pressed.fill(false)
 
     override fun consumeMouseDelta(): FloatArray { val d = floatArrayOf(mouseDx, mouseDy); mouseDx = 0f; mouseDy = 0f; return d }
     override fun consumeScroll(): Float { val s = scroll; scroll = 0f; return s }

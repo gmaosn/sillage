@@ -22,7 +22,10 @@ internal interface Window : SurfaceSource, AutoCloseable {
     fun poll()
     /** Waits up to [seconds] for an event, then handles what arrived. */
     fun waitEvents(seconds: Double)
+    /** True while [key] is held, or if it went down since the last [clearPresses] (a tap shorter than a frame still counts). */
     fun isDown(key: Int): Boolean
+    /** Forgets the keys that went down and up again since the last call: the game has seen them. */
+    fun clearPresses()
     /** Mouse motion accumulated while captured since the last call, in pixels: (dx, dy). */
     fun consumeMouseDelta(): FloatArray
     /** Wheel notches since the last call, positive away from the user. */

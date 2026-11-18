@@ -138,6 +138,13 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private val frames=ArrayList<Frame>()
     private var frameIndex=0
     private var finished=LongArray(0)          // per swapchain image: presentation waits on it
+    // Waiting for the last frame to be on screen before reading the keys for the next one (VK_KHR_present_wait):
+    // one frame queued instead of three, so a key acts on the very next picture. Off where the driver lacks it.
+    var attenteAffichage=false
+        private set
+    private var presents=0L                    // presents numbered so far on this swapchain (VkPresentIdKHR)
+    private var pret=false                     // this frame's fence waited and its swapchain image acquired (attendre)
+    private var image=-1
     private var queries=0L                     // two timestamps per frame in flight
     private var timestampBits=0
     private var timestampPeriod=0f
@@ -174,6 +181,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private val waters=ArrayList<Batch>()
     private val defaultLighting=Lighting()
     private var ferme=false
+    // SILLAGE_LATENCE=1: once a second, how long a key takes to reach the screen and where a frame waits.
+    private val diagnostic=System.getenv("SILLAGE_LATENCE")!=null
+    private var readAt=0L; private var latShown=0L; private var latShownCount=0
+    private var latPresentWait=0L; private var latFence=0L; private var latAcquire=0L; private var latPresent=0L; private var latFrames=0; private var latSince=System.nanoTime()
     var nomGpu=""
         private set
 
@@ -289,12 +300,29 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypes[$it].propertyFlags") }
     }
 
-    private fun createDevice() = stack.frame { s ->
+    private fun createDevice() {
+        val offered=if(surface!=0L) vk.deviceExtensionNames(physical) else emptyList()
+        val wait=surface!=0L && VK_KHR_PRESENT_ID_EXTENSION_NAME in offered && VK_KHR_PRESENT_WAIT_EXTENSION_NAME in offered &&
+            System.getenv("SILLAGE_PRESENT_WAIT")!="0"
+        // With the present wait if the driver offers it; a driver that refuses its features gets a device without.
+        if(wait) try { createDevice(true); return } catch(e: RuntimeException) { System.err.println("Sillage: no present wait (" + e.message + ")") }
+        createDevice(false)
+    }
+
+    private fun createDevice(wait: Boolean) = stack.frame { s ->
         val queues=s.struct(VkDeviceQueueCreateInfo, "queueFamilyIndex" to family, "queueCount" to 1, "pQueuePriorities" to s.floats(1f))
         val ci=s.struct(VkDeviceCreateInfo, "queueCreateInfoCount" to 1, "pQueueCreateInfos" to queues)
-        if(surface != 0L) ci.put(VkDeviceCreateInfo,
-            "enabledExtensionCount" to 1, "ppEnabledExtensionNames" to s.strings(listOf(VK_KHR_SWAPCHAIN_EXTENSION_NAME)))
-        val p=s.allocate(ADDRESS); vk.createDevice(physical,ci,p); dev=VkDeviceApi(p.get(ADDRESS,0),vk,surface != 0L)
+        if(surface != 0L) {
+            val names=if(wait) listOf(VK_KHR_SWAPCHAIN_EXTENSION_NAME,VK_KHR_PRESENT_ID_EXTENSION_NAME,VK_KHR_PRESENT_WAIT_EXTENSION_NAME) else listOf(VK_KHR_SWAPCHAIN_EXTENSION_NAME)
+            ci.put(VkDeviceCreateInfo, "enabledExtensionCount" to names.size, "ppEnabledExtensionNames" to s.strings(names))
+        }
+        if(wait) {
+            val waitFeatures=s.struct(VkPhysicalDevicePresentWaitFeaturesKHR, "presentWait" to true)
+            val idFeatures=s.struct(VkPhysicalDevicePresentIdFeaturesKHR, "pNext" to waitFeatures, "presentId" to true)
+            ci.put(VkDeviceCreateInfo, "pNext" to idFeatures)
+        }
+        val p=s.allocate(ADDRESS); vk.createDevice(physical,ci,p); dev=VkDeviceApi(p.get(ADDRESS,0),vk,surface != 0L,wait)
+        attenteAffichage=wait
         dev.getDeviceQueue(family,0,p); queue=p.get(ADDRESS,0)
     }
 
@@ -799,7 +827,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val imageFormat=if(format(chosen)==VK_FORMAT_UNDEFINED) VK_FORMAT_B8G8R8A8_UNORM else format(chosen)
             swapWidth=if(cap("currentExtent.width")!=-1) cap("currentExtent.width") else w.coerceIn(cap("minImageExtent.width"),cap("maxImageExtent.width"))
             swapHeight=if(cap("currentExtent.height")!=-1) cap("currentExtent.height") else h.coerceIn(cap("minImageExtent.height"),cap("maxImageExtent.height"))
-            var count=cap("minImageCount")+1
+            // Waiting for the screen keeps one frame queued whatever the count; without it, every image more is a frame more of delay.
+            var count=if(attenteAffichage) cap("minImageCount")+1 else maxOf(2,cap("minImageCount"))
             if(cap("maxImageCount")>0) count=minOf(count,cap("maxImageCount"))
             val composite=listOf(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)
                 .first { cap("supportedCompositeAlpha") and it != 0 }
@@ -811,10 +840,16 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 "clipped" to true, "oldSwapchain" to swapchain)
             val p=s.allocate(JAVA_LONG); dev.createSwapchainKHR(ci,p)
             if(swapchain!=0L) dev.destroySwapchainKHR(swapchain)
+            presents=0
             swapchain=p.get(JAVA_LONG,0)
             dev.getSwapchainImagesKHR(swapchain,n,MemorySegment.NULL)
             val imgs=s.allocate(JAVA_LONG,n.get(JAVA_INT,0).toLong()); dev.getSwapchainImagesKHR(swapchain,n,imgs)
             swapImages=LongArray(n.get(JAVA_INT,0)) { imgs.getAtIndex(JAVA_LONG,it.toLong()) }
+            if(diagnostic) {
+                val pm=s.allocate(JAVA_INT); vk.getPhysicalDevicePresentModesKHR(physical,surface,pm,MemorySegment.NULL)
+                val modes=s.allocate(JAVA_INT,pm.get(JAVA_INT,0).toLong()); vk.getPhysicalDevicePresentModesKHR(physical,surface,pm,modes)
+                println("SILLAGE_LATENCE swapchain images=${swapImages.size} (min ${cap("minImageCount")}) present modes ${(0 until pm.get(JAVA_INT,0)).map { modes.getAtIndex(JAVA_INT,it.toLong()) }} FIFO, waiting for the screen: $attenteAffichage")
+            }
             finished.forEach { dev.destroySemaphore(it) }
             finished=LongArray(swapImages.size) { dev.createSemaphore(s.struct(VkSemaphoreCreateInfo),p); p.get(JAVA_LONG,0) }
             if(swapWidth!=largeur || swapHeight!=hauteur || framebuffer==0L) { largeur=swapWidth; hauteur=swapHeight; createTargets() }
@@ -966,12 +1001,48 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
      * cover a square around [focus] (none when it is null or the scene has no shadows). [extras]: the point
      * lights and particles of the frame.
      */
+    /**
+     * Waits until the next frame can be drawn, and should be called before reading the keys for it: with a
+     * window, until the last frame is on screen (when the driver can tell, see [attenteAffichage]) and a
+     * swapchain image is free; then until this frame's resources are free (the GPU done with them, two
+     * frames ago). [dessiner] calls it itself if the game did not. False: the window's images had to be
+     * made again, skip this frame.
+     */
+    fun attendre(): Boolean {
+        if(pret) return true
+        return stack.frame { s ->
+            if(attenteAffichage && presents>0) {
+                val l=System.nanoTime()
+                // A tenth of a second at most: a hidden window may never be shown.
+                if(dev.waitForPresentKHR(swapchain,presents,100_000_000L)==VK_SUCCESS && diagnostic) { latShown+=System.nanoTime()-readAt; latShownCount++ }
+                latPresentWait+=System.nanoTime()-l
+            }
+            val f=frames[frameIndex]
+            val l0=System.nanoTime()
+            dev.waitForFences(1,s.longs(f.fence),Long.MAX_VALUE)
+            latFence+=System.nanoTime()-l0
+            image=-1
+            if(surface!=0L) {
+                val out=s.allocate(JAVA_INT)
+                val l1=System.nanoTime()
+                val result=dev.acquireNextImageKHR(swapchain,Long.MAX_VALUE,f.acquired,VK_NULL_HANDLE,out)
+                latAcquire+=System.nanoTime()-l1
+                if(result==VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return@frame false }
+                check(result==VK_SUCCESS || result==VK_SUBOPTIMAL_KHR) { "vkAcquireNextImageKHR: " + result }
+                image=out.get(JAVA_INT,0)
+            }
+            pret=true
+            readAt=System.nanoTime()                   // the game reads the keys for this frame now
+            true
+        }
+    }
+
     fun dessiner(objets: List<Node>, camera: Mat4, hud: Mesh, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f,
                  hidden: Node? = null, focus: Vec3? = null, lighting: Lighting = defaultLighting, extras: FrameExtras? = null) = stack.frame { s ->
+        if(!attendre()) return@frame
+        pret=false
         val f=frames[frameIndex]
-        // This frame's resources are free again once the GPU is done with them, two frames ago.
         val fenceRef=s.longs(f.fence)
-        dev.waitForFences(1,fenceRef,Long.MAX_VALUE)
         if(f.timed) {
             val t=s.allocate(JAVA_LONG,2)
             if(dev.getQueryPoolResults(queries,2*frameIndex,2,16,t,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS) {
@@ -980,14 +1051,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 gpuMs=ticks*timestampPeriod/1e6
             }
         }
-        var index=-1
-        if(surface!=0L) {
-            val out=s.allocate(JAVA_INT)
-            val result=dev.acquireNextImageKHR(swapchain,Long.MAX_VALUE,f.acquired,VK_NULL_HANDLE,out)
-            if(result==VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return@frame }
-            check(result==VK_SUCCESS || result==VK_SUBOPTIMAL_KHR) { "vkAcquireNextImageKHR: " + result }
-            index=out.get(JAVA_INT,0)
-        }
+        val index=image
         syncTextures(surface==0L || capture!=null)
         gather(objets,hidden)
         if(hud!==f.hudSent) { upload(f.hud!!,hud.vertices); f.hudSent=hud }
@@ -1163,7 +1227,17 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             if(index>=0) {
                 val pi=s.struct(VkPresentInfoKHR, "waitSemaphoreCount" to 1, "pWaitSemaphores" to s.longs(finished[index]),
                     "swapchainCount" to 1, "pSwapchains" to s.longs(swapchain), "pImageIndices" to s.ints(index))
+                // Numbered, so that the next frame can wait until this one is on screen.
+                if(attenteAffichage) pi.put(VkPresentInfoKHR, "pNext" to s.struct(VkPresentIdKHR, "swapchainCount" to 1, "pPresentIds" to s.longs(++presents)))
+                val l2=System.nanoTime()
                 val result=dev.queuePresentKHR(queue,pi)
+                latPresent+=System.nanoTime()-l2; latFrames++
+                if(diagnostic && System.nanoTime()-latSince>1_000_000_000L) {
+                    val shown=if(latShownCount>0) "%.1f ms".format(latShown/1e6/latShownCount) else "?"
+                    println("SILLAGE_LATENCE keys read → on screen $shown; per frame: waiting for the screen %.2f ms, fence %.2f ms, image %.2f ms, present %.2f ms; %d frames/s"
+                        .format(latPresentWait/1e6/latFrames,latFence/1e6/latFrames,latAcquire/1e6/latFrames,latPresent/1e6/latFrames,latFrames))
+                    latShown=0; latShownCount=0; latPresentWait=0; latFence=0; latAcquire=0; latPresent=0; latFrames=0; latSince=System.nanoTime()
+                }
                 if(result==VK_ERROR_OUT_OF_DATE_KHR || result==VK_SUBOPTIMAL_KHR) recreateSwapchain() else result.vkCheck("Present")
             }
             if(capture!=null && readback!=null) { dev.waitForFences(1,fenceRef,Long.MAX_VALUE); save(readback,capture) }
