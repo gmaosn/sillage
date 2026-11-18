@@ -1,7 +1,7 @@
 package sillage
 
-import org.joml.Matrix4f
-import org.joml.Vector3f
+import sillage.math.Mat4
+import sillage.math.Vec3
 import org.lwjgl.glfw.GLFW.*
 import org.lwjgl.glfw.GLFWErrorCallback
 import org.lwjgl.glfw.Callbacks.glfwFreeCallbacks
@@ -60,7 +60,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
             var highest=monde.joueur.position.y
             var lowest=highest
             var moved=false
-            val initial=Vector3f(monde.joueur.position)
+            val initial=monde.joueur.position
             while(frame<frames && (headless || !glfwWindowShouldClose(window))) {
                 if(!headless) {
                     glfwPollEvents()
@@ -81,20 +81,19 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 var jump=down(GLFW_KEY_SPACE)
                 val movement=if(smoke) {
                     jump=frame==40
-                    if(frame in 20..110) monde.camera.mouvement(1f,0f) else Vector3f()
+                    if(frame in 20..110) monde.camera.mouvement(1f,0f) else Vec3.ZERO
                 } else monde.camera.mouvement(
                     (if(down(GLFW_KEY_D,GLFW_KEY_RIGHT)) 1f else 0f)-(if(down(GLFW_KEY_A,GLFW_KEY_Q,GLFW_KEY_LEFT)) 1f else 0f),
                     (if(down(GLFW_KEY_W,GLFW_KEY_Z,GLFW_KEY_UP)) 1f else 0f)-(if(down(GLFW_KEY_S,GLFW_KEY_DOWN)) 1f else 0f))
                 monde.miseAJour(movement,jump && !oldJump,dt); oldJump=jump
-                if(monde.joueur.position.distance(initial)>.1f) moved=true
+                if(monde.joueur.position.distanceTo(initial)>.1f) moved=true
                 highest=max(highest,monde.joueur.position.y); lowest=min(lowest,monde.joueur.position.y)
                 val view=monde.camera.vue(monde,dt)
-                val projection=Matrix4f().perspective(Math.toRadians(58.0).toFloat(),r.largeur.toFloat()/r.hauteur,.08f,180f,true)
-                projection.m11(-projection.m11())
+                val projection=Mat4.perspective(Math.toRadians(58.0).toFloat(),r.largeur.toFloat()/r.hauteur,.08f,180f)
                 fpsFrames++; fpsTime+=dt
                 if(fpsTime>=.5f) { fps=(fpsFrames/fpsTime).roundToInt(); fpsTime=0f; fpsFrames=0 }
                 val capture=if(frame==frames-1) screenshot else null
-                r.dessiner(monde.objets,projection.mul(view),Hud.construire(monde,fps,captured),capture)
+                r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,captured),capture)
                 frame++
                 if(!headless && frame%30==0) glfwSetWindowTitle(window,titre+" | "+monde.recoltes+"/"+monde.coquillages.size+" coquillages | "+fps+" FPS")
             }
@@ -102,7 +101,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 check(frame==frames) { "Démo interrompue avant la fin du smoke test" }
                 check(moved) { "Le personnage n'a pas bougé" }
                 check(highest-lowest>.5f) { "Le saut ou la gravité n'a pas été exercé" }
-                check(monde.joueur.position.isFinite) { "Position physique non finie" }
+                check(monde.joueur.position.isFinite()) { "Position physique non finie" }
             }
             check(r.erreursValidation==0) { "Erreurs de validation Vulkan : " + r.erreursValidation }
             println("SILLAGE_RUN_OK frames="+frame+" smoke="+smoke+" position="+monde.joueur.position+" sol="+monde.joueur.auSol)

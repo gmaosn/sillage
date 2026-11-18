@@ -1,6 +1,6 @@
 package sillage
 
-import org.joml.Vector3f
+import sillage.math.Vec3
 import kotlin.math.*
 
 /** Contrôleur cinématique capsule simplifiée (cercle horizontal + intervalle vertical).
@@ -15,7 +15,7 @@ class Physique {
     fun hauteur(x: Float, z: Float, plafond: Float = Float.POSITIVE_INFINITY): Float? =
         surfaces.asSequence().mapNotNull { it.hauteur(x,z) }.filter { it <= plafond }.maxOrNull()
 
-    fun avancer(joueur: Joueur, mouvement: Vector3f, saut: Boolean, dt: Float) {
+    fun avancer(joueur: Joueur, mouvement: Vec3, saut: Boolean, dt: Float) {
         reste += dt.coerceIn(0f, 0.1f)
         // Une pression est mémorisée jusqu'au prochain pas, même à >120 FPS.
         if (saut) joueur.sautEnAttente = true
@@ -25,7 +25,7 @@ class Physique {
         }
     }
 
-    private fun integrer(p: Joueur, mouvement: Vector3f, dt: Float) {
+    private fun integrer(p: Joueur, mouvement: Vec3, dt: Float) {
         if (p.auSol) p.coyote = .10f else p.coyote = max(0f,p.coyote-dt)
         if (p.sautEnAttente) p.tamponSaut = .12f
         p.sautEnAttente = false
@@ -35,42 +35,46 @@ class Physique {
         }
         val dx = mouvement.x * p.vitesse * dt
         val dz = mouvement.z * p.vitesse * dt
-        fun bloque(x: Float, z: Float): Boolean {
-            for (b in obstacles) {
-                if(p.position.y >= b.max.y - .02f || p.position.y+p.hauteur <= b.min.y) continue
-                val cx=x.coerceIn(b.min.x,b.max.x); val cz=z.coerceIn(b.min.z,b.max.z)
-                if((x-cx).pow(2)+(z-cz).pow(2) < p.rayon*p.rayon) return true
-            }
-            // Refuse une marche trop haute et les pentes abruptes.
-            val y = hauteur(x,z)
-            val old = hauteur(p.position.x,p.position.z)
-            return y != null && y > p.position.y + .32f && (old == null || y > old + .03f)
-        }
-        if(!bloque(p.position.x+dx,p.position.z)) p.position.x += dx
-        if(!bloque(p.position.x,p.position.z+dz)) p.position.z += dz
-        val avant = p.position.y
+        var x = p.position.x; var y = p.position.y; var z = p.position.z
+        if(!bloque(p,x,y,z,x+dx,z)) x += dx
+        if(!bloque(p,x,y,z,x,z+dz)) z += dz
+        val avant = y
         p.vitesseY -= gravite*dt
-        p.position.y += p.vitesseY*dt
-        val sol = hauteur(p.position.x,p.position.z,avant+.32f)
+        y += p.vitesseY*dt
+        val sol = hauteur(x,z,avant+.32f)
         p.auSol = false
-        if(sol != null && p.vitesseY <= 0 && p.position.y <= sol) {
-            p.position.y = sol; p.vitesseY=0f; p.auSol=true
+        if(sol != null && p.vitesseY <= 0 && y <= sol) {
+            y = sol; p.vitesseY=0f; p.auSol=true
         }
         for(b in obstacles) {
-            val dedans = p.position.x > b.min.x-p.rayon && p.position.x < b.max.x+p.rayon &&
-                p.position.z > b.min.z-p.rayon && p.position.z < b.max.z+p.rayon
+            val dedans = x > b.min.x-p.rayon && x < b.max.x+p.rayon &&
+                z > b.min.z-p.rayon && z < b.max.z+p.rayon
             if(!dedans) continue
-            if(p.vitesseY > 0 && avant+p.hauteur <= b.min.y && p.position.y+p.hauteur > b.min.y) {
-                p.position.y=b.min.y-p.hauteur; p.vitesseY=0f
-            } else if(p.vitesseY <= 0 && avant >= b.max.y-.02f && p.position.y <= b.max.y) {
-                p.position.y=b.max.y; p.vitesseY=0f; p.auSol=true
+            if(p.vitesseY > 0 && avant+p.hauteur <= b.min.y && y+p.hauteur > b.min.y) {
+                y=b.min.y-p.hauteur; p.vitesseY=0f
+            } else if(p.vitesseY <= 0 && avant >= b.max.y-.02f && y <= b.max.y) {
+                y=b.max.y; p.vitesseY=0f; p.auSol=true
             }
         }
-        if(p.position.y < -6f) p.reapparaitre()
+        p.position = Vec3(x,y,z)
+        if(y < -6f) p.reapparaitre()
+    }
+
+    /** Vrai si le joueur, en (x, y, z), ne peut pas aller en (nx, nz). */
+    private fun bloque(p: Joueur, x: Float, y: Float, z: Float, nx: Float, nz: Float): Boolean {
+        for (b in obstacles) {
+            if(y >= b.max.y - .02f || y+p.hauteur <= b.min.y) continue
+            val cx=nx.coerceIn(b.min.x,b.max.x); val cz=nz.coerceIn(b.min.z,b.max.z)
+            if((nx-cx).pow(2)+(nz-cz).pow(2) < p.rayon*p.rayon) return true
+        }
+        // Refuse une marche trop haute et les pentes abruptes.
+        val h = hauteur(nx,nz)
+        val old = hauteur(x,z)
+        return h != null && h > y + .32f && (old == null || h > old + .03f)
     }
 
     /** Distance libre sur le segment caméra, avec marge pour son volume. */
-    fun distanceCamera(cible: Vector3f, direction: Vector3f, distance: Float): Float {
+    fun distanceCamera(cible: Vec3, direction: Vec3, distance: Float): Float {
         var libre = distance
         for (b in obstacles) {
             var proche = 0f; var loin = distance
@@ -88,7 +92,7 @@ class Physique {
         // Le relief, lui aussi, doit arrêter la caméra.
         var t=.3f
         while(t < libre) {
-            val pos=Vector3f(direction).mul(t).add(cible)
+            val pos=direction*t+cible
             val terrain=hauteur(pos.x,pos.z)
             if(terrain != null && pos.y < terrain+.2f) { libre=max(.35f,t-.2f); break }
             t+=.12f
@@ -97,9 +101,11 @@ class Physique {
     }
 }
 
-class Joueur(val objet: Objet, depart: Vector3f) {
-    val position = objet.position
-    val depart = Vector3f(depart)
+class Joueur(val objet: Objet, val depart: Vec3) {
+    /** La position du joueur est celle de son objet dans la scène. */
+    var position: Vec3
+        get() = objet.position
+        set(v) { objet.position = v }
     var rayon=.28f
     var hauteur=1.8f
     var vitesse=4.4f
@@ -110,5 +116,5 @@ class Joueur(val objet: Objet, depart: Vector3f) {
     internal var coyote=0f
     internal var tamponSaut=0f
     init { reapparaitre() }
-    fun reapparaitre() { position.set(depart); vitesseY=0f; auSol=false; coyote=0f; tamponSaut=0f; sautEnAttente=false }
+    fun reapparaitre() { position = depart; vitesseY=0f; auSol=false; coyote=0f; tamponSaut=0f; sautEnAttente=false }
 }

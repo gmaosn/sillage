@@ -1,6 +1,6 @@
 package sillage
 
-import org.joml.Vector3f
+import sillage.math.Vec3
 
 /** Police bitmap dessinée par Vulkan, sans toolkit UI ni texture. */
 internal object Hud {
@@ -31,7 +31,7 @@ internal object Hud {
         val g=Geometrie()
         val ink=Couleur.hex(0x153d48); val paper=Couleur.hex(0xffedbe); val gold=Couleur.hex(0xffce6e)
         fun rect(x: Float,y: Float,w: Float,h: Float,c: Couleur) {
-            fun p(px: Float,py: Float)=Vector3f(px/480f-1f,py/300f-1f,0f)
+            fun p(px: Float,py: Float)=Vec3(px/480f-1f,py/300f-1f,0f)
             g.quad(p(x,y),p(x+w,y),p(x+w,y+h),p(x,y+h),c)
         }
         fun text(t: String,x: Float,y: Float,scale: Float,c: Couleur) {

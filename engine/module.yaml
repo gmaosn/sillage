@@ -11,5 +11,3 @@ dependencies:
   - org.lwjgl:lwjgl-vulkan:3.3.6
   - org.lwjgl:lwjgl:3.3.6:natives-linux: runtime-only
   - org.lwjgl:lwjgl-glfw:3.3.6:natives-linux: runtime-only
-  - org.joml:joml:1.10.8: exported
-  - com.google.code.gson:gson:2.13.1

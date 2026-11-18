@@ -1,6 +1,6 @@
 package sillage
 
-import org.joml.Matrix4f
+import sillage.math.Mat4
 import org.lwjgl.PointerBuffer
 import org.lwjgl.glfw.GLFWVulkan.*
 import org.lwjgl.system.MemoryStack
@@ -303,7 +303,7 @@ class VulkanRenderer(private val window: Long = 0L, private val validation: Bool
         vkCmdPipelineBarrier(command,srcStage,dstStage,0,null,null,b)
     }
 
-    fun dessiner(objets: List<Objet>, camera: Matrix4f, hud: Maillage, capture: Path?=null) = stack { s ->
+    fun dessiner(objets: List<Objet>, camera: Mat4, hud: Maillage, capture: Path?=null) = stack { s ->
         var index=-1
         if(surface!=0L) {
             val out=s.mallocInt(1)
@@ -330,15 +330,17 @@ class VulkanRenderer(private val window: Long = 0L, private val validation: Bool
             vkCmdBeginRenderPass(command,ri,VK_SUBPASS_CONTENTS_INLINE)
             vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
             val constants=s.mallocFloat(32)
+            val values=FloatArray(32)
             val handle=s.mallocLong(1); val offsets=s.longs(0L)
-            fun draw(b: Buffer, mesh: Maillage, model: Matrix4f, vp: Matrix4f) {
-                constants.clear(); Matrix4f(vp).mul(model).get(0,constants); model.get(16,constants)
+            fun draw(b: Buffer, mesh: Maillage, model: Mat4, vp: Mat4) {
+                (vp*model).writeTo(values,0); model.writeTo(values,16)
+                constants.clear(); constants.put(0,values)
                 vkCmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT,0,constants)
                 handle.put(0,b.buffer); vkCmdBindVertexBuffers(command,0,handle,offsets)
                 vkCmdDraw(command,mesh.sommets.size/9,1,0,0)
             }
             for(o in objets) if(o.visible) meshes[o.maillage]?.let { draw(it,o.maillage,o.matrice(),camera) }
-            draw(hudBuffer!!,hud,Matrix4f(),Matrix4f())
+            draw(hudBuffer!!,hud,Mat4.IDENTITY,Mat4.IDENTITY)
             vkCmdEndRenderPass(command)
             if(readback!=null) {
                 val region=VkBufferImageCopy.calloc(1,s)

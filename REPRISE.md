@@ -1,40 +1,48 @@
-# Sillage — reprise du développement
+# Sillage — reprise
 
-Le dépôt a été créé avec Kotlin Toolchain 0.14.0, sans Gradle. Le wrapper officiel JetBrains est adapté pour garder ses caches dans .tools/. Son archive téléchargée a été vérifiée (SHA-256 : 69112cebc1fdb14c92a213244182d0834896e71b3d9411b8e8c18540da2884a6).
+## Pour reprendre
 
-## Demande utilisateur
+Sillage est un moteur 3D en Kotlin pur, plus ergonomique et agréable que KorGE, en 3D par défaut, avec son propre moteur physique. Il doit être aussi rapide que la JVM le permet et prêt pour Valhalla.
 
-Moteur 3D Kotlin/JVM avec Vulkan, physique écrite en Kotlin sans moteur C++, API simple pour enfants et import de modèles Blender GLB. Démo originale inspirée de Wind Waker : petite île, aplats, caméra troisième personne, clavier/souris, gravité et collisions. Utiliser Kotlin Toolchain 0.14, aucun Gradle. L'utilisateur autorise à poursuivre sans Blender pour le moment.
+Choix du propriétaire (18 novembre 2026) : API publique en anglais ; Linux d'abord (Wayland, X11 en secours, x86-64 et ARM64 du Pi), avec une couche fenêtre prête pour d'autres systèmes plus tard ; aucune dépendance tierce (seules les bibliothèques du système : libvulkan, libwayland-client, libc, appelées par FFM).
 
-## Sources présentes
-
-- engine/src/sillage : backend Vulkan LWJGL, chargeur GLB Kotlin/Gson, géométrie, contrôleur physique cinématique à 120 Hz, caméra, boucle de jeu, HUD bitmap.
-- demo/src/sillage/demo/Main.kt : DSL française, île, marin, six coquillages.
-- demo/resources/models : trois GLB générés avec tools/create_assets.py (terrain, village, marin).
-- tools/create_island.py : variante Blender, non exécutée avec succès dans le sandbox.
-- shaders Vulkan et SPIR-V compilés avec succès via tools/shaders.sh.
-
-## État réel et travail restant
-
-NE PAS présenter le moteur comme compilé ou la démo comme lancée. Aucun build Kotlin n'a abouti dans la session précédente ; il faut compiler, corriger les éventuelles erreurs, écrire/exécuter les tests utiles de physique et GLB, lancer une démo Vulkan hors écran puis interactive et vérifier une capture.
-
-Le shell Codex échouait avant même Bash/Fish sur bwrap: execvp /home/ruben/.codex/packages/app-server-daemon/releases/0.169.1-x86_64-unknown-linux-musl/bin/codex: No such file or directory. Le runtime Node permettait de lire/écrire les fichiers et lancer des processus, mais sans DNS, écran, GPU matériel, JDK 25 complet ni dépendances complètes Blender. Java 26 fonctionne. Le JDK 25 est configuré dans module.yaml ; utiliser un JDK 25 complet via JAVA_HOME, ou laisser la toolchain le provisionner.
-
-Sur l'hôte de l'utilisateur, Blender 5.3.0 fonctionne (test confirmé par l'utilisateur). CachyOS, Fish. Dans l'ancien sandbox, vulkaninfo ne trouvait que Lavapipe/llvmpipe Vulkan 1.4 ; Xvfb et glslc étaient disponibles. Les autorisations d'escalade n'ont pas réparé l'exécutable Codex absent.
-
-## Commandes à lancer dans un environnement fonctionnel
+Construire uniquement avec `./kotlin` (Kotlin Toolchain 0.14.0), jamais Gradle. Le JDK 25 du système n'a pas de javac : la toolchain fournit le sien.
 
 ```sh
 ./kotlin build
 ./kotlin test
-./kotlin run --help
-# Vérifier le passage des arguments avec --help puis :
-./kotlin run -- --headless --smoke --frames 180 --capture build/sillage.png
-./kotlin run
+./kotlin run -m demo -- --headless --smoke --frames 180 --capture build/captures/smoke.png
+./kotlin run -m demo
 ```
 
-La CLI et la syntaxe des arguments run doivent être vérifiées avec la version 0.14.0. Le moteur accepte --headless, --smoke, --frames N, --capture fichier.png, --validation. Les couches Vulkan de validation manquaient dans l'ancien sandbox.
+La démo accepte `--headless`, `--smoke`, `--frames N`, `--capture fichier.png`, `--validation` (les couches de validation Vulkan ne sont pas installées sur le portable).
 
-## Limites de la première implémentation
+## Plan
 
-Maillages GLB statiques triangulés, matériaux de couleur et COLOR_0, hiérarchies et TRS. Textures, squelettes, animations et extensions requises sont rejetés explicitement. Physique de personnage seulement (cercle horizontal et intervalle vertical), terrains triangulés et obstacles AABB ; pas de corps rigides généraux. Un seul frame Vulkan en vol, rendu interne fixe 960x600 avec blit vers fenêtre redimensionnable. Aucun moteur natif, Assimp ou Bullet.
+0. Maths prêtes pour Valhalla et JSON maison, JOML et Gson retirés. **Fait.**
+1. Vulkan appelé par FFM (java.lang.foreign) à la place de LWJGL, d'abord hors écran. Critère : capture identique au pixel près à `tools/reference/demo-smoke-180.png`.
+2. Fenêtre Wayland par FFM, souris capturée (pointer-constraints, relative-pointer), touches par position physique (ZQSD en AZERTY = WASD en QWERTY), secours X11 pour Xvfb ; GLFW retiré, zéro dépendance tierce.
+3. Moteur physique : corps rigides (sphère, boîte, capsule, maillage statique GLB), phase large et phase fine, solveur par impulsions séquentielles avec démarrage à chaud, frottement, rebond, sommeil. Bancs de mesure : pyramide de caisses stable, 10 000 corps, déterminisme.
+4. Personnage, tirs de rayons et déclencheurs sur cette physique ; la démo de l'île portée dessus.
+5. API plus agréable que KorGE : un fichier, 3D sans réglage (caméra, lumière, ciel par défaut), physique en une ligne ; deuxième démo à caisses, tonneaux et ballon.
+6. Passe de performance : plusieurs images en vol, instancing, zéro allocation par image (JFR), cache AOT, en-têtes compacts, ZGC générationnel, API Vector, essai sur une build Valhalla.
+
+## État (18 novembre 2026)
+
+Le prototype a été écrit le matin du 18 par Codex sans jamais compiler. Repris : build réparé (bug de précédence `i and 1 == 0` dans `Geometrie.boite`), puis étape 0.
+
+Maths dans `engine/src/sillage/math` : `Vec3`, `Quat`, `Mat4` immuables, sans identité, marqués `@ValueCandidate` pour devenir des `value class` quand Kotlin aura les classes valeur à plusieurs champs sur Valhalla. Ne jamais les comparer avec `===` ni se synchroniser dessus. Les boucles chaudes garderont leurs données dans des tableaux primitifs.
+
+JSON dans `engine/src/sillage/io/Json.kt` : strict (RFC 8259), profondeur bornée à 256, les nombres gardent leur texte pour que `toFloat()` arrondisse une seule fois.
+
+38 tests verts (physique du personnage, géométrie, GLB, maths, JSON). Démo vérifiée hors écran sur l'Arc B390 ; le chemin fenêtré a été vérifié sous Xvfb avant l'étape 0 (llvmpipe, Xvfb n'a pas DRI3).
+
+Le passage de JOML aux maths maison change 2 pixels sur 576 000 (bord d'un rocher, arrondi de la caméra) ; la position finale du personnage est la même. La référence a été remplacée par la capture de l'étape 0.
+
+Le code hérité de Codex est encore en français (`Monde`, `Joueur`, `Physique`, `Objet`…) ; il sera renommé en anglais quand l'API sera refaite (étape 5), la physique du personnage sera remplacée aux étapes 3 et 4.
+
+## Limites actuelles
+
+Maillages GLB statiques triangulés, couleurs de matériau et COLOR_0, hiérarchies et TRS ; textures, squelettes, animations et extensions requises refusés explicitement. Physique : personnage seulement (cercle horizontal, intervalle vertical), terrains triangulés et boîtes fixes. Une seule image en vol, rendu interne 960×600 recopié vers la fenêtre.
+
+Outils : `tools/shaders.sh` (glslc) recompile les SPIR-V ; `tools/create_assets.py` a produit les trois GLB de la démo ; `tools/create_island.py` est une variante Blender jamais exécutée.
