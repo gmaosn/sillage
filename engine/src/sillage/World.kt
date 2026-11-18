@@ -1,7 +1,15 @@
 package sillage
 
 import sillage.math.Mat4
+import sillage.math.Quat
 import sillage.math.Vec3
+import sillage.physics.BodyType
+import sillage.physics.Body
+import sillage.physics.Box
+import sillage.physics.Capsule
+import sillage.physics.PhysicsWorld
+import sillage.physics.Sphere
+import sillage.physics.TriangleMesh
 import kotlin.math.*
 
 @DslMarker annotation class SillageDsl
@@ -10,6 +18,10 @@ import kotlin.math.*
 class Monde {
     val objets = ArrayList<Objet>()
     val physique = Physique()
+    /** Corps rigides : caisses, ballons… Le terrain et les obstacles y sont statiques, le héros y est cinématique. */
+    val corps = PhysicsWorld()
+    private val lies = ArrayList<Pair<Objet, Body>>()
+    private var corpsHeros: Body? = null
     lateinit var joueur: Joueur
         private set
     val coquillages = ArrayList<Objet>()
@@ -32,10 +44,35 @@ class Monde {
         o.position=Vec3(x,y,z); o.echelle=taille; objets.add(o)
         return o
     }
-    fun terrain(glb: String): Objet = modele(glb).also { physique.surfaces.addAll(it.maillage.triangles) }
+    fun terrain(glb: String): Objet = modele(glb).also {
+        physique.surfaces.addAll(it.maillage.triangles)
+        val v = it.maillage.sommets
+        corps.addMesh(TriangleMesh(FloatArray(v.size / 3) { k -> v[(k / 3) * 9 + k % 3] }))
+    }
     /** Boîte de collision. [camera] = faux pour un objet fin (tronc, tonneau) que la caméra peut longer sans se rapprocher. */
     fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) {
         physique.obstacles.add(Boite(Vec3(x-largeur/2,y,z-profondeur/2),Vec3(x+largeur/2,y+hauteur,z+profondeur/2),camera))
+        corps.add(Box(largeur/2,hauteur/2,profondeur/2),Vec3(x,y+hauteur/2,z),type=BodyType.STATIC)
+    }
+
+    /** Lie un objet affiché à un corps rigide : l'objet suit le corps à chaque image. */
+    fun lier(objet: Objet, corps: Body): Objet { lies.add(objet to corps); objet.position=corps.position; objet.orientation=corps.rotation; return objet }
+
+    /** Une caisse de [taille] mètres posée sur le sol (ou [hauteur] mètres au-dessus), qu'on peut pousser. */
+    fun caisse(x: Float, z: Float, hauteur: Float = 0f, taille: Float = .7f, angle: Float = 0f): Objet {
+        val o = modele("models/caisse.glb", taille = taille)
+        val b = corps.add(Box(taille/2,taille/2,taille/2), Vec3(x,sol(x,z)+taille/2+hauteur+.01f,z), Quat.rotationY(angle),
+            mass = 40f*taille*taille*taille, friction = .7f)
+        return lier(o,b)
+    }
+
+    /** Un ballon de plage léger et rebondissant. */
+    fun ballon(x: Float, z: Float, hauteur: Float = 0f, rayon: Float = .35f): Objet {
+        val o = modele("models/ballon.glb", taille = rayon)
+        val b = corps.add(Sphere(rayon), Vec3(x,sol(x,z)+rayon+hauteur+.01f,z), mass = .6f, friction = .5f, restitution = .65f,
+            rollingResistance = .05f)
+        b.angularDamping = .1f
+        return lier(o,b)
     }
     /** Hauteur du terrain en (x, z), 0 hors de l'île. */
     fun sol(x: Float, z: Float): Float = physique.hauteur(x,z) ?: 0f
@@ -44,6 +81,9 @@ class Monde {
         obstacle(x,sol(x,z),z,largeur,hauteur,profondeur,camera)
     fun heros(glb: String, x: Float=0f, y: Float=3f, z: Float=4f, config: Joueur.() -> Unit = {}) {
         joueur=Joueur(modele(glb),Vec3(x,y,z)).apply(config)
+        // Le héros pousse les corps rigides : une capsule cinématique qui suit le contrôleur de personnage.
+        val j=joueur
+        corpsHeros=corps.add(Capsule(j.rayon,(j.hauteur-2*j.rayon)/2),j.position.plus(0f,j.hauteur/2,0f),type=BodyType.KINEMATIC)
     }
     fun ocean() {
         val g=Geometrie()
@@ -92,7 +132,10 @@ class Monde {
         }
     }
 
-    fun reinitialiser() { joueur.reapparaitre(); recoltes=0; coquillages.forEach { it.visible=true } }
+    fun reinitialiser() {
+        joueur.reapparaitre(); recoltes=0; coquillages.forEach { it.visible=true }
+        corpsHeros?.position=joueur.position.plus(0f,joueur.hauteur/2,0f)
+    }
     fun miseAJour(mouvement: Vec3, saut: Boolean, dt: Float) {
         temps+=dt
         val avant=joueur.position
@@ -100,6 +143,15 @@ class Monde {
         if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=tourner(joueur.objet.rotation,atan2(-mouvement.x,-mouvement.z),14f*dt)
         animerHeros(avant,dt)
         for(o in objets) o.animateur?.avancer(dt)
+        // Corps rigides : la capsule du héros rejoint sa position, puis un pas de simulation.
+        val h=dt.coerceIn(1f/240f,1f/30f)
+        corpsHeros?.let { c ->
+            val cible=joueur.position.plus(0f,joueur.hauteur/2,0f)
+            // Une réapparition téléporte la capsule : traverser l'île d'un coup balaierait les caisses.
+            if(c.position.distanceTo(cible)>1f) { c.position=cible; c.velocity=Vec3.ZERO } else c.moveTo(cible,h)
+        }
+        corps.step(h)
+        for((o,b) in lies) { o.position=b.position; o.orientation=b.rotation }
         coquillages.forEachIndexed { i,o ->
             o.rotation=temps*1.1f+i
             if(o.visible && joueur.position.distanceTo(o.position)<1.15f) { o.visible=false; recoltes++; println("Coquillages : " + recoltes + "/" + coquillages.size) }

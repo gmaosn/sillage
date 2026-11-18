@@ -27,6 +27,12 @@ class TriangleMesh(triangles: FloatArray) {
     /** Unit front normal of each triangle. */
     internal val n: FloatArray
     val count: Int
+    /**
+     * Per triangle, 3 bits: edge a→b, b→c, c→a is "active" — a free border or a convex fold of more
+     * than 5°. Inactive edges (flat or concave joins between neighbours) give no collision axis or
+     * normal of their own, so bodies slide across a triangulated floor without catching on seams.
+     */
+    internal val edges: IntArray
 
     private val bounds: FloatArray      // per node: minX, minY, minZ, maxX, maxY, maxZ
     private val left: IntArray          // child index, or -1 for a leaf
@@ -49,10 +55,43 @@ class TriangleMesh(triangles: FloatArray) {
             keptN.add(nx / l); keptN.add(ny / l); keptN.add(nz / l)
         }
         v = keptV.toFloatArray(); n = keptN.toFloatArray(); count = n.size / 3
+        edges = activeEdges()
         val maxNodes = maxOf(1, 2 * count)
         bounds = FloatArray(6 * maxNodes); left = IntArray(maxNodes); right = IntArray(maxNodes); first = IntArray(maxNodes); span = IntArray(maxNodes)
         order = IntArray(count) { it }
         if (count > 0) build(0, count)
+    }
+
+    private fun activeEdges(): IntArray {
+        fun key(t: Int, k: Int): Long {
+            // Vertex identity by its exact coordinates, so triangle soups (no index buffer) still connect.
+            val o = 9 * t + 3 * k
+            return (v[o].toRawBits().toLong() * 73856093L) xor (v[o + 1].toRawBits().toLong() * 19349663L) xor (v[o + 2].toRawBits().toLong() * 83492791L)
+        }
+        val owners = HashMap<Pair<Long, Long>, MutableList<Int>>()
+        for (t in 0 until count) for (j in 0..2) {
+            val a = key(t, j); val b = key(t, (j + 1) % 3)
+            owners.getOrPut(if (a < b) a to b else b to a) { ArrayList(2) }.add(t)
+        }
+        val cosLimit = kotlin.math.cos(Math.toRadians(5.0)).toFloat()
+        return IntArray(count) { t ->
+            var bits = 0
+            for (j in 0..2) {
+                val a = key(t, j); val b = key(t, (j + 1) % 3)
+                val others = owners.getValue(if (a < b) a to b else b to a).filter { it != t }
+                val active = if (others.size != 1) true else {
+                    val u = others[0]
+                    val cos = n[3 * t] * n[3 * u] + n[3 * t + 1] * n[3 * u + 1] + n[3 * t + 2] * n[3 * u + 2]
+                    // The neighbour's far vertex below this triangle's plane means a convex fold.
+                    val far = (0..2).first { k -> key(u, k) != a && key(u, k) != b }
+                    val o = 9 * u + 3 * far
+                    val h = (v[o] - v[9 * t]) * n[3 * t] + (v[o + 1] - v[9 * t + 1]) * n[3 * t + 1] + (v[o + 2] - v[9 * t + 2]) * n[3 * t + 2]
+                    h < -1e-6f && cos < cosLimit
+                }
+                if (active) bits = bits or (1 shl j)
+            }
+            bits
+        }
     }
 
     private fun centroid(t: Int, axis: Int) = (v[9 * t + axis] + v[9 * t + 3 + axis] + v[9 * t + 6 + axis]) / 3f

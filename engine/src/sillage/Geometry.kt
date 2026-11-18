@@ -1,6 +1,7 @@
 package sillage
 
 import sillage.math.Mat4
+import sillage.math.Quat
 import sillage.math.Vec3
 import kotlin.math.*
 
@@ -61,6 +62,8 @@ class Geometrie {
 class Objet(val maillage: Maillage) {
     var position = Vec3.ZERO
     var rotation = 0f
+    /** Orientation complète (objets physiques) ; quand elle est nulle, seule [rotation] autour de Y compte. */
+    var orientation: Quat? = null
     var echelle = 1f
     var visible = true
     /** Pièces d'un modèle animé, dessinées avec matrice() × pose de la pièce. */
@@ -68,7 +71,7 @@ class Objet(val maillage: Maillage) {
         internal set
     var animateur: Animateur? = null
         internal set
-    fun matrice() = Mat4.trsY(position, rotation, echelle)
+    fun matrice() = orientation?.let { Mat4.trs(position, it, Vec3(echelle, echelle, echelle)) } ?: Mat4.trsY(position, rotation, echelle)
 
     /** Joue une animation du modèle GLB (nom donné dans Blender). */
     fun animer(nom: String, boucle: Boolean = true, vitesse: Float = 1f): Objet {

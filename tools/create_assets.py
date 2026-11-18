@@ -601,3 +601,28 @@ for k in range(3):
     port.channel('vie', node, 'translation', smoke_times, [at(t)[0] for t in smoke_times])
     port.channel('vie', node, 'scale', smoke_times, [(at(t)[1],) * 3 for t in smoke_times])
 port.save('port.glb')
+
+
+# ---------------------------------------------------------------- objets physiques (origine au centre)
+
+crate = Mesh()                                    # caisse d'un mètre, à mettre à l'échelle
+crate.box(0, -.48, 0, .96, .96, .96, 'bois_clair')
+for a in (-1, 1):
+    for b in (-1, 1):
+        crate.box(0, a * .45 - .05, b * .45, 1.0, .1, .1, 'bois')      # arêtes le long de X
+        crate.box(a * .45, -.5, b * .45, .1, 1.0, .1, 'bois')         # arêtes verticales
+        crate.box(a * .45, b * .45 - .05, 0, .1, .1, 1.0, 'bois')     # arêtes le long de Z
+for side in (-1, 1):                                # planches diagonales sur deux faces
+    for k in range(-1, 2):
+        crate.box(k * .25, -.42, side * .485, .2, .84, .02, 'bois_clair')
+single(crate, 'caisse.glb')
+
+ball = Mesh()                                     # ballon de plage de rayon 1, six fuseaux colorés
+segments = ['corail', 'blanc', 'jaune', 'bleu', 'blanc', 'palme_claire']
+n, rings = 24, 12
+def bp(i, j): a = math.pi * i / rings; b = TAU * j / n; return (math.sin(a) * math.cos(b), math.cos(a), math.sin(a) * math.sin(b))
+for i in range(rings):
+    for j in range(n):
+        mat = 'blanc' if i == 0 or i == rings - 1 else segments[j * 6 // n]
+        ball.quad(bp(i, j), bp(i + 1, j), bp(i + 1, j + 1), bp(i, j + 1), mat)
+single(ball, 'ballon.glb')

@@ -173,4 +173,13 @@ class PhysicsTest {
         assertTrue(vmax < 8f, "vitesse folle : $vmax")
         assertTrue(top.position.y > .4f && top.position.isFinite())
     }
+
+    @Test fun unePileDeCaissesTourneesTient() {
+        val w = PhysicsWorld(); ground(w)
+        val boxes = (0..2).map { k -> w.add(Box(.35f, .35f, .35f), Vec3(0f, .36f + k * .72f, 0f), Quat.rotationY(k * .25f), mass = 13.7f, friction = .7f) }
+        run(w, 5f)
+        val top = boxes.last().position
+        assertTrue(hypot(top.x, top.z) < .02f, "le haut de la pile a bougé : $top")
+        assertEquals(.35f + 2 * .7f, top.y, .03f)
+    }
 }

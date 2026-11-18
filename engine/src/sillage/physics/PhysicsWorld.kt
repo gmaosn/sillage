@@ -407,7 +407,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 for (f in 0 until found.size) {
                     val t = found[f]
                     val tri = Tri(Vec3(v[9 * t], v[9 * t + 1], v[9 * t + 2]), Vec3(v[9 * t + 3], v[9 * t + 4], v[9 * t + 5]),
-                        Vec3(v[9 * t + 6], v[9 * t + 7], v[9 * t + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]))
+                        Vec3(v[9 * t + 6], v[9 * t + 7], v[9 * t + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), mesh.edges[t])
                     scratch.clear()
                     collideTriangle(tri, shapes[b]!!, poses[b]!!, margin, scratch)
                     if (scratch.count > 0) points.addAll(scratch, -1, b,

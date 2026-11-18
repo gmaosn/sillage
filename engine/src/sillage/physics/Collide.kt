@@ -368,7 +368,18 @@ internal fun closestOnTriangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3): Vec3 {
     return a + ab * (vb * denom) + ac * (vc * denom)
 }
 
-internal class Tri(val a: Vec3, val b: Vec3, val c: Vec3, val n: Vec3)
+/** One triangle of a static mesh; [edges] holds the active-edge bits (a→b, b→c, c→a). */
+internal class Tri(val a: Vec3, val b: Vec3, val c: Vec3, val n: Vec3, val edges: Int = 7) {
+    fun active(j: Int) = edges and (1 shl j) != 0
+}
+
+/** Edge (0, 1, 2) that point q lies on, −1 for the interior; a vertex counts as both its edges. */
+private fun edgeMask(t: Tri, q: Vec3): Int {
+    var mask = 0
+    val v = arrayOf(t.a, t.b, t.c)
+    for (j in 0..2) if ((closestOnSegment(q, v[j], v[(j + 1) % 3]) - q).lengthSquared() < 1e-10f) mask = mask or (1 shl j)
+    return mask
+}
 
 /** Sphere on a one-sided triangle; normal from the triangle to the sphere. */
 private fun triangleSphere(t: Tri, c: Vec3, r: Float, margin: Float, out: ContactPoints, feature: Int) {
@@ -383,6 +394,13 @@ private fun triangleSphere(t: Tri, c: Vec3, r: Float, margin: Float, out: Contac
     }
     val d = c - q; val l = d.length()
     if (l > r + margin) return
+    val mask = edgeMask(t, q)
+    if (mask != 0 && (mask and t.edges) == 0) {
+        // Seam between flat neighbours: take the face normal, not the one towards the edge.
+        val s = height - r
+        if (s <= margin) out.add(q + t.n * (s * .5f), t.n, s, feature)
+        return
+    }
     val n = if (l > 1e-6f) d / l else t.n
     val s = l - r
     out.add(q + n * (s * .5f), n, s, feature)
@@ -440,6 +458,7 @@ private fun triangleBox(t: Tri, box: Box, pb: Pose, margin: Float, out: ContactP
     }
     for (i in 0..2) if (!test(pb.axis(i), 1, i, 0, .005f)) return
     for (i in 0..2) for (j in 0..2) {
+        if (!t.active(j)) continue                       // arête intérieure : pas d'axe fantôme
         val e = v[(j + 1) % 3] - v[j]
         val cr = pb.axis(i) cross e; val l = cr.length()
         if (l < 1e-4f * e.length()) continue

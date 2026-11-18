@@ -31,4 +31,11 @@ fun main(args: Array<String>) = jeu("Sillage",args) {
     }
     for((x,z) in listOf(-4f to 4f,3f to 4f,7f to -2f,-7f to -3f,2f to -6f,-1.8f to 9.3f))
         coquillage(x,z)
+    // Corps rigides : on peut les pousser, les faire tomber, taper dans le ballon.
+    // Sur un endroit plat : le centre de l'île est bosselé, une pile y basculerait (vérifié).
+    ballon(-1.5f,3.0f)
+    for(k in 0..2) caisse(-2.4f,2.6f,hauteur=k*.72f,angle=k*.25f)  // une pile de trois caisses
+    caisse(-3.4f,1.4f,taille=.55f,angle=.6f)
+    caisse(4.2f,6.4f,angle=.3f); caisse(4.9f,6.9f,taille=.5f)    // sur la plage
+    caisse(-1.4f,11.1f,taille=.6f,angle=.4f)                      // au bout du ponton
 }
