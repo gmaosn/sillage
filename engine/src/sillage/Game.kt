@@ -73,11 +73,13 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 if(monde.joueur.position.distanceTo(initial)>.1f) moved=true
                 highest=max(highest,monde.joueur.position.y); lowest=min(lowest,monde.joueur.position.y)
                 val view=monde.camera.vue(monde,dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0],it[1],it[2]),Vec3(it[3],it[4],it[5])) } ?: v }
-                val projection=Mat4.perspective(Math.toRadians(58.0).toFloat(),r.largeur.toFloat()/r.hauteur,.08f,180f)
+                val oeil=lookAt?.let { Vec3(it[0],it[1],it[2]) } ?: monde.camera.position
+                monde.ciel.position=oeil
+                val projection=Mat4.perspective(Math.toRadians(58.0).toFloat(),r.largeur.toFloat()/r.hauteur,.08f,200f)
                 fpsFrames++; fpsTime+=dt
                 if(fpsTime>=.5f) { fps=(fpsFrames/fpsTime).roundToInt(); fpsTime=0f; fpsFrames=0 }
                 val capture=if(frame==frames-1) screenshot else null
-                r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,window?.mouseCaptured ?: false),capture)
+                r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,window?.mouseCaptured ?: false),capture,oeil,monde.temps)
                 frame++
                 if(window!=null && frame%30==0) window.title=titre+" | "+monde.recoltes+"/"+monde.coquillages.size+" coquillages | "+fps+" FPS"
             }

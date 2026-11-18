@@ -65,7 +65,7 @@ class Mesh:
         p = [(x + (-1 if i & 1 == 0 else 1) * w / 2, y + (0 if i & 2 == 0 else h), z + (-1 if i & 4 == 0 else 1) * d / 2) for i in range(8)]
         for f in [(0, 4, 6, 2), (1, 3, 7, 5), (0, 1, 5, 4), (2, 6, 7, 3), (0, 2, 3, 1), (4, 5, 7, 6)]: self.quad(*(p[i] for i in f), mat)
 
-    def cone(self, x, y, z, r1, r2, h, mat, n=10):
+    def cone(self, x, y, z, r1, r2, h, mat, n=16):
         """Tronc de cône vertical, base en y."""
         for i in range(n):
             a = i * TAU / n; b = (i + 1) * TAU / n
@@ -77,7 +77,7 @@ class Mesh:
             self.tri((x, y, z), p, q, mat)
             if r2 > 0: self.tri((x, y + h, z), v, u, mat)
 
-    def tube(self, p0, p1, r0, r1, mat, n=8):
+    def tube(self, p0, p1, r0, r1, mat, n=12):
         """Tronc de cône entre deux points quelconques."""
         axis = norm(sub(p1, p0))
         ref = (1, 0, 0) if abs(axis[0]) < .9 else (0, 0, 1)
@@ -90,7 +90,7 @@ class Mesh:
             self.face([a[i], a[j], b[j], b[i]], mat, sub(mid, add(p0, mul(sub(p1, p0), .5))))
         self.face(a, mat, mul(axis, -1)); self.face(b, mat, axis)
 
-    def sphere(self, x, y, z, sx, sy, sz, mat, n=10, rings=5):
+    def sphere(self, x, y, z, sx, sy, sz, mat, n=16, rings=8):
         def p(i, j):
             a = math.pi * i / rings; b = TAU * j / n
             return (x + math.sin(a) * math.cos(b) * sx, y + math.cos(a) * sy, z + math.sin(a) * math.sin(b) * sz)
@@ -108,6 +108,29 @@ class Mesh:
             l = (x + math.cos(a - TAU / 10) * r * .4, y, z + math.sin(a - TAU / 10) * r * .4)
             rr = (x + math.cos(a + TAU / 10) * r * .4, y, z + math.sin(a + TAU / 10) * r * .4)
             self.face([(x, y + .015, z), l, tip], mat, (0, 1, 0)); self.face([(x, y + .015, z), tip, rr], mat, (0, 1, 0))
+
+    def quad_out(self, q, mat, center):
+        """Quadrilatère orienté vers l'extérieur (normale par les diagonales, sûre aux pôles où un côté s'écrase)."""
+        n = cross(sub(q[2], q[0]), sub(q[3], q[1]))
+        mid = mul(add(add(q[0], q[1]), add(q[2], q[3])), .25)
+        if dot(n, sub(mid, center)) < 0: q = q[::-1]
+        for a, b, c in ((q[0], q[1], q[2]), (q[0], q[2], q[3])):
+            if dot(cross(sub(b, a), sub(c, a)), cross(sub(b, a), sub(c, a))) > 1e-14: self.tri(a, b, c, mat)
+
+    def rounded(self, x, y, z, w, h, d, mat, e=.45, n=18, rings=10, band=None):
+        """Boîte arrondie (superellipsoïde) : (x, z) centre, y = dessous. e règle l'arrondi : 0,1 presque une
+        boîte, 0,5 un galet, 1 un ellipsoïde. band(y) donne la matière selon la hauteur (rayures)."""
+        c = (x, y + h / 2, z); a, b, cc = w / 2, h / 2, d / 2
+        def sp(v, m): return math.copysign(abs(v) ** m, v)
+        def p(i, j):
+            th = -math.pi / 2 + math.pi * i / rings; ph = -math.pi + TAU * j / n
+            return (c[0] + a * sp(math.cos(th), e) * sp(math.cos(ph), e), c[1] + b * sp(math.sin(th), e),
+                    c[2] + cc * sp(math.cos(th), e) * sp(math.sin(ph), e))
+        for i in range(rings):
+            for j in range(n):
+                q = [p(i, j), p(i, j + 1), p(i + 1, j + 1), p(i + 1, j)]
+                m = band(sum(v[1] for v in q) / 4) if band else mat
+                self.quad_out(q, m, c)
 
     def triangles(self):
         return [(pts[i], pts[i + 1], pts[i + 2]) for pts in self.groups.values() for i in range(0, len(pts), 3)]
@@ -214,9 +237,11 @@ def single(mesh, filename):
 
 # ---------------------------------------------------------------- terrain
 
-land = Mesh(); n = 64
+land = Mesh(); n = 96
 vertices = [(0, 1.5, 0)]
-rings = [(2.5, 1.50), (5.5, 1.46), (8, 1.35), (10, 1.1), (11.6, .48), (12.5, -.18)]
+# Anneaux serrés vers la plage : une pente douce, sans facettes.
+rings = [(1.25, 1.50), (2.5, 1.50), (4, 1.48), (5.5, 1.46), (6.8, 1.41), (8, 1.35), (9, 1.25), (10, 1.1), (10.8, .82),
+         (11.6, .48), (12.05, .16), (12.5, -.18)]
 for r, y in rings:
     for i in range(n):
         a = TAU * i / n; radius = r * (1 + .055 * math.sin(3 * a) + .045 * math.cos(5 * a))
@@ -225,7 +250,7 @@ for r, y in rings:
         vertices.append((x, y + hill, z))
 for i in range(n): land.tri(vertices[0], vertices[1 + (i + 1) % n], vertices[1 + i], 'herbe')
 for k in range(len(rings) - 1):
-    a = 1 + k * n; b = a + n; mat = 'herbe' if k < 2 else 'sable'
+    a = 1 + k * n; b = a + n; mat = 'herbe' if rings[k + 1][0] <= 8 else 'sable'
     for i in range(n):
         j = (i + 1) % n
         land.tri(vertices[a + i], vertices[b + j], vertices[b + i], mat)
@@ -262,7 +287,7 @@ def on_grass(x, z):
 v = Mesh()
 for i in range(16):  # mêmes tirages qu'avant : les rochers ne bougent pas
     a = random.uniform(0, TAU); r = random.uniform(9.5, 11)
-    v.sphere(math.cos(a) * r, .7, math.sin(a) * r * .83, .55, .65, .4, 'roche', 7, 4)
+    v.sphere(math.cos(a) * r, .7, math.sin(a) * r * .83, .55, .65, .4, 'roche', 12, 6)
 
 # Maison : façade avant vers +Z (z = -0.8), porte au milieu.
 v.box(-3, 1.45, -2, 2.7, 1.7, 2.4, 'creme')
@@ -365,7 +390,7 @@ for bx, bz in BUSHES:
     y0 = ground(bx, bz)
     for k in range(4):
         a = k * TAU / 4 + .5
-        v.sphere(bx + math.cos(a) * .28, y0 + .3, bz + math.sin(a) * .22, .38, .34, .36, 'buisson' if k % 2 else 'herbe_fonce', 8, 4)
+        v.sphere(bx + math.cos(a) * .28, y0 + .3, bz + math.sin(a) * .22, .38, .34, .36, 'buisson' if k % 2 else 'herbe_fonce', 14, 7)
     for k in range(3): v.sphere(bx + random.uniform(-.3, .3), y0 + .55, bz - .3, .05, .05, .05, 'corail', 5, 3)
 
 # Plage : galets, étoiles de mer, bois flotté, château de sable.
@@ -393,37 +418,40 @@ single(v, 'village.glb')
 hero = Asset()
 root = hero.node('marin')
 
-m = Mesh()                                                   # bassin : ceinture et haut du pantalon
-m.box(0, -.12, 0, .44, .14, .28, 'marine')
-m.box(0, -.03, 0, .465, .08, .305, 'cuir'); m.box(0, -.02, -.16, .09, .06, .02, 'or')
+def stripes(y0, step, width, base='blanc', stripe='marine', count=4):
+    return lambda y: stripe if any(y0 + k * step <= y <= y0 + k * step + width for k in range(count)) else base
+
+m = Mesh()                                                   # bassin : ceinture et haut du pantalon, arrondis
+m.rounded(0, -.15, 0, .42, .17, .27, 'marine', e=.5)
+m.rounded(0, -.04, 0, .45, .08, .295, 'cuir', e=.35)
+m.rounded(0, -.035, -.152, .1, .065, .03, 'or', e=.5)
 hips = hero.node('bassin', m, root, t=(0, .56, 0))
 
-m = Mesh()                                                   # torse : marinière, col, foulard
-m.box(0, 0, 0, .44, .56, .28, 'blanc')
-for k in range(4): m.box(0, .06 + k * .11, 0, .45, .04, .29, 'marine')
-m.box(0, .38, .146, .36, .18, .02, 'marine')                  # col marin dans le dos
+m = Mesh()                                                   # torse : marinière rayée, col, foulard
+m.rounded(0, 0, 0, .44, .58, .28, 'blanc', e=.45, n=24, rings=16, band=stripes(.06, .11, .045))
+m.rounded(0, .37, .118, .34, .19, .05, 'marine', e=.35)          # col marin dans le dos
 for side in (-1, 1):
-    m.face([(side * .2, .56, -.142), (side * .2, .5, -.142), (side * .02, .36, -.142), (side * .05, .36, -.142)], 'marine', (0, 0, -1))
-m.box(0, .44, -.155, .1, .08, .04, 'corail')
-m.face([(-.07, .44, -.162), (.07, .44, -.162), (0, .3, -.162)], 'corail', (0, 0, -1))
-m.box(0, .56, 0, .13, .07, .13, 'peau')                       # cou
+    m.face([(side * .13, .55, -.135), (side * .13, .5, -.137), (side * .015, .38, -.142), (side * .045, .38, -.141)], 'marine', (0, 0, -1))
+m.rounded(0, .41, -.165, .1, .085, .06, 'corail', e=.6)
+m.face([(-.06, .43, -.17), (.06, .43, -.17), (0, .29, -.16)], 'corail', (0, 0, -1))
+m.cone(0, .53, 0, .075, .068, .11, 'peau', 16)                 # cou
 torso = hero.node('torse', m, hips, t=(0, .02, 0))
 
-m = Mesh()                                                   # tête : visage, cheveux, chapeau de paille
-m.sphere(0, .17, 0, .26, .27, .23, 'peau', 12, 6)
-m.sphere(0, .21, .06, .25, .22, .2, 'brun', 10, 5)
+m = Mesh()                                                   # tête ronde : visage, cheveux, chapeau de paille
+m.sphere(0, .17, 0, .26, .27, .23, 'peau', 24, 12)
+m.sphere(0, .21, .06, .25, .22, .2, 'brun', 20, 10)
 for side in (-1, 1):
-    m.box(side * .09, .17, -.214, .085, .08, .02, 'blanc')
-    m.box(side * .09, .165, -.226, .045, .055, .012, 'noir')
-    m.box(side * .09, .245, -.218, .09, .022, .02, 'brun')
-    m.box(side * .15, .085, -.188, .065, .035, .02, 'joue')
-    m.sphere(side * .25, .15, 0, .045, .065, .045, 'peau', 6, 3)
-    m.box(side * .245, .1, -.03, .04, .14, .1, 'brun')
-m.box(0, .1, -.24, .055, .07, .05, 'peau')
-m.box(0, .045, -.214, .09, .02, .02, 'bouche')
-m.cone(0, .35, 0, .44, .44, .045, 'paille', 14)
-m.cone(0, .395, 0, .25, .22, .2, 'paille', 12)
-m.cone(0, .40, 0, .27, .258, .07, 'corail', 12)
+    m.rounded(side * .09, .125, -.226, .085, .09, .03, 'blanc', e=.9, n=14, rings=8)
+    m.rounded(side * .09, .132, -.24, .046, .062, .018, 'noir', e=.9, n=12, rings=6)
+    m.rounded(side * .09, .24, -.217, .09, .024, .03, 'brun', e=.6, n=12, rings=6)
+    m.sphere(side * .15, .085, -.192, .038, .022, .014, 'joue', 12, 6)
+    m.sphere(side * .25, .15, 0, .045, .065, .045, 'peau', 12, 6)
+    m.rounded(side * .245, .03, -.03, .04, .14, .1, 'brun', e=.6, n=12, rings=6)
+m.sphere(0, .115, -.236, .036, .036, .032, 'peau', 14, 7)
+m.rounded(0, .035, -.215, .08, .022, .022, 'bouche', e=.7, n=12, rings=6)
+m.cone(0, .35, 0, .44, .44, .045, 'paille', 32)
+m.cone(0, .395, 0, .25, .21, .2, 'paille', 28)
+m.cone(0, .40, 0, .262, .25, .07, 'corail', 28)
 head = hero.node('tete', m, torso, t=(0, .62, 0))
 
 def limb(name, parent, t, upper, lower, joint):
@@ -432,17 +460,22 @@ def limb(name, parent, t, upper, lower, joint):
 
 arms = {}
 for side, tag in [(1, 'd'), (-1, 'g')]:
-    u = Mesh(); u.box(0, -.25, 0, .15, .28, .17, 'blanc')
-    for k in range(2): u.box(0, -.2 + k * .1, 0, .16, .035, .18, 'marine')
-    u.sphere(0, -.01, 0, .09, .07, .09, 'blanc', 8, 4)
-    l = Mesh(); l.box(0, -.04, 0, .145, .06, .165, 'blanc'); l.box(0, -.2, 0, .12, .18, .14, 'peau')
-    l.box(0, -.3, -.01, .13, .11, .15, 'peau')
+    u = Mesh()
+    u.rounded(0, -.27, 0, .15, .31, .17, 'blanc', e=.6, band=stripes(-.21, .1, .035, count=2))
+    u.sphere(0, -.01, 0, .09, .075, .095, 'blanc', 14, 7)
+    l = Mesh()
+    l.rounded(0, -.06, 0, .15, .07, .17, 'blanc', e=.6)
+    l.rounded(0, -.21, 0, .12, .18, .14, 'peau', e=.7)
+    l.rounded(0, -.32, -.01, .135, .13, .155, 'peau', e=.85)
     arms[tag] = limb('bras_' + tag, torso, (side * .31, .5, 0), u, l, .25)
 legs = {}
 for side, tag in [(1, 'd'), (-1, 'g')]:
-    u = Mesh(); u.box(0, -.27, 0, .17, .29, .21, 'marine')
-    l = Mesh(); l.box(0, -.18, 0, .15, .2, .18, 'marine'); l.box(0, -.12, 0, .16, .04, .19, 'blanc')
-    l.box(0, -.265, -.03, .17, .13, .26, 'cuir'); l.box(0, -.28, -.03, .18, .03, .275, 'semelle')
+    u = Mesh(); u.rounded(0, -.29, 0, .17, .33, .21, 'marine', e=.6)
+    l = Mesh()
+    l.rounded(0, -.2, 0, .15, .23, .18, 'marine', e=.6)
+    l.rounded(0, -.135, 0, .165, .05, .19, 'blanc', e=.5)
+    l.rounded(0, -.275, -.035, .18, .15, .29, 'cuir', e=.45)
+    l.rounded(0, -.285, -.035, .186, .035, .3, 'semelle', e=.3)
     legs[tag] = limb('jambe_' + tag, hips, (side * .12, -.02, 0), u, l, .27)
 
 def anim(name, duration, count, poses):
@@ -503,7 +536,7 @@ for i, (x, z) in enumerate([(-5, -1), (-6, 3), (6, 1), (1, -5), (-3, -4)]):
         trunk.tube(pts[k], pts[k + 1], .2 - .02 * k, .18 - .02 * k, 'bois', 8)
         trunk.tube(add(pts[k + 1], (0, -.06, 0)), add(pts[k + 1], (0, .02, 0)), .2 - .02 * k, .19 - .02 * k, 'roche', 8)
     top = pts[-1]
-    for j in range(3): trunk.sphere(top[0] + .2 * math.cos(j * 2.1), top[1] - .2, top[2] + .2 * math.sin(j * 2.1), .13, .15, .13, 'bois', 6, 3)
+    for j in range(3): trunk.sphere(top[0] + .2 * math.cos(j * 2.1), top[1] - .2, top[2] + .2 * math.sin(j * 2.1), .13, .15, .13, 'bois', 12, 6)
     tree = palms.node(f'palmier{i}', trunk, proot, t=(x, 1.5, z))
     crown = Mesh()
     for j in range(8):
@@ -606,7 +639,7 @@ port.save('port.glb')
 # ---------------------------------------------------------------- objets physiques (origine au centre)
 
 crate = Mesh()                                    # caisse d'un mètre, à mettre à l'échelle
-crate.box(0, -.48, 0, .96, .96, .96, 'bois_clair')
+crate.rounded(0, -.485, 0, .97, .97, .97, 'bois_clair', e=.12, n=24, rings=12)
 for a in (-1, 1):
     for b in (-1, 1):
         crate.box(0, a * .45 - .05, b * .45, 1.0, .1, .1, 'bois')      # arêtes le long de X

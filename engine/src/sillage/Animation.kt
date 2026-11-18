@@ -61,7 +61,7 @@ class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray
             for (k in t.indices step TRI)
                 g.triangle(Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]),
                     Couleur(t[k + 9], t[k + 10], t[k + 11]))
-            g.construire()
+            g.construire().lisse()
         }
     }
 
@@ -84,7 +84,7 @@ class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray
             for (e in n.enfants) visiter(e, monde)
         }
         for (r in racines) visiter(r, Mat4.IDENTITY)
-        return g.construire()
+        return g.construire().lisse()
     }
 
     /**

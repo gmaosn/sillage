@@ -18,10 +18,33 @@ import kotlin.math.*
 @SillageDsl
 class Monde {
     val objets = ArrayList<Objet>()
+    /** Le ciel : un dôme en dégradé qui suit la caméra, dessiné derrière tout le reste. */
+    val ciel = Objet(domeCiel()).also { objets.add(it) }
     val physique = Physique()
     /** Corps rigides : caisses, ballons… Le terrain et les obstacles y sont statiques, le héros y est cinématique. */
     val corps = PhysicsWorld()
     private val lies = ArrayList<Pair<Objet, Body>>()
+    /** Ombres portées : chaque disque suit son objet sur le sol, plus petit et plus pâle quand l'objet monte. */
+    private val ombres = ArrayList<Triple<Objet, Objet, Float>>()
+    private val disqueOmbre by lazy { disqueOmbre() }
+
+    /** Donne à [objet] une ombre douce de [rayon] mètres sur le sol. */
+    fun ombre(objet: Objet, rayon: Float): Objet {
+        val o = Objet(disqueOmbre).also { it.ombre = true; it.echelle = rayon }
+        objets.add(o); ombres.add(Triple(o, objet, rayon))
+        return objet
+    }
+
+    private fun placerOmbres() {
+        for ((o, cible, rayon) in ombres) {
+            val p = cible.position
+            val sol = physique.hauteur(p.x, p.z, p.y + .5f) ?: run { o.visible = false; null } ?: continue
+            val haut = (p.y - sol).coerceAtLeast(0f)
+            o.visible = cible.visible && haut < 6f
+            o.position = Vec3(p.x, sol + .03f, p.z)
+            o.echelle = rayon * (1f + haut * .12f) / (1f + haut * .35f)
+        }
+    }
     private var corpsHeros: Body? = null
     lateinit var joueur: Joueur
         private set
@@ -70,7 +93,7 @@ class Monde {
         val o = modele("models/caisse.glb", taille = taille)
         val b = corps.add(Box(taille/2,taille/2,taille/2), Vec3(x,sol(x,z)+taille/2+hauteur+.01f,z), Quat.rotationY(angle),
             mass = 40f*taille*taille*taille, friction = .7f)
-        return lier(o,b)
+        return ombre(lier(o,b),taille*.75f)
     }
 
     /** Un ballon de plage léger et rebondissant. */
@@ -80,7 +103,7 @@ class Monde {
             rollingResistance = .05f)
         b.angularDamping = .1f
         b.linearDamping = .8f        // un ballon de plage léger freine vite dans l'air
-        return lier(o,b)
+        return ombre(lier(o,b),rayon*1.1f)
     }
     /** Hauteur du terrain en (x, z), 0 hors de l'île. */
     fun sol(x: Float, z: Float): Float = physique.hauteur(x,z) ?: 0f
@@ -89,6 +112,7 @@ class Monde {
         obstacle(x,sol(x,z),z,largeur,hauteur,profondeur,camera)
     fun heros(glb: String, x: Float=0f, y: Float=3f, z: Float=4f, config: Joueur.() -> Unit = {}) {
         joueur=Joueur(modele(glb),Vec3(x,y,z)).apply(config)
+        ombre(joueur.objet,.42f)
         // Le héros pousse les corps rigides : une capsule cinématique qui suit le contrôleur de personnage.
         val j=joueur
         corpsHeros=corps.add(Capsule(j.rayon,(j.hauteur-2*j.rayon)/2),j.position.plus(0f,j.hauteur/2,0f),type=BodyType.KINEMATIC)
@@ -160,6 +184,7 @@ class Monde {
         }
         corps.step(h)
         for((o,b) in lies) { o.position=b.position; o.orientation=b.rotation }
+        placerOmbres()
         coquillages.forEachIndexed { i,o ->
             o.rotation=temps*1.1f+i
             if(o.visible && joueur.position.distanceTo(o.position)<1.15f) { o.visible=false; recoltes++; println("Coquillages : " + recoltes + "/" + coquillages.size) }
@@ -216,4 +241,44 @@ class Camera {
 fun jeu(titre: String = "Sillage", args: Array<String> = emptyArray(), construire: Monde.() -> Unit) {
     val monde=Monde().apply(construire)
     Game(titre,monde,args).run()
+}
+
+/**
+ * Dôme du ciel, non éclairé : bleu profond au zénith, clair vers l'horizon (la couleur de la brume du
+ * shader, pour que les lointains s'y fondent), halo chaud autour du soleil.
+ */
+private fun domeCiel(rayon: Float = 160f, cotes: Int = 64, anneaux: Int = 32): Maillage {
+    val zenith = Vec3(.16f, .38f, .74f); val milieu = Vec3(.34f, .60f, .86f); val horizon = Vec3(.60f, .80f, .86f)
+    val soleil = Vec3(-.45f, .80f, .40f).normalized()
+    fun couleur(d: Vec3): Vec3 {
+        val h = d.y.coerceIn(0f, 1f)
+        var c = if (h < .25f) horizon.lerp(milieu, h / .25f) else milieu.lerp(zenith, ((h - .25f) / .75f).coerceAtMost(1f))
+        val s = (d dot soleil).coerceAtLeast(0f)
+        c += Vec3(1f, .86f, .62f) * (s.pow(24f) * .45f + s.pow(300f) * .9f)
+        return c
+    }
+    fun point(i: Int, j: Int): Vec3 {
+        val el = (i.toFloat() / anneaux) * (PI.toFloat() * .55f) - PI.toFloat() * .05f   // un peu sous l'horizon
+        val az = j.toFloat() / cotes * 2f * PI.toFloat()
+        return Vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az))
+    }
+    val v = ArrayList<Float>()
+    fun sommet(d: Vec3) { val c = couleur(d); v.addAll(listOf(d.x * rayon, d.y * rayon, d.z * rayon, 0f, 0f, 0f, c.x, c.y, c.z)) }
+    for (i in 0 until anneaux) for (j in 0 until cotes) {
+        val a = point(i, j); val b = point(i + 1, j); val c = point(i + 1, j + 1); val d = point(i, j + 1)
+        sommet(a); sommet(b); sommet(c); sommet(a); sommet(c); sommet(d)
+    }
+    return Maillage(v.toFloatArray())
+}
+
+/** Disque d'ombre de rayon 1 : opacité (dans le rouge des sommets) 1 au centre, 0 au bord. */
+private fun disqueOmbre(cotes: Int = 32): Maillage {
+    val v = ArrayList<Float>()
+    for (i in 0 until cotes) {
+        val a = i * 2f * PI.toFloat() / cotes; val b = (i + 1) * 2f * PI.toFloat() / cotes
+        v.addAll(listOf(0f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, 0f))
+        v.addAll(listOf(cos(b), 0f, sin(b), 0f, 0f, 0f, 0f, 0f, 0f))
+        v.addAll(listOf(cos(a), 0f, sin(a), 0f, 0f, 0f, 0f, 0f, 0f))
+    }
+    return Maillage(v.toFloatArray())
 }

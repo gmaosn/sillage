@@ -29,7 +29,7 @@ internal object Hud {
 
     fun construire(monde: Monde, fps: Int, captureSouris: Boolean): Maillage {
         val g=Geometrie()
-        val ink=Couleur.hex(0x153d48); val paper=Couleur.hex(0xffedbe); val gold=Couleur.hex(0xffce6e)
+        val ink=Couleur.srgb(0x153d48); val paper=Couleur.srgb(0xffedbe); val gold=Couleur.srgb(0xffce6e)
         fun rect(x: Float,y: Float,w: Float,h: Float,c: Couleur) {
             fun p(px: Float,py: Float)=Vec3(px/480f-1f,py/300f-1f,0f)
             g.quad(p(x,y),p(x+w,y),p(x+w,y+h),p(x,y+h),c)

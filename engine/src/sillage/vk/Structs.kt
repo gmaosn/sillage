@@ -174,6 +174,8 @@ internal val VkPipelineColorBlendAttachmentState = s("VkPipelineColorBlendAttach
 internal val VkPipelineColorBlendStateCreateInfo = t("VkPipelineColorBlendStateCreateInfo", VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
     "flags" to U32, "logicOpEnable" to U32, "logicOp" to U32, "attachmentCount" to U32, "pAttachments" to Ptr,
     "blendConstants" to Field.Array(F32, 4))
+internal val VkPipelineDynamicStateCreateInfo = t("VkPipelineDynamicStateCreateInfo", VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+    "flags" to U32, "dynamicStateCount" to U32, "pDynamicStates" to Ptr)
 internal val VkPushConstantRange = s("VkPushConstantRange", "stageFlags" to U32, "offset" to U32, "size" to U32)
 internal val VkPipelineLayoutCreateInfo = t("VkPipelineLayoutCreateInfo", VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     "flags" to U32, "setLayoutCount" to U32, "pSetLayouts" to Ptr, "pushConstantRangeCount" to U32, "pPushConstantRanges" to Ptr)

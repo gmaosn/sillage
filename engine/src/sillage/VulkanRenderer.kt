@@ -1,6 +1,7 @@
 package sillage
 
 import sillage.math.Mat4
+import sillage.math.Vec3
 import sillage.vk.*
 import java.awt.image.BufferedImage
 import java.lang.foreign.Arena
@@ -29,9 +30,16 @@ internal interface SurfaceSource {
 
 /** Backend Vulkan direct, appelé par FFM. Une image en vol : synchronisation volontairement simple pour la v0.1.
  * Le même render pass fonctionne avec une fenêtre ou sans serveur graphique. */
-internal class VulkanRenderer(private val target: SurfaceSource? = null, private val validation: Boolean = false) : AutoCloseable {
-    val largeur=960
-    val hauteur=600
+internal class VulkanRenderer(private val target: SurfaceSource? = null, private val validation: Boolean = false,
+                              largeurHorsEcran: Int = 1280, hauteurHorsEcran: Int = 800) : AutoCloseable {
+    /** Taille de rendu : celle de la fenêtre (suivie au redimensionnement), sinon celle demandée hors écran. */
+    var largeur=largeurHorsEcran
+        private set
+    var hauteur=hauteurHorsEcran
+        private set
+    /** Échantillons par pixel (anticrénelage MSAA) : 4 si le GPU le permet. */
+    var echantillons=1
+        private set
     private val arena=Arena.ofConfined()
     private val stack=NativeStack(1L shl 20, arena)
     private lateinit var vk: VkInstanceApi
@@ -52,6 +60,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var framebuffer=0L
     private var layout=0L
     private var pipeline=0L
+    private var pipelineOmbre=0L
     private var acquired=0L
     private var finished=0L
     private var messenger=0L
@@ -59,7 +68,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         private set
     private class Image(val image: Long, val memory: Long, val view: Long)
     private class Buffer(val buffer: Long, val memory: Long, val size: Long)
-    private var color: Image?=null
+    private var color: Image?=null          // image finale (résolue), copiée vers la fenêtre ou lue pour une capture
+    private var msaa: Image?=null           // image multi-échantillonnée où l'on dessine
     private var depth: Image?=null
     private var hudBuffer: Buffer?=null
     private val meshes=IdentityHashMap<Maillage,Buffer>()
@@ -86,13 +96,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.createSemaphore(si,out); acquired=out.get(JAVA_LONG,0)
                 dev.createSemaphore(si,out); finished=out.get(JAVA_LONG,0)
             }
-            color=image(colorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT)
-            depth=image(VK_FORMAT_D32_SFLOAT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT)
             createRenderPass()
             createPipeline()
             hudBuffer=buffer(4L*1024*1024,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
-            if(surface != 0L) recreateSwapchain()
-            println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " validation=" + validation)
+            if(surface != 0L) recreateSwapchain() else createTargets()
+            println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " msaa=" + echantillons + " validation=" + validation)
         } catch(e: Throwable) { close(); throw e }
     }
 
@@ -152,7 +160,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
                 val score=when(props.u32(VkPhysicalDeviceProperties,"deviceType")) {
                     VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU->100; VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU->50; else->1 }
-                if(score>best) { best=score; physical=candidate; family=j; nomGpu=props.chars(VkPhysicalDeviceProperties,"deviceName") }
+                if(score>best) {
+                    best=score; physical=candidate; family=j; nomGpu=props.chars(VkPhysicalDeviceProperties,"deviceName")
+                    val counts=props.u32(VkPhysicalDeviceProperties,"limits.framebufferColorSampleCounts") and
+                        props.u32(VkPhysicalDeviceProperties,"limits.framebufferDepthSampleCounts")
+                    echantillons=if(counts and VK_SAMPLE_COUNT_4_BIT != 0) 4 else 1
+                }
             }
         }
         require(best>=0) { "Aucune queue graphique Vulkan compatible avec la fenêtre" }
@@ -196,11 +209,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         finally { dev.unmapMemory(b.memory) }
     }
 
-    private fun image(format: Int, usage: Int, aspect: Int): Image = stack.frame { s ->
+    private fun image(format: Int, usage: Int, aspect: Int, samples: Int = 1): Image = stack.frame { s ->
         val p=s.allocate(JAVA_LONG)
         dev.createImage(s.struct(VkImageCreateInfo, "imageType" to VK_IMAGE_TYPE_2D, "format" to format,
             "extent.width" to largeur, "extent.height" to hauteur, "extent.depth" to 1, "mipLevels" to 1, "arrayLayers" to 1,
-            "samples" to VK_SAMPLE_COUNT_1_BIT, "tiling" to VK_IMAGE_TILING_OPTIMAL, "usage" to usage,
+            "samples" to samples, "tiling" to VK_IMAGE_TILING_OPTIMAL, "usage" to usage,
             "sharingMode" to VK_SHARING_MODE_EXCLUSIVE, "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED),p)
         val img=p.get(JAVA_LONG,0)
         val req=s.struct(VkMemoryRequirements); dev.getImageMemoryRequirements(img,req)
@@ -214,33 +227,53 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     }
 
     private fun createRenderPass() = stack.frame { s ->
-        val a=s.structs(VkAttachmentDescription,2)
-        a.at(VkAttachmentDescription,0).put(VkAttachmentDescription, "format" to colorFormat, "samples" to VK_SAMPLE_COUNT_1_BIT,
-            "loadOp" to VK_ATTACHMENT_LOAD_OP_CLEAR, "storeOp" to VK_ATTACHMENT_STORE_OP_STORE,
+        val multi=echantillons>1
+        val a=s.structs(VkAttachmentDescription,if(multi) 3 else 2)
+        a.at(VkAttachmentDescription,0).put(VkAttachmentDescription, "format" to colorFormat, "samples" to echantillons,
+            "loadOp" to VK_ATTACHMENT_LOAD_OP_CLEAR, "storeOp" to (if(multi) VK_ATTACHMENT_STORE_OP_DONT_CARE else VK_ATTACHMENT_STORE_OP_STORE),
             "stencilLoadOp" to VK_ATTACHMENT_LOAD_OP_DONT_CARE, "stencilStoreOp" to VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED, "finalLayout" to VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-        a.at(VkAttachmentDescription,1).put(VkAttachmentDescription, "format" to VK_FORMAT_D32_SFLOAT, "samples" to VK_SAMPLE_COUNT_1_BIT,
+            "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED,
+            "finalLayout" to (if(multi) VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL else VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL))
+        a.at(VkAttachmentDescription,1).put(VkAttachmentDescription, "format" to VK_FORMAT_D32_SFLOAT, "samples" to echantillons,
             "loadOp" to VK_ATTACHMENT_LOAD_OP_CLEAR, "storeOp" to VK_ATTACHMENT_STORE_OP_DONT_CARE,
             "stencilLoadOp" to VK_ATTACHMENT_LOAD_OP_DONT_CARE, "stencilStoreOp" to VK_ATTACHMENT_STORE_OP_DONT_CARE,
             "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED, "finalLayout" to VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        if(multi) a.at(VkAttachmentDescription,2).put(VkAttachmentDescription, "format" to colorFormat, "samples" to VK_SAMPLE_COUNT_1_BIT,
+            "loadOp" to VK_ATTACHMENT_LOAD_OP_DONT_CARE, "storeOp" to VK_ATTACHMENT_STORE_OP_STORE,
+            "stencilLoadOp" to VK_ATTACHMENT_LOAD_OP_DONT_CARE, "stencilStoreOp" to VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED, "finalLayout" to VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
         val cr=s.struct(VkAttachmentReference, "attachment" to 0, "layout" to VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
         val dr=s.struct(VkAttachmentReference, "attachment" to 1, "layout" to VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
         val sub=s.struct(VkSubpassDescription, "pipelineBindPoint" to VK_PIPELINE_BIND_POINT_GRAPHICS,
             "colorAttachmentCount" to 1, "pColorAttachments" to cr, "pDepthStencilAttachment" to dr)
+        if(multi) sub.put(VkSubpassDescription, "pResolveAttachments" to
+            s.struct(VkAttachmentReference, "attachment" to 2, "layout" to VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL))
         val deps=s.structs(VkSubpassDependency,2)
         deps.at(VkSubpassDependency,0).put(VkSubpassDependency, "srcSubpass" to VK_SUBPASS_EXTERNAL, "dstSubpass" to 0,
-            "srcStageMask" to VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            "srcStageMask" to (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT or VK_PIPELINE_STAGE_TRANSFER_BIT),
             "dstStageMask" to (VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT or VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT),
+            "srcAccessMask" to VK_ACCESS_TRANSFER_READ_BIT,
             "dstAccessMask" to (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT or VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT))
         deps.at(VkSubpassDependency,1).put(VkSubpassDependency, "srcSubpass" to 0, "dstSubpass" to VK_SUBPASS_EXTERNAL,
             "srcStageMask" to VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, "dstStageMask" to VK_PIPELINE_STAGE_TRANSFER_BIT,
             "srcAccessMask" to VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, "dstAccessMask" to VK_ACCESS_TRANSFER_READ_BIT)
         val p=s.allocate(JAVA_LONG)
-        dev.createRenderPass(s.struct(VkRenderPassCreateInfo, "attachmentCount" to 2, "pAttachments" to a,
+        dev.createRenderPass(s.struct(VkRenderPassCreateInfo, "attachmentCount" to (if(multi) 3 else 2), "pAttachments" to a,
             "subpassCount" to 1, "pSubpasses" to sub, "dependencyCount" to 2, "pDependencies" to deps),p)
         renderPass=p.get(JAVA_LONG,0)
-        dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to renderPass, "attachmentCount" to 2,
-            "pAttachments" to s.longs(color!!.view,depth!!.view), "width" to largeur, "height" to hauteur, "layers" to 1),p)
+    }
+
+    /** Images de rendu et framebuffer à la taille courante ; refaits quand la fenêtre change de taille. */
+    private fun createTargets() = stack.frame { s ->
+        if(framebuffer!=0L) { dev.destroyFramebuffer(framebuffer); framebuffer=0L }
+        color?.let { destroy(it) }; msaa?.let { destroy(it) }; depth?.let { destroy(it) }
+        color=image(colorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT)
+        msaa=if(echantillons>1) image(colorFormat,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,VK_IMAGE_ASPECT_COLOR_BIT,echantillons) else null
+        depth=image(VK_FORMAT_D32_SFLOAT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,echantillons)
+        val views=msaa?.let { s.longs(it.view,depth!!.view,color!!.view) } ?: s.longs(color!!.view,depth!!.view)
+        val p=s.allocate(JAVA_LONG)
+        dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to renderPass, "attachmentCount" to (if(msaa!=null) 3 else 2),
+            "pAttachments" to views, "width" to largeur, "height" to hauteur, "layers" to 1),p)
         framebuffer=p.get(JAVA_LONG,0)
     }
 
@@ -253,7 +286,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     }
 
     private fun createPipeline() = stack.frame { s ->
-        val vert=shader("/shaders/toon.vert.spv"); val frag=shader("/shaders/toon.frag.spv")
+        val vert=shader("/shaders/toon.vert.spv"); val frag=shader("/shaders/toon.frag.spv"); val fragOmbre=shader("/shaders/ombre.frag.spv")
         try {
             val stages=s.structs(VkPipelineShaderStageCreateInfo,2)
             stages.at(VkPipelineShaderStageCreateInfo,0).put(VkPipelineShaderStageCreateInfo,
@@ -267,12 +300,13 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val vi=s.struct(VkPipelineVertexInputStateCreateInfo, "vertexBindingDescriptionCount" to 1, "pVertexBindingDescriptions" to binding,
                 "vertexAttributeDescriptionCount" to 3, "pVertexAttributeDescriptions" to attrs)
             val ia=s.struct(VkPipelineInputAssemblyStateCreateInfo, "topology" to VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-            val vp=s.struct(VkViewport, "x" to 0f, "y" to 0f, "width" to largeur.toFloat(), "height" to hauteur.toFloat(), "minDepth" to 0f, "maxDepth" to 1f)
-            val sc=s.struct(VkRect2D, "extent.width" to largeur, "extent.height" to hauteur)
-            val vs=s.struct(VkPipelineViewportStateCreateInfo, "viewportCount" to 1, "pViewports" to vp, "scissorCount" to 1, "pScissors" to sc)
+            // Viewport et scissor dynamiques : la taille suit la fenêtre sans refaire le pipeline.
+            val vs=s.struct(VkPipelineViewportStateCreateInfo, "viewportCount" to 1, "scissorCount" to 1)
+            val dyn=s.struct(VkPipelineDynamicStateCreateInfo, "dynamicStateCount" to 2,
+                "pDynamicStates" to s.ints(VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR))
             val rs=s.struct(VkPipelineRasterizationStateCreateInfo, "polygonMode" to VK_POLYGON_MODE_FILL, "cullMode" to VK_CULL_MODE_NONE,
                 "frontFace" to VK_FRONT_FACE_COUNTER_CLOCKWISE, "lineWidth" to 1f)
-            val ms=s.struct(VkPipelineMultisampleStateCreateInfo, "rasterizationSamples" to VK_SAMPLE_COUNT_1_BIT)
+            val ms=s.struct(VkPipelineMultisampleStateCreateInfo, "rasterizationSamples" to echantillons)
             val ds=s.struct(VkPipelineDepthStencilStateCreateInfo, "depthTestEnable" to true, "depthWriteEnable" to true,
                 "depthCompareOp" to VK_COMPARE_OP_LESS_OR_EQUAL)
             val ca=s.struct(VkPipelineColorBlendAttachmentState, "colorWriteMask" to
@@ -284,10 +318,18 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             layout=p.get(JAVA_LONG,0)
             val ci=s.struct(VkGraphicsPipelineCreateInfo, "stageCount" to 2, "pStages" to stages, "pVertexInputState" to vi,
                 "pInputAssemblyState" to ia, "pViewportState" to vs, "pRasterizationState" to rs, "pMultisampleState" to ms,
-                "pDepthStencilState" to ds, "pColorBlendState" to cb, "layout" to layout, "renderPass" to renderPass,
+                "pDepthStencilState" to ds, "pColorBlendState" to cb, "pDynamicState" to dyn, "layout" to layout, "renderPass" to renderPass,
                 "subpass" to 0, "basePipelineIndex" to -1)
             dev.createGraphicsPipelines(1,ci,p); pipeline=p.get(JAVA_LONG,0)
-        } finally { dev.destroyShaderModule(vert); dev.destroyShaderModule(frag) }
+            // Ombres : même entrée, autre fragment, mélange par transparence, profondeur lue mais pas écrite.
+            stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo, "module" to fragOmbre)
+            ds.put(VkPipelineDepthStencilStateCreateInfo, "depthWriteEnable" to false)
+            ca.put(VkPipelineColorBlendAttachmentState, "blendEnable" to true,
+                "srcColorBlendFactor" to VK_BLEND_FACTOR_SRC_ALPHA, "dstColorBlendFactor" to VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                "colorBlendOp" to VK_BLEND_OP_ADD, "srcAlphaBlendFactor" to VK_BLEND_FACTOR_ZERO, "dstAlphaBlendFactor" to VK_BLEND_FACTOR_ONE,
+                "alphaBlendOp" to VK_BLEND_OP_ADD)
+            dev.createGraphicsPipelines(1,ci,p); pipelineOmbre=p.get(JAVA_LONG,0)
+        } finally { dev.destroyShaderModule(vert); dev.destroyShaderModule(frag); dev.destroyShaderModule(fragOmbre) }
     }
 
     fun recreateSwapchain(): Boolean {
@@ -323,6 +365,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             dev.getSwapchainImagesKHR(swapchain,n,MemorySegment.NULL)
             val imgs=s.allocate(JAVA_LONG,n.get(JAVA_INT,0).toLong()); dev.getSwapchainImagesKHR(swapchain,n,imgs)
             swapImages=LongArray(n.get(JAVA_INT,0)) { imgs.getAtIndex(JAVA_LONG,it.toLong()) }
+            if(swapWidth!=largeur || swapHeight!=hauteur || framebuffer==0L) { largeur=swapWidth; hauteur=swapHeight; createTargets() }
             true
         }
     }
@@ -337,7 +380,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private fun MemorySegment.subresource(prefix: String, s: Struct) = put(s,
         "$prefix.aspectMask" to VK_IMAGE_ASPECT_COLOR_BIT, "$prefix.mipLevel" to 0, "$prefix.baseArrayLayer" to 0, "$prefix.layerCount" to 1)
 
-    fun dessiner(objets: List<Objet>, camera: Mat4, hud: Maillage, capture: Path?=null) = stack.frame { s ->
+    /**
+     * Dessine une image. [camera] : projection × vue ; [oeil] : position de la caméra et [temps] (s),
+     * transmis au shader pour le liseré lumineux.
+     */
+    fun dessiner(objets: List<Objet>, camera: Mat4, hud: Maillage, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f) = stack.frame { s ->
         var index=-1
         if(surface!=0L) {
             val out=s.allocate(JAVA_INT)
@@ -365,21 +412,31 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 "renderArea.extent.width" to largeur, "renderArea.extent.height" to hauteur, "clearValueCount" to 2, "pClearValues" to clear)
             dev.cmdBeginRenderPass(command,ri,VK_SUBPASS_CONTENTS_INLINE)
             dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
+            dev.cmdSetViewport(command,s.struct(VkViewport, "width" to largeur.toFloat(), "height" to hauteur.toFloat(), "maxDepth" to 1f))
+            dev.cmdSetScissor(command,s.struct(VkRect2D, "extent.width" to largeur, "extent.height" to hauteur))
             val constants=s.allocate(JAVA_FLOAT,32)
             val values=FloatArray(32)
             val handle=s.allocate(JAVA_LONG); val offsets=s.longs(0L)
             fun draw(b: Buffer, mesh: Maillage, model: Mat4, vp: Mat4) {
-                (vp*model).writeTo(values,0); model.writeTo(values,16)
+                // 128 octets : mvp (16), modèle en trois lignes (12), œil et temps (4).
+                (vp*model).writeTo(values,0)
+                values[16]=model.m00; values[17]=model.m10; values[18]=model.m20; values[19]=model.m30
+                values[20]=model.m01; values[21]=model.m11; values[22]=model.m21; values[23]=model.m31
+                values[24]=model.m02; values[25]=model.m12; values[26]=model.m22; values[27]=model.m32
+                values[28]=oeil.x; values[29]=oeil.y; values[30]=oeil.z; values[31]=temps
                 MemorySegment.copy(values,0,constants,JAVA_FLOAT,0,32)
                 dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT,0,128,constants)
                 handle.set(JAVA_LONG,0,b.buffer); dev.cmdBindVertexBuffers(command,0,1,handle,offsets)
                 dev.cmdDraw(command,mesh.sommets.size/9,1,0,0)
             }
-            for(o in objets) if(o.visible) {
+            for(o in objets) if(o.visible && !o.ombre) {
                 val m=o.matrice()
                 meshes[o.maillage]?.let { draw(it,o.maillage,m,camera) }
                 for(p in o.parties) meshes[p.maillage]?.let { draw(it,p.maillage,m*p.pose,camera) }
             }
+            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
+            for(o in objets) if(o.visible && o.ombre) meshes[o.maillage]?.let { draw(it,o.maillage,o.matrice(),camera) }
+            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
             draw(hudBuffer!!,hud,Mat4.IDENTITY,Mat4.IDENTITY)
             dev.cmdEndRenderPass(command)
             if(readback!=null) {
@@ -439,11 +496,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.deviceWaitIdle()
                 meshes.values.forEach { destroy(it) }; meshes.clear()
                 hudBuffer?.let { destroy(it) }; hudBuffer=null
-                dev.destroyPipeline(pipeline)
+                dev.destroyPipeline(pipeline); dev.destroyPipeline(pipelineOmbre)
                 dev.destroyPipelineLayout(layout)
                 dev.destroyFramebuffer(framebuffer)
                 dev.destroyRenderPass(renderPass)
-                color?.let { destroy(it) }; depth?.let { destroy(it) }; color=null; depth=null
+                color?.let { destroy(it) }; msaa?.let { destroy(it) }; depth?.let { destroy(it) }; color=null; msaa=null; depth=null
                 dev.destroySwapchainKHR(swapchain)
                 dev.destroySemaphore(acquired)
                 dev.destroySemaphore(finished)
