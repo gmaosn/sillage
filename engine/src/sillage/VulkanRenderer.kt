@@ -347,10 +347,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             index=out.get(JAVA_INT,0)
         }
         // La frame précédente est terminée avant toute écriture de mémoire hôte.
-        for(o in objets) if(o.visible && o.maillage.sommets.isNotEmpty() && !meshes.containsKey(o.maillage)) {
-            val b=buffer(o.maillage.sommets.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
-            upload(b,o.maillage.sommets); meshes[o.maillage]=b
+        fun prepare(m: Maillage) {
+            if(m.sommets.isEmpty() || meshes.containsKey(m)) return
+            val b=buffer(m.sommets.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+            upload(b,m.sommets); meshes[m]=b
         }
+        for(o in objets) if(o.visible) { prepare(o.maillage); for(p in o.parties) prepare(p.maillage) }
         upload(hudBuffer!!,hud.sommets)
         val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
         try {
@@ -373,7 +375,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 handle.set(JAVA_LONG,0,b.buffer); dev.cmdBindVertexBuffers(command,0,1,handle,offsets)
                 dev.cmdDraw(command,mesh.sommets.size/9,1,0,0)
             }
-            for(o in objets) if(o.visible) meshes[o.maillage]?.let { draw(it,o.maillage,o.matrice(),camera) }
+            for(o in objets) if(o.visible) {
+                val m=o.matrice()
+                meshes[o.maillage]?.let { draw(it,o.maillage,m,camera) }
+                for(p in o.parties) meshes[p.maillage]?.let { draw(it,p.maillage,m*p.pose,camera) }
+            }
             draw(hudBuffer!!,hud,Mat4.IDENTITY,Mat4.IDENTITY)
             dev.cmdEndRenderPass(command)
             if(readback!=null) {

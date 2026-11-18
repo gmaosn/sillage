@@ -16,10 +16,16 @@ class Monde {
     var recoltes = 0
     val camera = Camera()
     var temps = 0f
-    private val cache = HashMap<String,Maillage>()
+    private val modeles = HashMap<String,Modele>()
+    private val aplatis = HashMap<String,Maillage>()
+    private var tempsEnLAir = 0f
 
+    /** Place un modèle GLB. Un modèle qui contient des animations garde ses pièces et peut être animé. */
     fun modele(glb: String, x: Float = 0f, y: Float = 0f, z: Float = 0f, taille: Float = 1f): Objet {
-        val o = Objet(cache.getOrPut(glb) { Glb.charger(glb) })
+        val m = modeles.getOrPut(glb) { Glb.chargerModele(glb) }
+        val o = if (m.clips.isEmpty()) Objet(aplatis.getOrPut(glb) { m.aplatir().also {
+                require(it.sommets.isNotEmpty()) { "GLB sans triangles : $glb" } } })
+            else Objet(Maillage(FloatArray(0))).also { it.parties = m.parties(); it.animateur = Animateur(m, it.parties) }
         o.position=Vec3(x,y,z); o.echelle=taille; objets.add(o)
         return o
     }
@@ -27,6 +33,11 @@ class Monde {
     fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float) {
         physique.obstacles.add(Boite(Vec3(x-largeur/2,y,z-profondeur/2),Vec3(x+largeur/2,y+hauteur,z+profondeur/2)))
     }
+    /** Hauteur du terrain en (x, z), 0 hors de l'île. */
+    fun sol(x: Float, z: Float): Float = physique.hauteur(x,z) ?: 0f
+    /** Obstacle posé sur le terrain : sa base suit le sol. */
+    fun obstacleAuSol(x: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float) =
+        obstacle(x,sol(x,z),z,largeur,hauteur,profondeur)
     fun heros(glb: String, x: Float=0f, y: Float=3f, z: Float=4f, config: Joueur.() -> Unit = {}) {
         joueur=Joueur(modele(glb),Vec3(x,y,z)).apply(config)
     }
@@ -53,11 +64,37 @@ class Monde {
         val o=Objet(g.construire()); o.position=Vec3(x,(physique.hauteur(x,z) ?: 1f)+.65f,z)
         objets.add(o); coquillages.add(o)
     }
+    /** Rapproche l'angle [de] de [vers] d'au plus [pas] radians, par le plus court chemin. */
+    private fun tourner(de: Float, vers: Float, pas: Float): Float {
+        var d=(vers-de)%(2*PI.toFloat())
+        if(d>PI) d-=2*PI.toFloat() else if(d< -PI) d+=2*PI.toFloat()
+        return if(abs(d)<=pas) vers else de+sign(d)*pas
+    }
+
+    /** Choisit le clip du héros (idle, run, jump, fall) d'après son mouvement réel. */
+    private fun animerHeros(avant: Vec3, dt: Float) {
+        val a=joueur.objet.animateur ?: return
+        val clips=a.modele.clips
+        tempsEnLAir=if(joueur.auSol) 0f else tempsEnLAir+dt
+        val dx=joueur.position.x-avant.x; val dz=joueur.position.z-avant.z
+        val vitesse=if(dt>0f) sqrt(dx*dx+dz*dz)/dt else 0f
+        when {
+            joueur.vitesseY>0f && !joueur.auSol && "jump" in clips -> a.jouer("jump",boucle=false,fondu=.08f,vitesse=1f)
+            tempsEnLAir>.12f && "fall" in clips -> a.jouer("fall",boucle=false,fondu=.2f,vitesse=1f)
+            tempsEnLAir>.12f -> {}
+            vitesse>.4f && "run" in clips -> a.jouer("run",fondu=.12f,vitesse=(vitesse/joueur.vitesse).coerceIn(.5f,1.4f))
+            "idle" in clips -> a.jouer("idle",fondu=.2f,vitesse=1f)
+        }
+    }
+
     fun reinitialiser() { joueur.reapparaitre(); recoltes=0; coquillages.forEach { it.visible=true } }
     fun miseAJour(mouvement: Vec3, saut: Boolean, dt: Float) {
         temps+=dt
+        val avant=joueur.position
         physique.avancer(joueur,mouvement,saut,dt)
-        if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=atan2(-mouvement.x,-mouvement.z)
+        if(mouvement.lengthSquared()>.01f) joueur.objet.rotation=tourner(joueur.objet.rotation,atan2(-mouvement.x,-mouvement.z),14f*dt)
+        animerHeros(avant,dt)
+        for(o in objets) o.animateur?.avancer(dt)
         coquillages.forEachIndexed { i,o ->
             o.rotation=temps*1.1f+i
             if(o.visible && joueur.position.distanceTo(o.position)<1.15f) { o.visible=false; recoltes++; println("Coquillages : " + recoltes + "/" + coquillages.size) }

@@ -53,6 +53,16 @@ class MathTest {
         assertNear(Vec3(0f, 0f, -1f), Quat.rotationY((PI / 2).toFloat()).rotate(Vec3.X))
     }
 
+    @Test fun slerpChoisitLeCheminLePlusCourt() {
+        val a = Quat.rotationY(0f); val b = Quat.rotationY((PI / 2).toFloat())
+        assertNear(Quat.rotationY((PI / 4).toFloat()).rotate(Vec3.X), a.slerp(b, .5f).rotate(Vec3.X))
+        // −b est la même rotation : le résultat ne doit pas faire le grand tour.
+        val nb = Quat(-b.x, -b.y, -b.z, -b.w)
+        assertNear(Quat.rotationY((PI / 4).toFloat()).rotate(Vec3.X), a.slerp(nb, .5f).rotate(Vec3.X))
+        assertNear(b.rotate(Vec3.Z), a.slerp(b, 1f).rotate(Vec3.Z))
+        assertEquals(1f, a.slerp(b, .3f).lengthSquared(), 1e-5f)
+    }
+
     @Test fun determinantSigneDuMiroir() {
         assertEquals(-1f, Mat4.scaling(Vec3(-1f, 1f, 1f)).determinant3x3())
         assertEquals(24f, Mat4.trs(Vec3.ZERO, Quat.rotationY(.3f), Vec3(2f, 3f, 4f)).determinant3x3(), 1e-4f)

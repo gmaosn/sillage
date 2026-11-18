@@ -1,5 +1,6 @@
 package sillage.math
 
+import kotlin.math.acos
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -30,6 +31,14 @@ class Quat(val x: Float, val y: Float, val z: Float, val w: Float) {
         return if (l == 0f) IDENTITY else Quat(x / l, y / l, z / l, w / l)
     }
     fun conjugate() = Quat(-x, -y, -z, w)
+    infix fun dot(q: Quat) = x * q.x + y * q.y + z * q.z + w * q.w
+
+    /** Spherical interpolation along the shortest arc, as glTF requires for LINEAR rotations. */
+    fun slerp(to: Quat, t: Float): Quat {
+        val out = FloatArray(4)
+        slerpInto(floatArrayOf(x, y, z, w), 0, floatArrayOf(to.x, to.y, to.z, to.w), 0, t, out, 0)
+        return Quat(out[0], out[1], out[2], out[3])
+    }
 
     override fun equals(other: Any?) = other is Quat && x == other.x && y == other.y && z == other.z && w == other.w
     override fun hashCode() = ((x.hashCode() * 31 + y.hashCode()) * 31 + z.hashCode()) * 31 + w.hashCode()
@@ -45,4 +54,26 @@ class Quat(val x: Float, val y: Float, val z: Float, val w: Float) {
         }
         fun rotationY(angle: Float) = axisAngle(Vec3.Y, angle)
     }
+}
+
+/**
+ * Slerp between quaternions stored in arrays (x, y, z, w at the given offsets), written to [out].
+ * Shortest arc; falls back to a normalised lerp when the two are almost equal. Allocation-free,
+ * for the animation loop.
+ */
+fun slerpInto(a: FloatArray, ai: Int, b: FloatArray, bi: Int, t: Float, out: FloatArray, oi: Int) {
+    var bx = b[bi]; var by = b[bi + 1]; var bz = b[bi + 2]; var bw = b[bi + 3]
+    var d = a[ai] * bx + a[ai + 1] * by + a[ai + 2] * bz + a[ai + 3] * bw
+    if (d < 0f) { bx = -bx; by = -by; bz = -bz; bw = -bw; d = -d }
+    val wa: Float; val wb: Float
+    if (d > .9995f) { wa = 1f - t; wb = t }
+    else {
+        val theta = acos(d); val s = sin(theta)
+        wa = sin((1f - t) * theta) / s; wb = sin(t * theta) / s
+    }
+    var x = wa * a[ai] + wb * bx; var y = wa * a[ai + 1] + wb * by
+    var z = wa * a[ai + 2] + wb * bz; var w = wa * a[ai + 3] + wb * bw
+    val l = sqrt(x * x + y * y + z * z + w * w)
+    if (l > 0f) { x /= l; y /= l; z /= l; w /= l }
+    out[oi] = x; out[oi + 1] = y; out[oi + 2] = z; out[oi + 3] = w
 }

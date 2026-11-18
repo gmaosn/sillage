@@ -9,16 +9,21 @@ import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Chargeur glTF 2 binaire statique, entièrement JVM. Aucun moteur natif ni Assimp. */
+/** Chargeur glTF 2 binaire, entièrement JVM. Aucun moteur natif ni Assimp.
+ * Lit la hiérarchie des nœuds, les couleurs de matériau ou de sommet et les animations TRS. */
 object Glb {
-    fun charger(chemin: String): Maillage {
-        val bytes = if (Files.exists(Path.of(chemin))) Files.readAllBytes(Path.of(chemin))
-            else Glb::class.java.getResourceAsStream("/" + chemin)?.use { it.readAllBytes() }
-                ?: error("GLB introuvable : " + chemin)
-        return lire(bytes)
-    }
+    fun charger(chemin: String): Maillage = chargerModele(chemin).aplatir().also {
+        require(it.sommets.isNotEmpty()) { "GLB sans triangles : $chemin" } }
 
-    fun lire(bytes: ByteArray): Maillage {
+    fun chargerModele(chemin: String): Modele = lireModele(octets(chemin))
+
+    fun lire(bytes: ByteArray): Maillage = lireModele(bytes).aplatir().also { require(it.sommets.isNotEmpty()) { "GLB sans triangles" } }
+
+    private fun octets(chemin: String): ByteArray =
+        if (Files.exists(Path.of(chemin))) Files.readAllBytes(Path.of(chemin))
+        else Glb::class.java.getResourceAsStream("/" + chemin)?.use { it.readAllBytes() } ?: error("GLB introuvable : " + chemin)
+
+    fun lireModele(bytes: ByteArray): Modele {
         require(bytes.size >= 20) { "GLB tronqué" }
         val file = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         require(file.int == 0x46546c67 && file.int == 2) { "Un GLB glTF 2.0 est requis" }
@@ -36,26 +41,30 @@ object Glb {
             }
         }
         val doc = requireNotNull(json) { "Chunk JSON absent" }
-        val buffer = requireNotNull(bin) { "Chunk BIN absent" }
-        require(!doc.has("skins")) { "Les squelettes ne sont pas encore pris en charge : exporter un modèle statique" }
-        require(!doc.has("animations")) { "Les animations GLB ne sont pas encore prises en charge" }
+        require(!doc.has("skins")) { "Les squelettes ne sont pas encore pris en charge : animer des objets séparés (nœuds)" }
         val required = doc.arr("extensionsRequired")
         require(required == null || required.size == 0) { "Extensions GLB requises non prises en charge : " + required }
-        val buffers = requireNotNull(doc.arr("buffers")) { "Le GLB doit embarquer son buffer" }
-        require(buffers.size == 1 && !buffers.obj(0).has("uri")) { "Le GLB doit embarquer son buffer" }
-        val accessors = requireNotNull(doc.arr("accessors")) { "Accessors GLB absents" }
-        val views = requireNotNull(doc.arr("bufferViews")) { "BufferViews GLB absents" }
+        val buffers = doc.arr("buffers")
+        val buffer: ByteBuffer = if (buffers == null || buffers.size == 0) ByteBuffer.allocate(0) else {
+            require(buffers.size == 1 && !buffers.obj(0).has("uri")) { "Le GLB doit embarquer son buffer" }
+            requireNotNull(bin) { "Chunk BIN absent" }
+        }
+        val accessors = doc.arr("accessors") ?: Json.Arr(emptyList())
+        val views = doc.arr("bufferViews") ?: Json.Arr(emptyList())
         fun accessor(index: Int, expected: String): Pair<Json.Obj, Int> {
+            require(index in 0 until accessors.size) { "Accessor GLB $index absent" }
             val a = accessors.obj(index)
-            require(!a.has("sparse") && a.string("type") == expected) { "Accessor GLB non pris en charge" }
-            val v = views.obj(requireNotNull(a.int("bufferView")) { "Accessor GLB sans bufferView" })
+            require(!a.has("sparse") && a.string("type") == expected) { "Accessor GLB non pris en charge (attendu $expected)" }
+            val viewIndex = requireNotNull(a.int("bufferView")) { "Accessor GLB sans bufferView" }
+            require(viewIndex in 0 until views.size) { "BufferView GLB $viewIndex absent" }
+            val v = views.obj(viewIndex)
             require((v.int("buffer") ?: 0) == 0)
             val start = (v.int("byteOffset") ?: 0) + (a.int("byteOffset") ?: 0)
             return a to start
         }
         fun values(index: Int, type: String): List<FloatArray> {
             val (a, offset) = accessor(index, type)
-            val components = when(type) { "VEC3" -> 3; "VEC4" -> 4; else -> error("Type invalide") }
+            val components = when(type) { "SCALAR" -> 1; "VEC3" -> 3; "VEC4" -> 4; else -> error("Type invalide") }
             val componentType = a.int("componentType")
             val width = when(componentType) {5126 -> 4; 5121 -> 1; 5123 -> 2; else -> error("Type de composante non pris en charge")}
             val v = views.obj(a.int("bufferView")!!)
@@ -71,6 +80,11 @@ object Glb {
                 }
             } }
         }
+        fun floats(index: Int, type: String): FloatArray {
+            require(accessors.obj(index).int("componentType") == 5126) { "Les animations GLB doivent être en flottants" }
+            val list = values(index, type)
+            return FloatArray(list.sumOf { it.size }).also { out -> var k = 0; for (v in list) for (x in v) out[k++] = x }
+        }
         fun indices(index: Int): IntArray {
             val (a, offset) = accessor(index, "SCALAR")
             val type = a.int("componentType")
@@ -81,57 +95,93 @@ object Glb {
                 when(type) {5121 -> buffer.get(o).toInt() and 255; 5123 -> buffer.getShort(o).toInt() and 65535; else -> buffer.getInt(o)}
             }
         }
-        val out = Geometrie()
-        val nodes = requireNotNull(doc.arr("nodes")) { "Nœuds GLB absents" }
-        val active = HashSet<Int>()
-        fun visit(index: Int, parent: Mat4) {
-            require(active.add(index)) { "Cycle dans la hiérarchie GLB" }
-            val node = nodes.obj(index)
-            val local = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats()) } ?: run {
-                val t = node.arr("translation")?.floats()?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ZERO
-                val r = node.arr("rotation")?.floats()?.let { Quat(it[0], it[1], it[2], it[3]).normalized() } ?: Quat.IDENTITY
-                val s = node.arr("scale")?.floats()?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE
-                Mat4.trs(t, r, s)
-            }
-            val transform = parent * local
-            node.int("mesh")?.let { meshIndex ->
-                val mesh = requireNotNull(doc.arr("meshes")) { "Maillages GLB absents" }.obj(meshIndex)
-                for (primitive in requireNotNull(mesh.arr("primitives"))) {
-                    val p = primitive as Json.Obj
-                    require((p.int("mode") ?: 4) == 4) { "Seuls les triangles sont pris en charge" }
-                    val attributes = requireNotNull(p.obj("attributes"))
-                    val positions = values(requireNotNull(attributes.int("POSITION")), "VEC3").map {
-                        transform.transformPoint(Vec3(it[0],it[1],it[2])) }
-                    val colors = attributes.int("COLOR_0")?.let { values(it, accessors.obj(it).string("type")!!) }
-                    var color = Couleur(0.8f,0.8f,0.8f)
-                    p.int("material")?.let { materialIndex ->
-                        val material = requireNotNull(doc.arr("materials")).obj(materialIndex)
-                        val pbr = material.obj("pbrMetallicRoughness")
-                        require(pbr?.has("baseColorTexture") != true) {
-                            "Textures non prises en charge : utiliser des couleurs de matériaux Blender" }
-                        pbr?.arr("baseColorFactor")?.floats()?.let { color = Couleur(it[0],it[1],it[2]) }
-                    }
-                    val ids = p.int("indices")?.let { indices(it) } ?: IntArray(positions.size) { it }
-                    require(ids.size % 3 == 0)
-                    val mirrored = transform.determinant3x3() < 0
-                    for(i in ids.indices step 3) {
-                        val a=ids[i]; val b=ids[i+1]; val c=ids[i+2]
-                        require(a in positions.indices && b in positions.indices && c in positions.indices) { "Indice GLB hors limites" }
-                        val vc = colors?.let { cs ->
-                            Couleur(color.r * (cs[a][0].toDouble() + cs[b][0] + cs[c][0]).toFloat()/3,
-                                color.g * (cs[a][1].toDouble() + cs[b][1] + cs[c][1]).toFloat()/3,
-                                color.b * (cs[a][2].toDouble() + cs[b][2] + cs[c][2]).toFloat()/3) } ?: color
-                        // Recalcul des normales par face pour le rendu en aplats, y compris après scale négatif.
-                        if(mirrored) out.triangle(positions[a],positions[c],positions[b],vc)
-                        else out.triangle(positions[a],positions[b],positions[c],vc)
-                    }
+        /** Triangles of one glTF mesh in node space: 9 position floats then r, g, b per triangle. */
+        fun triangles(meshIndex: Int): FloatArray {
+            val out = ArrayList<Float>()
+            val mesh = requireNotNull(doc.arr("meshes")) { "Maillages GLB absents" }.obj(meshIndex)
+            for (primitive in requireNotNull(mesh.arr("primitives"))) {
+                val p = primitive as Json.Obj
+                require((p.int("mode") ?: 4) == 4) { "Seuls les triangles sont pris en charge" }
+                val attributes = requireNotNull(p.obj("attributes"))
+                val positions = values(requireNotNull(attributes.int("POSITION")), "VEC3")
+                val colors = attributes.int("COLOR_0")?.let { values(it, accessors.obj(it).string("type")!!) }
+                var color = Couleur(0.8f,0.8f,0.8f)
+                p.int("material")?.let { materialIndex ->
+                    val material = requireNotNull(doc.arr("materials")).obj(materialIndex)
+                    val pbr = material.obj("pbrMetallicRoughness")
+                    require(pbr?.has("baseColorTexture") != true) {
+                        "Textures non prises en charge : utiliser des couleurs de matériaux Blender" }
+                    pbr?.arr("baseColorFactor")?.floats()?.let { color = Couleur(it[0],it[1],it[2]) }
+                }
+                val ids = p.int("indices")?.let { indices(it) } ?: IntArray(positions.size) { it }
+                require(ids.size % 3 == 0)
+                for(i in ids.indices step 3) {
+                    val a=ids[i]; val b=ids[i+1]; val c=ids[i+2]
+                    require(a in positions.indices && b in positions.indices && c in positions.indices) { "Indice GLB hors limites" }
+                    val vc = colors?.let { cs ->
+                        Couleur(color.r * (cs[a][0].toDouble() + cs[b][0] + cs[c][0]).toFloat()/3,
+                            color.g * (cs[a][1].toDouble() + cs[b][1] + cs[c][1]).toFloat()/3,
+                            color.b * (cs[a][2].toDouble() + cs[b][2] + cs[c][2]).toFloat()/3) } ?: color
+                    for (v in intArrayOf(a, b, c)) for (j in 0..2) out.add(positions[v][j])
+                    out.add(vc.r); out.add(vc.g); out.add(vc.b)
                 }
             }
-            node.arr("children")?.forEach { visit((it as Json.Num).toInt(),transform) }
-            active.remove(index)
+            return out.toFloatArray()
         }
-        val scenes = requireNotNull(doc.arr("scenes")) { "Scènes GLB absentes" }
-        scenes.obj(doc.int("scene") ?: 0).arr("nodes")?.forEach { visit((it as Json.Num).toInt(),Mat4.IDENTITY) }
-        return out.construire().also { require(it.sommets.isNotEmpty()) { "GLB sans triangles" } }
+
+        val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
+        val parents = IntArray(nodesJson.size) { -1 }
+        for (i in 0 until nodesJson.size) nodesJson.obj(i).arr("children")?.forEach {
+            val c = (it as Json.Num).toInt()
+            require(c in 0 until nodesJson.size) { "Enfant GLB $c absent" }
+            require(parents[c] < 0 && c != i) { "Cycle ou nœud partagé dans la hiérarchie GLB" }
+            parents[c] = i
+        }
+        val meshCache = HashMap<Int, FloatArray>()
+        val noeuds = List(nodesJson.size) { i ->
+            val node = nodesJson.obj(i)
+            val matrix = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats()) }
+            Noeud(
+                nom = node.string("name"),
+                parent = parents[i],
+                enfants = node.arr("children")?.ints() ?: IntArray(0),
+                translation = node.arr("translation")?.floats()?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ZERO,
+                rotation = node.arr("rotation")?.floats()?.let { Quat(it[0], it[1], it[2], it[3]).normalized() } ?: Quat.IDENTITY,
+                echelle = node.arr("scale")?.floats()?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE,
+                matrice = matrix,
+                triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) } } ?: FloatArray(0),
+            )
+        }
+        val scenes = doc.arr("scenes")
+        val racines = if (scenes == null || scenes.size == 0) IntArray(nodesJson.size) { it }.filter { parents[it] < 0 }.toIntArray()
+            else scenes.obj(doc.int("scene") ?: 0).arr("nodes")?.ints() ?: IntArray(0)
+        for (r in racines) require(r in noeuds.indices && parents[r] < 0) { "Racine de scène GLB invalide : $r" }
+
+        val clips = LinkedHashMap<String, Clip>()
+        doc.arr("animations")?.forEachIndexed { index, a ->
+            val anim = a as Json.Obj
+            val samplers = requireNotNull(anim.arr("samplers")) { "Animation GLB sans samplers" }
+            val canaux = requireNotNull(anim.arr("channels")) { "Animation GLB sans canaux" }.map { ch ->
+                val c = ch as Json.Obj
+                val target = requireNotNull(c.obj("target")) { "Canal d'animation sans cible" }
+                val node = requireNotNull(target.int("node")) { "Canal d'animation sans nœud" }
+                require(node in noeuds.indices) { "Canal d'animation : nœud $node absent" }
+                require(noeuds[node].matrice == null) { "Un nœud animé doit utiliser translation/rotation/scale, pas matrix" }
+                val chemin = when (val path = target.string("path")) {
+                    "translation" -> Chemin.TRANSLATION; "rotation" -> Chemin.ROTATION; "scale" -> Chemin.ECHELLE
+                    else -> throw IllegalArgumentException("Animation de « $path » non prise en charge (seulement translation, rotation, scale)")
+                }
+                val sampler = samplers.obj(requireNotNull(c.int("sampler")))
+                val palier = when (val interp = sampler.string("interpolation") ?: "LINEAR") {
+                    "LINEAR" -> false; "STEP" -> true
+                    else -> throw IllegalArgumentException("Interpolation $interp non prise en charge (LINEAR ou STEP)")
+                }
+                Canal(node, chemin, floats(requireNotNull(sampler.int("input")), "SCALAR"),
+                    floats(requireNotNull(sampler.int("output")), if (chemin == Chemin.ROTATION) "VEC4" else "VEC3"), palier)
+            }
+            val nom = anim.string("name") ?: "animation$index"
+            clips[nom] = Clip(nom, canaux)
+        }
+        return Modele(noeuds, racines, clips)
     }
 }

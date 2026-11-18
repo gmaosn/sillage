@@ -63,7 +63,18 @@ class Objet(val maillage: Maillage) {
     var rotation = 0f
     var echelle = 1f
     var visible = true
+    /** Pièces d'un modèle animé, dessinées avec matrice() × pose de la pièce. */
+    var parties: List<Partie> = emptyList()
+        internal set
+    var animateur: Animateur? = null
+        internal set
     fun matrice() = Mat4.trsY(position, rotation, echelle)
+
+    /** Joue une animation du modèle GLB (nom donné dans Blender). */
+    fun animer(nom: String, boucle: Boolean = true, vitesse: Float = 1f): Objet {
+        requireNotNull(animateur) { "Ce modèle n'a pas d'animation" }.jouer(nom, boucle, vitesse = vitesse)
+        return this
+    }
 }
 
 class Boite(val min: Vec3, val max: Vec3)

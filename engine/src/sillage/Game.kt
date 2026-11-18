@@ -35,7 +35,7 @@ private class GlfwSurface(private val window: Long) : SurfaceSource {
 internal class Game(private val titre: String,private val monde: Monde,private val args: Array<String>) {
     fun run() {
         if("--help" in args) {
-            println("Sillage : --headless --smoke --frames N --capture chemin.png --validation")
+            println("Sillage : --headless --smoke --frames N --capture chemin.png --look-at ex,ey,ez,cx,cy,cz --validation")
             return
         }
         val headless="--headless" in args
@@ -48,6 +48,8 @@ internal class Game(private val titre: String,private val monde: Monde,private v
         }
         val frames=option("--frames")?.toInt()?.also { require(it>0) } ?: if(headless || smoke) 180 else Int.MAX_VALUE
         val screenshot=option("--capture")?.let { Path.of(it) }
+        // Caméra fixe pour les captures : œil puis cible. Les déplacements restent relatifs à la caméra de jeu.
+        val lookAt=option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size==6) { "--look-at attend 6 nombres" } }
         var window=0L
         var glfw=false
         var callback: GLFWErrorCallback?=null
@@ -112,7 +114,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 monde.miseAJour(movement,jump && !oldJump,dt); oldJump=jump
                 if(monde.joueur.position.distanceTo(initial)>.1f) moved=true
                 highest=max(highest,monde.joueur.position.y); lowest=min(lowest,monde.joueur.position.y)
-                val view=monde.camera.vue(monde,dt)
+                val view=monde.camera.vue(monde,dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0],it[1],it[2]),Vec3(it[3],it[4],it[5])) } ?: v }
                 val projection=Mat4.perspective(Math.toRadians(58.0).toFloat(),r.largeur.toFloat()/r.hauteur,.08f,180f)
                 fpsFrames++; fpsTime+=dt
                 if(fpsTime>=.5f) { fps=(fpsFrames/fpsTime).roundToInt(); fpsTime=0f; fpsFrames=0 }

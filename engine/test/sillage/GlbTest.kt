@@ -61,8 +61,9 @@ class GlbTest {
         assertContains(e.message!!, "Textures")
     }
 
-    @Test fun animationsRefusees() {
-        assertFailsWith<IllegalArgumentException> { Glb.lire(triangle("""{"mesh":0}""", extra = ""","animations":[{}]""")) }
+    @Test fun squelettesRefuses() {
+        val e = assertFailsWith<IllegalArgumentException> { Glb.lire(triangle("""{"mesh":0}""", extra = ""","skins":[{}]""")) }
+        assertContains(e.message!!, "squelettes")
     }
 
     @Test fun fichierTronqueOuFauxRefuse() {
@@ -73,7 +74,7 @@ class GlbTest {
     @Test fun modelesDeLaDemo() {
         var dir = Path.of("").toAbsolutePath()
         while (!Files.exists(dir.resolve("project.yaml"))) dir = requireNotNull(dir.parent) { "racine du projet introuvable" }
-        for (nom in listOf("terrain", "village", "marin")) {
+        for (nom in listOf("terrain", "village", "marin", "palmiers", "ciel", "port")) {
             val m = Glb.charger(dir.resolve("demo/resources/models/$nom.glb").toString())
             assertTrue(m.triangles.size > 10, "$nom : ${m.triangles.size} triangles")
             assertTrue(m.sommets.all { it.isFinite() }, "$nom : valeur non finie")
