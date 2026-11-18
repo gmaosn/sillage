@@ -37,6 +37,17 @@ class Mesh(val vertices: FloatArray) {
     init { require(vertices.size % 27 == 0) { "A mesh is made of whole triangles (27 floats each)" } }
 
     val triangleCount: Int get() = vertices.size / 27
+    /**
+     * Per vertex, 4 floats: its own light (r, g, b; all negative: only at night, see [Lighting.night]) and how
+     * far it sways in the wind (metres at most). Null: none (most meshes).
+     */
+    internal var effects: FloatArray? = null
+        private set
+    /** The same triangles with [effects] (4 floats per vertex). */
+    internal fun withEffects(effects: FloatArray): Mesh {
+        require(effects.size == vertices.size / 9 * 4) { "4 effect floats per vertex" }
+        return Mesh(vertices).also { it.effects = effects }
+    }
     /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
     internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
 

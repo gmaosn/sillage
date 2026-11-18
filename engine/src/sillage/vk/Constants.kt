@@ -182,3 +182,6 @@ internal const val VK_FILTER_LINEAR = 1
 internal const val VK_SAMPLER_MIPMAP_MODE_NEAREST = 0
 internal const val VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2
 internal const val VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE = 4
+internal const val VK_FORMAT_R16G16B16A16_SFLOAT = 97
+internal const val VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6
+internal const val VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT = 0x10

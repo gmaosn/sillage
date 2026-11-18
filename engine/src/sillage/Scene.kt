@@ -84,7 +84,7 @@ class Scene {
     internal var forcedPlayerClip: String? = null
 
     /** The sky dome (drawn behind everything, following the camera). */
-    internal val sky = Node(this, Mesh.EMPTY).also { all.add(it) }
+    internal val sky = Node(this, Mesh.EMPTY).also { it.isSky = true; it.castsShadow = false; all.add(it) }
 
     // ------------------------------------------------------------------ making things
 
@@ -328,6 +328,7 @@ class Scene {
         followers.filter { it.node === node }.forEach { surfaces.remove(it.body.id); cameraIgnores.remove(it.body.id); physics.remove(it.body) }
         followers.removeAll { it.node === node }
         if (node is Player) { surfaces.remove(node.character.body.id); physics.remove(node.character.body) }
+        lightList.removeAll { it.node === node }; emitters.removeAll { it.node === node }
         node.body = null
     }
 
@@ -404,8 +405,87 @@ class Scene {
     fun restart() {
         for (p in playerList) p.respawn()
         for (p in pickupList) { p.collected = false; p.node.visible = true; p.zone.enabled = true }
+        particles.clear()
         restarts.forEach { it() }
     }
+
+    // ------------------------------------------------------------------ lamps and particles
+
+    private val lightList = ArrayList<PointLight>()
+    private val emitters = ArrayList<Emitter>()
+    internal val particles = ParticleSystem()
+    private val extras = FrameExtras()
+    private val nearest = IntArray(MAX_LIGHTS)
+    private val nearestScore = FloatArray(MAX_LIGHTS)
+
+    /** The lamps of the scene. */
+    val lights: List<PointLight> get() = lightList
+
+    /**
+     * A lamp at [at]: it brightens what is within [radius] metres, warm by default. [onlyAtNight]: it lights
+     * up as night falls (see [Lighting.time]); [flicker]: how much it wavers, 1 for a flame.
+     */
+    fun light(color: Color = Color(1f, .72f, .38f), intensity: Number = 1.5, radius: Number = 6, at: Vec3 = Vec3.ZERO,
+              onlyAtNight: Boolean = false, flicker: Number = 0): PointLight =
+        PointLight(color, intensity.toFloat(), radius.toFloat(), at, null, onlyAtNight, flicker.toFloat()).also { lightList.add(it) }
+
+    internal fun lightOn(node: Node, light: PointLight): PointLight { lightList.add(light); return light }
+    fun removeLight(light: PointLight) { lightList.remove(light) }
+
+    /** Particles flowing from [at], [rate] per second, in [style] (see [Particles] for ready-made ones). */
+    fun emit(style: ParticleStyle, at: Vec3, rate: Number = 20): Emitter =
+        Emitter(style, rate.toFloat(), at, null).also { emitters.add(it) }
+
+    internal fun emitOn(e: Emitter): Emitter { emitters.add(e); return e }
+    fun removeEmitter(e: Emitter) { emitters.remove(e) }
+
+    /** [count] particles at once from [at]: a splash, a puff of dust, sparkles. [direction]: where they go (the style's by default). */
+    fun burst(style: ParticleStyle, at: Vec3, count: Int = 12, direction: Vec3 = style.direction) =
+        particles.spawn(style, at.x, at.y, at.z, count, direction.x, direction.y, direction.z)
+
+    private fun updateEffects(dt: Float) {
+        for (k in 0 until emitters.size) {
+            val e = emitters[k]
+            if (!e.enabled || (e.node != null && !e.node.visible)) { e.owed = 0f; continue }
+            e.owed += e.rate * dt
+            val n = e.owed.toInt()
+            if (n == 0) continue
+            e.owed -= n
+            val p = e.node?.let { it.position + it.rotation.rotate(e.position * it.scale) } ?: e.position
+            particles.spawn(e.style, p.x, p.y, p.z, n)
+        }
+        particles.update(dt, lighting.wind.x, lighting.wind.z, time)
+    }
+
+    /** The lamps nearest [eye] (at most [MAX_LIGHTS], dimmed by day if they only light at night, wavering) and the particles. */
+    internal fun frameExtras(eye: Vec3): FrameExtras {
+        var n = 0
+        val night = lighting.night
+        for (k in 0 until lightList.size) {
+            val l = lightList[k]
+            if (!l.enabled || (l.node != null && !l.node.visible)) continue
+            var power = l.intensity * (if (l.onlyAtNight) ((night - .2f) / .4f).coerceIn(0f, 1f) else 1f)
+            if (l.flicker > 0f) {
+                val t = time * 7f + l.seed
+                power *= 1f - l.flicker * .3f * (.5f + .25f * sin(t) + .25f * sin(t * 2.3f + 1.7f))
+            }
+            if (power <= 0f) continue
+            val p = l.worldPosition
+            val score = p.distanceTo(eye) - l.radius
+            if (n == MAX_LIGHTS && score >= nearestScore[n - 1]) continue
+            var i = if (n < MAX_LIGHTS) n++ else n - 1
+            while (i > 0 && nearestScore[i - 1] > score) { nearest[i] = nearest[i - 1]; nearestScore[i] = nearestScore[i - 1]; copyLight(i - 1, i); i-- }
+            nearest[i] = k; nearestScore[i] = score
+            val a = extras.lights; val o = 8 * i
+            a[o] = p.x; a[o + 1] = p.y; a[o + 2] = p.z; a[o + 3] = l.radius
+            a[o + 4] = l.color.r * power; a[o + 5] = l.color.g * power; a[o + 6] = l.color.b * power; a[o + 7] = 0f
+        }
+        extras.lightCount = n
+        particles.write(extras, time, night)
+        return extras
+    }
+
+    private fun copyLight(from: Int, to: Int) { System.arraycopy(extras.lights, 8 * from, extras.lights, 8 * to, 8) }
 
     /** Leaves this scene for a new one built by [build] (at the end of the frame): a menu, the next level. */
     fun goTo(build: Scene.() -> Unit) { next = build }
@@ -438,6 +518,8 @@ class Scene {
         for (k in 0 until linked.size) { val n = linked[k]; n.body?.let { b -> n.rotation = b.rotation; n.position = b.position - b.rotation.rotate(n.bodyOffset) } }
         for (k in 0 until playerList.size) { val p = playerList[k]; p.forcedClip = forcedPlayerClip; p.update(dt) }
         placeShadows()
+        lighting.advance(dt)
+        updateEffects(dt)
         sounds.update(dt)
     }
 

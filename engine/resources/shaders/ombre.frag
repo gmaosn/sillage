@@ -1,6 +1,6 @@
 #version 450
-// Sillage — ombre portée douce : un disque sombre dont l'opacité vient du rouge des sommets
-// (1 au centre, 0 au bord), mélangé au sol par transparence.
+// Sillage — a soft round shadow: a dark disc whose opacity comes from the vertices' red (1 at the centre,
+// 0 at the rim), blended over the ground (the distance in alpha stays as it was).
 layout(location=0) in vec3 normal;
 layout(location=1) in vec3 color;
 layout(location=2) in vec3 world;

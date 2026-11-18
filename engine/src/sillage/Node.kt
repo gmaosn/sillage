@@ -45,6 +45,7 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     internal var bodyOffset: Vec3 = Vec3.ZERO     // from the node's origin to its body's centre, in node space
     internal var isShadow = false                // a blob shadow, drawn blended after the opaque nodes
     internal var water: WaterLook? = null        // a water surface, drawn by the water shader
+    internal var isSky = false                   // the sky dome, drawn by the sky shader
     internal var removed = false
     internal val behaviours = ArrayList<Node.(Float) -> Unit>()
 
@@ -134,6 +135,18 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
     /** Takes it out of the scene (and its body out of the physics). */
     fun remove() = scene.remove(this)
+
+    /**
+     * A lamp that follows this node, at [offset] in its space: see [Scene.light]. Give a lantern, a window
+     * or a campfire its light.
+     */
+    fun light(color: Color = Color(1f, .72f, .38f), intensity: Number = 1.5, radius: Number = 6, offset: Vec3 = Vec3.ZERO,
+              onlyAtNight: Boolean = false, flicker: Number = 0): PointLight =
+        scene.lightOn(this, PointLight(color, intensity.toFloat(), radius.toFloat(), offset, this, onlyAtNight, flicker.toFloat()))
+
+    /** Particles flowing from this node, at [offset] in its space: see [Scene.emit]. */
+    fun emit(style: ParticleStyle, rate: Number = 20, offset: Vec3 = Vec3.ZERO): Emitter =
+        scene.emitOn(Emitter(style, rate.toFloat(), offset, this))
 }
 
 /** The sound a body makes when it hits something. */

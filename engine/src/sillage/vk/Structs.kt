@@ -238,6 +238,7 @@ internal val VkDescriptorPoolCreateInfo = t("VkDescriptorPoolCreateInfo", VK_STR
 internal val VkDescriptorSetAllocateInfo = t("VkDescriptorSetAllocateInfo", VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
     "descriptorPool" to U64, "descriptorSetCount" to U32, "pSetLayouts" to Ptr)
 internal val VkDescriptorImageInfo = s("VkDescriptorImageInfo", "sampler" to U64, "imageView" to U64, "imageLayout" to U32)
+internal val VkDescriptorBufferInfo = s("VkDescriptorBufferInfo", "buffer" to U64, "offset" to U64, "range" to U64)
 internal val VkWriteDescriptorSet = t("VkWriteDescriptorSet", VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
     "dstSet" to U64, "dstBinding" to U32, "dstArrayElement" to U32, "descriptorCount" to U32, "descriptorType" to U32,
     "pImageInfo" to Ptr, "pBufferInfo" to Ptr, "pTexelBufferView" to Ptr)
@@ -261,4 +262,4 @@ internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D
     VkClearValue, VkClearDepthStencilValue, VkRenderPassBeginInfo, VkImageMemoryBarrier, VkMemoryBarrier,
     VkBufferImageCopy, VkImageBlit, VkSubmitInfo, VkSamplerCreateInfo, VkDescriptorSetLayoutBinding,
     VkDescriptorSetLayoutCreateInfo, VkDescriptorPoolSize, VkDescriptorPoolCreateInfo, VkDescriptorSetAllocateInfo,
-    VkDescriptorImageInfo, VkWriteDescriptorSet)
+    VkDescriptorImageInfo, VkDescriptorBufferInfo, VkWriteDescriptorSet)
