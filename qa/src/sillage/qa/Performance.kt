@@ -1,7 +1,7 @@
 package sillage.qa
 
-import sillage.Monde
-import sillage.demo.ile
+import sillage.Scene
+import sillage.demo.island
 import sillage.math.Vec3
 import sillage.physics.BodyType
 import sillage.physics.Box
@@ -63,12 +63,13 @@ fun Qa.performance() {
     }
 
     run {
-        val m = Monde().apply(ile); val robot = Robot(Random(graine + 501))
+        val m = Scene().apply(island); val robot = Robot(Random(graine + 501)); val joueur = m.player!!
+        joueur.controls = false
         val temps = ArrayList<Double>(); var alloue = 0L
         repeat(1500) { i ->
             val a = octetsAlloues(); val t = System.nanoTime()
-            val (d, s) = robot.commande(m.joueur.position)
-            m.miseAJour(d, s, DT, marche = robot.marche); m.camera.vue(m, DT)
+            val (d, s) = robot.commande(joueur.position)
+            joueur.move(d, robot.marche); if (s) joueur.jump(); m.step(DT)
             if (i >= 300) { temps.add((System.nanoTime() - t) / 1e6); alloue += octetsAlloues() - a }
         }
         mesure("ile.miseajour", "mise à jour d'une image de l'île (physique, héros, caméra)", "ms", mediane(temps), " (p99 ${f2(p99(temps))})")
@@ -80,7 +81,7 @@ fun Qa.performance() {
         val gc0 = ManagementFactory.getGarbageCollectorMXBeans().sumOf { it.collectionTime }
         val b = rendreIle(null, 460, taille = taille)
         val gc = ManagementFactory.getGarbageCollectorMXBeans().sumOf { it.collectionTime } - gc0
-        mesure("$cle.moyenne", "image rendue en ${taille.replace('x', '×')} (moyenne)", "ms", b.moyenneMs,
+        mesure("$cle.moyenne", "image rendue en ${taille.replace('x', '×')} (moyenne)", "ms", b.meanMs,
             " (99e centile ${f2(b.p99Ms)}, pire ${f1(b.maxMs)}, ramasse-miettes $gc ms sur la partie)")
     }
 

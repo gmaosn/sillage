@@ -9,3 +9,4 @@ settings:
 dependencies:
   - //engine
   - //demo
+  - //playground

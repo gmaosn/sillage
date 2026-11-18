@@ -1,8 +1,8 @@
 package sillage.qa
 
-import sillage.Monde
+import sillage.Scene
 import sillage.audio.Audio
-import sillage.demo.ile
+import sillage.demo.island
 import sillage.math.Vec3
 import java.util.Random
 import kotlin.math.*
@@ -30,8 +30,9 @@ fun utiliseeMo(): Double { repeat(3) { System.gc(); Thread.sleep(30) }; val r = 
 fun Qa.endurance() {
     val rnd = Random(graine + 400)
     val minutes = cas(2, 10)
-    val m = Monde().apply(ile)
+    val m = Scene().apply(island)
     val audio = Audio.offline(); m.audio = audio
+    val joueur = m.player!!; joueur.controls = false
     val son = FloatArray(2 * 800)
     val robot = Robot(rnd)
     var pire = 0f; var ou = ""; var nonFinis = 0; var chutes = 0; var creteSon = 0f; var sonNonFini = 0
@@ -39,20 +40,20 @@ fun Qa.endurance() {
     val images = minutes * 3600
     for (i in 0 until images) {
         if (i == 600) memoireDepart = utiliseeMo()
-        val avant = m.joueur.position
+        val avant = joueur.position
         val (dir, saut) = robot.commande(avant)
-        m.miseAJour(dir, saut, DT, marche = robot.marche)
-        m.camera.vue(m, DT)
+        joueur.move(dir, robot.marche); if (saut) joueur.jump()
+        m.step(DT)
         audio.mixer.render(son, 800)
         for (x in son) { if (!x.isFinite()) sonNonFini++; creteSon = max(creteSon, abs(x)) }
-        val p = m.joueur.position
-        if (!p.isFinite()) { nonFinis++; m.reinitialiser(); continue }
-        if (avant.y < -5f && (p - m.joueur.depart).length() < .01f) chutes++
-        if (i % 3 == 0) { val (e, q) = enfoncementDetaille(m.joueur.personnage); if (e > pire) { pire = e; ou = "$q, héros en $p, au sol ${m.joueur.auSol}" } }
+        val p = joueur.position
+        if (!p.isFinite()) { nonFinis++; m.restart(); continue }
+        if (avant.y < -5f && (p - joueur.spawn).length() < .01f) chutes++
+        if (i % 3 == 0) { val (e, q) = enfoncementDetaille(joueur.character); if (e > pire) { pire = e; ou = "$q, héros en $p, au sol ${joueur.onGround}" } }
     }
     val memoireFin = utiliseeMo()
     controle("$minutes min de jeu par un robot sur l'île", "rien de non fini, enfoncement ≤ 3 cm") {
-        "$images images, ${m.recoltes} coquillages, $chutes chutes à la mer, enfoncement max ${mm(pire)}${if (pire > .03f) " ($ou)" else ""}, $nonFinis non finis" to (nonFinis == 0 && pire <= .03f)
+        "$images images, ${m.pickups.count { it.collected }} coquillages, $chutes chutes à la mer, enfoncement max ${mm(pire)}${if (pire > .03f) " ($ou)" else ""}, $nonFinis non finis" to (nonFinis == 0 && pire <= .03f)
     }
     controle("mémoire stable pendant la partie", "+≤ 16 Mo après échauffement") {
         "${f1(memoireDepart)} → ${f1(memoireFin)} Mo (${"%+.1f".format(memoireFin - memoireDepart)})" to (memoireFin - memoireDepart <= 16)

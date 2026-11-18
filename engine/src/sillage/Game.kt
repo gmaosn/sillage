@@ -4,151 +4,170 @@ import sillage.audio.Audio
 import sillage.audio.Sound
 import sillage.math.Mat4
 import sillage.math.Vec3
-import sillage.platform.Key
 import sillage.platform.Window
 import sillage.platform.openWindow
 import java.nio.file.Path
 import kotlin.math.*
 
-/** Ce qu'a donné une partie : images, temps par image (calcul et rendu), position finale du héros. */
-class Bilan(val images: Int, val moyenneMs: Double, val p99Ms: Double, val maxMs: Double, val position: Vec3)
+/** What a run gave: frames drawn, time per frame (update and drawing), where the first player ended. */
+class RunReport(val frames: Int, val meanMs: Double, val p99Ms: Double, val maxMs: Double, val playerPosition: Vec3)
 
-internal class Game(private val titre: String,private val monde: Monde,private val args: Array<String>) {
-    fun run(): Bilan {
-        if("--help" in args) {
-            println("Sillage : --headless --smoke --frames N --capture chemin.png --look-at ex,ey,ez,cx,cy,cz --anim clip --validation")
-            println("  son : --mute --audio-device NOM --record-audio fichier.wav (sans fenêtre) --export-sounds dossier")
-            println("  --taille LxH : taille de l'image sans fenêtre (1280x800 par défaut)")
-            println("  --parcours \"x,z x,z j m p2 …\" : le héros suit ces points (j saute, m marche/court, pN attend N s)")
-            return Bilan(0,0.0,0.0,0.0,Vec3.ZERO)
+/**
+ * Opens a window and plays the scene built by [setup] until the window closes (or Escape). Tab
+ * captures and frees the mouse. [args] are the program's arguments; `--help` lists the options
+ * (running without a window, captures, recordings…).
+ */
+fun game(title: String = "Sillage", args: Array<String> = emptyArray(), setup: Scene.() -> Unit): RunReport = Runtime(title, args, setup).run()
+
+internal class Runtime(private val title: String, private val args: Array<String>, private val setup: Scene.() -> Unit) {
+    private fun option(flag: String): String? {
+        val i = args.indexOf(flag)
+        if (i < 0) return null
+        require(i + 1 < args.size) { "Missing value after $flag" }
+        return args[i + 1]
+    }
+
+    fun run(): RunReport {
+        if ("--help" in args) {
+            println("""Sillage options:
+  --headless              no window: draw off screen (with --frames, --capture)
+  --frames N              stop after N frames
+  --capture file.png      save the last frame
+  --look-at ex,ey,ez,tx,ty,tz   fixed camera for captures
+  --size WxH              off-screen image size (1280x800)
+  --smoke                 scripted check: the player walks and jumps
+  --route "x,z x,z j w p2 …"   the player follows points (j jumps, w walk/run, pN waits N s)
+  --trace [--trace-every N]    print the player's state
+  --animation clip        force the player's clip (captures)
+  --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
+  --validation            Vulkan validation layers""")
+            return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
         }
-        val headless="--headless" in args
-        val smoke="--smoke" in args
-        fun option(flag: String): String? {
-            val i=args.indexOf(flag)
-            if(i<0) return null
-            require(i+1<args.size) { "Valeur manquante : " + flag }
-            return args[i+1]
-        }
-        val frames=option("--frames")?.toInt()?.also { require(it>0) } ?: if(headless || smoke) 180 else Int.MAX_VALUE
-        val screenshot=option("--capture")?.let { Path.of(it) }
-        // Caméra fixe pour les captures : œil puis cible. Les déplacements restent relatifs à la caméra de jeu.
-        option("--anim")?.let { monde.animationForcee=it }
-        val lookAt=option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size==6) { "--look-at attend 6 nombres" } }
-        option("--export-sounds")?.let { exporterSons(Path.of(it)); return Bilan(0,0.0,0.0,0.0,Vec3.ZERO) }
-        val taille=option("--taille")?.split('x')?.map { it.trim().toInt() }?.also { require(it.size==2 && it.all { v -> v in 1..8192 }) { "--taille attend LxH" } }
-        val tempsImages=ArrayList<Double>()
-        val enregistrement=option("--record-audio")?.let { Path.of(it) }
-        val parcours=option("--parcours")?.let { Parcours(it) }
-        val trace="--trace" in args
-        val pasTrace=option("--trace-pas")?.toInt() ?: 30
-        // Sans fenêtre, le son est mixé image par image (et peut être enregistré) ; rien ne sort des haut-parleurs.
-        val audio: Audio?=when {
+        option("--export-sounds")?.let { exportSounds(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
+        val headless = "--headless" in args
+        val smoke = "--smoke" in args
+        val frames = option("--frames")?.toInt()?.also { require(it > 0) } ?: if (headless || smoke) 180 else Int.MAX_VALUE
+        val screenshot = option("--capture")?.let { Path.of(it) }
+        val lookAt = option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size == 6) { "--look-at takes 6 numbers" } }
+        val size = option("--size")?.split('x')?.map { it.trim().toInt() }?.also { require(it.size == 2 && it.all { v -> v in 1..8192 }) { "--size takes WxH" } }
+        val recording = option("--record-audio")?.let { Path.of(it) }
+        val route = option("--route")?.let { Route(it) }
+        val trace = "--trace" in args
+        val traceEvery = option("--trace-every")?.toInt() ?: 30
+        // Without a window, sound is mixed frame by frame (and may be recorded): nothing reaches the speakers.
+        val audio: Audio? = when {
             "--mute" in args -> null
             headless -> Audio.offline()
             else -> Audio.open(option("--audio-device") ?: "default")
         }
-        monde.audio=audio
-        val rate=audio?.mixer?.rate ?: 48_000
-        val bloc=FloatArray(2*512)
-        var enregistre=FloatArray(if(enregistrement!=null) 2*rate*10 else 0); var enregistres=0
-        var reste=0f
-        fun mixerHorsLigne(dt: Float) {
-            val a=audio ?: return
-            reste+=dt*rate
-            var n=reste.toInt(); reste-=n
-            while(n>0) {
-                val k=min(n,512); a.mixer.render(bloc,k); n-=k
-                if(enregistrement!=null) {
-                    if(enregistres+2*k>enregistre.size) enregistre=enregistre.copyOf(enregistre.size*2)
-                    System.arraycopy(bloc,0,enregistre,enregistres,2*k); enregistres+=2*k
+        var scene = Scene().apply(setup)
+        option("--animation")?.let { scene.forcedPlayerClip = it }
+        scene.audio = audio
+        val rate = audio?.mixer?.rate ?: 48_000
+        val block = FloatArray(2 * 512)
+        var recorded = FloatArray(if (recording != null) 2 * rate * 10 else 0); var recordedCount = 0
+        var carry = 0f
+        fun mixOffline(dt: Float) {
+            val a = audio ?: return
+            carry += dt * rate
+            var n = carry.toInt(); carry -= n
+            while (n > 0) {
+                val k = min(n, 512); a.mixer.render(block, k); n -= k
+                if (recording != null) {
+                    if (recordedCount + 2 * k > recorded.size) recorded = recorded.copyOf(recorded.size * 2)
+                    System.arraycopy(block, 0, recorded, recordedCount, 2 * k); recordedCount += 2 * k
                 }
             }
         }
-        var window: Window?=null
-        var renderer: VulkanRenderer?=null
+        val frameTimes = ArrayList<Double>()
+        var window: Window? = null
+        var renderer: VulkanRenderer? = null
         try {
-            audio?.device?.let { println("SILLAGE_AUDIO device="+it+" latence="+(audio.latency*1000).roundToInt()+" ms") }
-            if(!headless) window=openWindow(titre+" - Les Alizés",1280,800)
-            val r=VulkanRenderer(window,"--validation" in args,taille?.get(0) ?: 1280,taille?.get(1) ?: 800)
-            renderer=r; r.ouvrir()
-            window?.mouseCaptured=true
-            var last=System.nanoTime()
-            var frame=0; var fps=60; var fpsFrames=0; var fpsTime=0f
-            var oldJump=false; var oldTab=false; var oldReset=false; var oldMute=false
-            var highest=monde.joueur.position.y
-            var lowest=highest
-            var moved=false
-            val initial=monde.joueur.position
-            while(frame<frames && (window==null || !window.shouldClose) && parcours?.fini!=true) {
-                if(window!=null) {
+            audio?.device?.let { println("SILLAGE_AUDIO device=" + it + " latency=" + (audio.latency * 1000).roundToInt() + " ms") }
+            if (!headless) window = openWindow(title, 1280, 800)
+            var r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, scene.lighting)
+            renderer = r; r.ouvrir()
+            window?.mouseCaptured = true
+            scene.input.down = { k -> window?.isDown(k) ?: false }
+            var last = System.nanoTime()
+            var frame = 0; var fps = 60; var fpsFrames = 0; var fpsTime = 0f
+            val start = scene.player?.position ?: Vec3.ZERO
+            var highest = start.y; var lowest = start.y; var moved = false
+            while (frame < frames && (window == null || !window.shouldClose) && route?.done != true) {
+                if (window != null) {
                     window.poll()
-                    if(window.isDown(Key.ESCAPE)) break
-                    if(window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
-                    // Mise en pause sans focus, mais jamais avant la première image : sous Wayland, la fenêtre n'existe qu'après.
-                    if(!window.focused && !smoke && frame>0) { window.waitEvents(.05); last=System.nanoTime(); continue }
-                    val (dx,dy)=window.consumeMouseDelta().let { it[0] to it[1] }
-                    if(dx!=0f || dy!=0f) monde.camera.tourner(dx,dy)
-                    window.consumeScroll().let { if(it!=0f) monde.camera.zoom(it) }
+                    if (window.isDown(Key.ESCAPE)) break
+                    if (window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
+                    // Paused without focus, but never before the first frame: under Wayland the window only exists after it.
+                    if (!window.focused && !smoke && frame > 0) { window.waitEvents(.05); last = System.nanoTime(); continue }
+                    val (dx, dy) = window.consumeMouseDelta().let { it[0] to it[1] }
+                    scene.input.mouseDelta = dx to dy
+                    if (dx != 0f || dy != 0f) scene.camera.turn(dx, dy)
+                    window.consumeScroll().let { scene.input.wheel = it; if (it != 0f) scene.camera.zoom(it) }
                 }
-                val now=System.nanoTime()
-                val debutImage=now
-                val dt=if(smoke || headless) 1f/60f else ((now-last)/1e9).toFloat().coerceIn(0.0001f,.1f)
-                last=now
-                // Touches par position physique : ZQSD en AZERTY et WASD en QWERTY sont les mêmes touches.
-                fun down(vararg keys: Int)=window!=null && keys.any { window.isDown(it) }
-                val tab=down(Key.TAB)
-                if(tab && !oldTab) window!!.mouseCaptured=!window.mouseCaptured
-                oldTab=tab
-                val mute=down(Key.M,Key.M_AZERTY)
-                if(mute && !oldMute) audio?.let { it.volume=if(it.volume>0f) 0f else 1f }
-                oldMute=mute
-                val reset=down(Key.R)
-                if(reset && !oldReset) monde.reinitialiser()
-                oldReset=reset
-                var jump=down(Key.SPACE)
-                var marche=down(Key.SHIFT,Key.RIGHT_SHIFT)
-                val movement=if(parcours!=null) {
-                    val (m,saut,lent)=parcours.suivre(monde.joueur.position,dt); jump=saut; marche=lent; m
-                } else if(smoke) {
-                    jump=frame==40
-                    if(frame in 20..110) monde.camera.mouvement(1f,0f) else Vec3.ZERO
-                } else monde.camera.mouvement(
-                    (if(down(Key.D,Key.RIGHT)) 1f else 0f)-(if(down(Key.A,Key.LEFT)) 1f else 0f),
-                    (if(down(Key.W,Key.UP)) 1f else 0f)-(if(down(Key.S,Key.DOWN)) 1f else 0f))
-                monde.miseAJour(movement,jump && !oldJump,dt,marche=marche); oldJump=jump
-                if(monde.joueur.position.distanceTo(initial)>.1f) moved=true
-                highest=max(highest,monde.joueur.position.y); lowest=min(lowest,monde.joueur.position.y)
-                if(headless) mixerHorsLigne(dt)
-                if(trace && frame%pasTrace==0) monde.joueur.let { j -> println("SILLAGE_TRACE t="+"%.1f".format(monde.temps)+" pieds="+"(%.2f, %.2f, %.2f)".format(j.position.x,j.position.y,j.position.z)+" sol="+j.auSol+" sur="+(j.personnage.groundMaterial?.name ?: j.personnage.groundBody?.let { "corps "+it.id } ?: "-")+" anim="+j.objet.animateur?.animation) }
-                val view=monde.camera.vue(monde,dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0],it[1],it[2]),Vec3(it[3],it[4],it[5])) } ?: v }
-                val oeil=lookAt?.let { Vec3(it[0],it[1],it[2]) } ?: monde.camera.position
-                monde.ciel.position=oeil
-                val projection=Mat4.perspective(Math.toRadians(58.0).toFloat(),r.largeur.toFloat()/r.hauteur,.08f,200f)
-                fpsFrames++; fpsTime+=dt
-                if(fpsTime>=.5f) { fps=(fpsFrames/fpsTime).roundToInt(); fpsTime=0f; fpsFrames=0 }
-                val capture=if(frame==frames-1 || parcours?.fini==true) screenshot else null
-                r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,window?.mouseCaptured ?: false),capture,oeil,monde.temps)
-                tempsImages.add((System.nanoTime()-debutImage)/1e6)
+                val now = System.nanoTime()
+                val frameStart = now
+                val dt = if (smoke || headless) 1f / 60f else ((now - last) / 1e9).toFloat().coerceIn(.0001f, .1f)
+                last = now
+                scene.input.poll()
+                scene.input.mouseCaptured = window?.mouseCaptured ?: false
+                if (window != null && scene.input.pressed(Key.TAB)) window.mouseCaptured = !window.mouseCaptured
+                // Scripted drivers for checks and recordings.
+                val p = scene.player
+                if (p != null && (route != null || smoke)) {
+                    p.controls = false
+                    if (route != null) { val (m, jump, walk) = route.follow(p.position, dt); p.move(m, walk); if (jump) p.jump() }
+                    else { if (frame == 40) p.jump(); if (frame in 20..110) p.move(scene.camera.moveDirection(1f, 0f)) }
+                }
+                scene.update(dt)
+                if (p != null) {
+                    if (p.position.distanceTo(start) > .1f) moved = true
+                    highest = max(highest, p.position.y); lowest = min(lowest, p.position.y)
+                    if (trace && frame % traceEvery == 0) println("SILLAGE_TRACE t=" + "%.1f".format(scene.time) + " feet=" + "(%.2f, %.2f, %.2f)".format(p.position.x, p.position.y, p.position.z) +
+                        " ground=" + p.onGround + " on=" + (p.character.groundMaterial?.name ?: p.character.groundBody?.let { "body " + it.id } ?: "-") + " clip=" + p.animator?.current)
+                }
+                if (headless) mixOffline(dt)
+                val view = scene.camera.view(dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0], it[1], it[2]), Vec3(it[3], it[4], it[5])) } ?: v }
+                val eye = lookAt?.let { Vec3(it[0], it[1], it[2]) } ?: scene.camera.position
+                val c = scene.camera
+                val projection = Mat4.perspective(Math.toRadians(c.fov.toDouble()).toFloat(), r.largeur.toFloat() / r.hauteur, c.near, c.far)
+                fpsFrames++; fpsTime += dt
+                if (fpsTime >= .5f) { fps = (fpsFrames / fpsTime).roundToInt(); fpsTime = 0f; fpsFrames = 0; scene.fps = fps }
+                val capture = if (frame == frames - 1 || route?.done == true) screenshot else null
+                r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: false), capture, eye, scene.time)
+                frameTimes.add((System.nanoTime() - frameStart) / 1e6)
                 frame++
-                if(window!=null && frame%30==0) window.title=titre+" | "+monde.recoltes+"/"+monde.coquillages.size+" coquillages | "+fps+" FPS"
+                if (window != null && frame % 30 == 0) window.title = title
+                // Another scene asked for: build it, free the old meshes on the GPU, keep the window and the sound.
+                scene.next?.let { build ->
+                    audio?.mixer?.stopAll()
+                    val fresh = Scene().apply(build)
+                    fresh.input.down = scene.input.down
+                    fresh.audio = audio
+                    r.oublier()
+                    if (fresh.lighting.constants().contentEquals(scene.lighting.constants()).not()) {
+                        r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting); renderer = r; r.ouvrir()
+                    }
+                    scene = fresh
+                }
             }
-            if(smoke && parcours==null) {
-                check(frame==frames) { "Démo interrompue avant la fin du smoke test" }
-                check(moved) { "Le personnage n'a pas bougé" }
-                check(highest-lowest>.5f) { "Le saut ou la gravité n'a pas été exercé" }
-                check(monde.joueur.position.isFinite()) { "Position physique non finie" }
+            val p = scene.player
+            if (smoke && route == null && p != null) {
+                check(frame == frames) { "Smoke run stopped early" }
+                check(moved) { "The player did not move" }
+                check(highest - lowest > .5f) { "The jump or gravity was not exercised" }
+                check(p.position.isFinite()) { "Player position not finite" }
             }
-            check(r.erreursValidation==0) { "Erreurs de validation Vulkan : " + r.erreursValidation }
-            println("SILLAGE_RUN_OK frames="+frame+" smoke="+smoke+" position="+monde.joueur.position+" sol="+monde.joueur.auSol)
-            if(System.getenv("SILLAGE_TEMPS")!=null) println("SILLAGE_TEMPS "+tempsImages.withIndex().sortedByDescending { it.value }.take(12).joinToString { "#"+it.index+"="+"%.1f".format(it.value) })
-            val tri=tempsImages.drop(min(60,tempsImages.size/4)).sorted()        // sans les premières images (compilation)
-            return Bilan(frame,if(tri.isEmpty()) 0.0 else tri.average(),tri.getOrElse((tri.size*.99).toInt().coerceAtMost(tri.size-1)) { 0.0 },
-                tri.lastOrNull() ?: 0.0,monde.joueur.position)
-            if(enregistrement!=null && enregistres>0) {
-                Sound(enregistre.copyOf(enregistres),2,rate).save(enregistrement)
-                println("SILLAGE_AUDIO_ENREGISTRE "+enregistrement+" "+"%.1f".format(enregistres/2f/rate)+" s")
+            check(r.erreursValidation == 0) { "Vulkan validation errors: " + r.erreursValidation }
+            println("SILLAGE_RUN_OK frames=" + frame + " smoke=" + smoke + " position=" + (p?.position ?: Vec3.ZERO) + " ground=" + (p?.onGround ?: false))
+            if (System.getenv("SILLAGE_FRAME_TIMES") != null) println("SILLAGE_FRAME_TIMES " + frameTimes.withIndex().sortedByDescending { it.value }.take(12).joinToString { "#" + it.index + "=" + "%.1f".format(it.value) })
+            if (recording != null && recordedCount > 0) {
+                Sound(recorded.copyOf(recordedCount), 2, rate).save(recording)
+                println("SILLAGE_AUDIO_RECORDED " + recording + " " + "%.1f".format(recordedCount / 2f / rate) + " s")
             }
+            val sorted = frameTimes.drop(min(60, frameTimes.size / 4)).sorted()        // without the first frames (compilation)
+            return RunReport(frame, if (sorted.isEmpty()) 0.0 else sorted.average(), sorted.getOrElse((sorted.size * .99).toInt().coerceAtMost(sorted.size - 1)) { 0.0 },
+                sorted.lastOrNull() ?: 0.0, p?.position ?: Vec3.ZERO)
         } finally {
             renderer?.close()
             window?.close()
@@ -158,35 +177,35 @@ internal class Game(private val titre: String,private val monde: Monde,private v
 }
 
 /**
- * Un trajet scripté pour les essais et les enregistrements : des points « x,z » que le héros rejoint
- * l'un après l'autre, « j » pour sauter, « m » pour passer de la course à la marche, « pN » pour
- * attendre N secondes. Un point qu'il n'atteint pas en 6 s (une caisse trop lourde…) est abandonné.
+ * A scripted route for checks and recordings: points « x,z » the player reaches one after another,
+ * « j » to jump, « w » to switch between running and walking, « pN » to wait N seconds. A point not
+ * reached within 6 s (a crate too heavy…) is given up and reported.
  */
-internal class Parcours(texte: String) {
-    private val etapes=texte.trim().split(Regex("\\s+"))
-    private var k=0
-    private var depuis=0f
-    private var lent=false
-    val fini get()=k>=etapes.size
+internal class Route(text: String) {
+    private val steps = text.trim().split(Regex("\\s+"))
+    private var k = 0
+    private var since = 0f
+    private var walk = false
+    val done get() = k >= steps.size
 
-    /** Mouvement voulu, saut, marche lente. */
-    fun suivre(p: Vec3, dt: Float): Triple<Vec3,Boolean,Boolean> {
-        while(!fini) {
-            val e=etapes[k]
+    /** Wanted move, jump, walking. */
+    fun follow(p: Vec3, dt: Float): Triple<Vec3, Boolean, Boolean> {
+        while (!done) {
+            val e = steps[k]
             when {
-                e=="j" -> { k++; depuis=0f; return Triple(Vec3.ZERO,true,lent) }
-                e=="m" -> { lent=!lent; k++ }
-                e.startsWith("p") -> { depuis+=dt; if(depuis>=e.drop(1).toFloat()) { k++; depuis=0f } else return Triple(Vec3.ZERO,false,lent) }
+                e == "j" -> { k++; since = 0f; return Triple(Vec3.ZERO, true, walk) }
+                e == "w" || e == "m" -> { walk = !walk; k++ }
+                e.startsWith("p") -> { since += dt; if (since >= e.drop(1).toFloat()) { k++; since = 0f } else return Triple(Vec3.ZERO, false, walk) }
                 else -> {
-                    val (x,z)=e.split(',').map { it.toFloat() }
-                    val d=Vec3(x-p.x,0f,z-p.z)
-                    depuis+=dt
-                    if(depuis>6f) println("SILLAGE_PARCOURS point $e abandonné en "+"(%.2f, %.2f, %.2f)".format(p.x,p.y,p.z))
-                    if(d.length()<.3f || depuis>6f) { k++; depuis=0f; continue }
-                    return Triple(d.normalized(),false,lent)
+                    val (x, z) = e.split(',').map { it.toFloat() }
+                    val d = Vec3(x - p.x, 0f, z - p.z)
+                    since += dt
+                    if (since > 6f) println("SILLAGE_ROUTE point $e given up at " + "(%.2f, %.2f, %.2f)".format(p.x, p.y, p.z))
+                    if (d.length() < .3f || since > 6f) { k++; since = 0f; continue }
+                    return Triple(d.normalized(), false, walk)
                 }
             }
         }
-        return Triple(Vec3.ZERO,false,lent)
+        return Triple(Vec3.ZERO, false, walk)
     }
 }

@@ -48,7 +48,7 @@ class Audio private constructor(val mixer: Mixer, private val output: AlsaOutput
             val mixer = Mixer(rate)
             return try { Audio(mixer, AlsaOutput(device, mixer, rate, latencyMs)) }
             catch (e: Throwable) {
-                System.err.println("Sillage : pas de son (${e.message})")
+                System.err.println("Sillage: no sound (${e.message})")
                 Audio(mixer, null)
             }
         }
@@ -115,7 +115,7 @@ internal class AlsaOutput(val device: String, private val mixer: Mixer, private 
         arena.close()
     }
 
-    private fun check(code: Int, what: String) { if (code < 0) throw IllegalStateException("$what : ${error(code)}") }
+    private fun check(code: Int, what: String) { if (code < 0) throw IllegalStateException("$what: ${error(code)}") }
     private fun error(code: Int) = Native.string(STRERROR.invokeExact(fStrerror, code) as MemorySegment)
 
     private companion object {

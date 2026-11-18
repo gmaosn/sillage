@@ -44,9 +44,9 @@ internal object PSig {
 internal object Native {
     fun library(vararg names: String): SymbolLookup =
         names.firstNotNullOfOrNull { n -> runCatching { SymbolLookup.libraryLookup(n, Arena.global()) }.getOrNull() }
-            ?: throw IllegalStateException("Bibliothèque système introuvable : ${names.joinToString()}")
+            ?: throw IllegalStateException("System library not found: ${names.joinToString()}")
 
-    fun SymbolLookup.fn(name: String): MemorySegment = find(name).orElseThrow { IllegalStateException("Symbole $name absent") }
+    fun SymbolLookup.fn(name: String): MemorySegment = find(name).orElseThrow { IllegalStateException("Missing symbol $name") }
 
     private val libc = PSig.linker.defaultLookup()
     private val pPoll = libc.fn("poll")

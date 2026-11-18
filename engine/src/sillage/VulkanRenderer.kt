@@ -31,7 +31,9 @@ internal interface SurfaceSource {
 /** Backend Vulkan direct, appelé par FFM. Une image en vol : synchronisation volontairement simple pour la v0.1.
  * Le même render pass fonctionne avec une fenêtre ou sans serveur graphique. */
 internal class VulkanRenderer(private val target: SurfaceSource? = null, private val validation: Boolean = false,
-                              largeurHorsEcran: Int = 1280, hauteurHorsEcran: Int = 800) : AutoCloseable {
+                              largeurHorsEcran: Int = 1280, hauteurHorsEcran: Int = 800,
+                              /** Light and haze, given to the toon shader as specialisation constants. */
+                              private val lighting: Lighting = Lighting()) : AutoCloseable {
     /** Taille de rendu : celle de la fenêtre (suivie au redimensionnement), sinon celle demandée hors écran. */
     var largeur=largeurHorsEcran
         private set
@@ -72,8 +74,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var msaa: Image?=null           // image multi-échantillonnée où l'on dessine
     private var depth: Image?=null
     private var hudBuffer: Buffer?=null
-    private var hudEnvoye: Maillage?=null
-    private val meshes=IdentityHashMap<Maillage,Buffer>()
+    private var hudEnvoye: Mesh?=null
+    private val meshes=IdentityHashMap<Mesh,Buffer>()
     private var ferme=false
     var nomGpu=""
         private set
@@ -144,7 +146,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
 
     private fun chooseDevice() = stack.frame { s ->
         val n=s.allocate(JAVA_INT); vk.enumeratePhysicalDevices(n,MemorySegment.NULL)
-        require(n.get(JAVA_INT,0)>0) { "Aucun pilote Vulkan disponible" }
+        require(n.get(JAVA_INT,0)>0) { "No Vulkan driver available" }
         val devices=s.allocate(ADDRESS,n.get(JAVA_INT,0).toLong()); vk.enumeratePhysicalDevices(n,devices)
         val props=s.struct(VkPhysicalDeviceProperties)
         var best=-1
@@ -169,9 +171,9 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
             }
         }
-        require(best>=0) { "Aucune queue graphique Vulkan compatible avec la fenêtre" }
+        require(best>=0) { "No Vulkan graphics queue can present to the window" }
         val fp=s.struct(VkFormatProperties); vk.getPhysicalDeviceFormatProperties(physical,VK_FORMAT_D32_SFLOAT,fp)
-        require(fp.u32(VkFormatProperties,"optimalTilingFeatures") and VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT != 0) { "D32 non pris en charge" }
+        require(fp.u32(VkFormatProperties,"optimalTilingFeatures") and VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT != 0) { "D32 depth format not supported" }
         val mp=s.struct(VkPhysicalDeviceMemoryProperties); vk.getPhysicalDeviceMemoryProperties(physical,mp)
         memoryFlags=IntArray(mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypeCount")) {
             mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypes[$it].propertyFlags") }
@@ -188,7 +190,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
 
     private fun memoryType(bits: Int, flags: Int): Int =
         memoryFlags.indices.firstOrNull { bits and (1 shl it) != 0 && memoryFlags[it] and flags == flags }
-            ?: error("Type mémoire Vulkan indisponible, flags=" + flags)
+            ?: error("No Vulkan memory type with flags=" + flags)
 
     private fun buffer(size: Long, usage: Int): Buffer = stack.frame { s ->
         val p=s.allocate(JAVA_LONG)
@@ -279,7 +281,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     }
 
     private fun shader(resource: String): Long = stack.frame { s ->
-        val bytes=javaClass.getResourceAsStream(resource)?.use { it.readAllBytes() } ?: error("Shader absent : " + resource + "; lancer tools/shaders.sh")
+        val bytes=javaClass.getResourceAsStream(resource)?.use { it.readAllBytes() } ?: error("Shader missing: " + resource + " (run tools/shaders.sh)")
         val code=s.allocate(bytes.size.toLong(),4); MemorySegment.copy(bytes,0,code,JAVA_BYTE,0,bytes.size)
         val p=s.allocate(JAVA_LONG)
         dev.createShaderModule(s.struct(VkShaderModuleCreateInfo, "codeSize" to bytes.size.toLong(), "pCode" to code),p)
@@ -292,8 +294,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val stages=s.structs(VkPipelineShaderStageCreateInfo,2)
             stages.at(VkPipelineShaderStageCreateInfo,0).put(VkPipelineShaderStageCreateInfo,
                 "stage" to VK_SHADER_STAGE_VERTEX_BIT, "module" to vert, "pName" to s.allocateFrom("main"))
+            // Light and haze of the scene: specialisation constants 0–19 of toon.frag (floats).
+            val values=lighting.constants()
+            val data=s.allocate(JAVA_FLOAT,values.size.toLong())
+            for((i,v) in values.withIndex()) data.setAtIndex(JAVA_FLOAT,i.toLong(),v)
+            val entries=s.structs(VkSpecializationMapEntry,values.size)
+            for(i in values.indices) entries.at(VkSpecializationMapEntry,i).put(VkSpecializationMapEntry, "constantID" to i, "offset" to i*4, "size" to 4L)
+            val special=s.struct(VkSpecializationInfo, "mapEntryCount" to values.size, "pMapEntries" to entries, "dataSize" to values.size*4L, "pData" to data)
             stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo,
-                "stage" to VK_SHADER_STAGE_FRAGMENT_BIT, "module" to frag, "pName" to s.allocateFrom("main"))
+                "stage" to VK_SHADER_STAGE_FRAGMENT_BIT, "module" to frag, "pName" to s.allocateFrom("main"), "pSpecializationInfo" to special)
             val binding=s.struct(VkVertexInputBindingDescription, "binding" to 0, "stride" to 36, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
             val attrs=s.structs(VkVertexInputAttributeDescription,3)
             for(i in 0..2) attrs.at(VkVertexInputAttributeDescription,i).put(VkVertexInputAttributeDescription,
@@ -342,7 +351,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             dev.deviceWaitIdle()
             val caps=s.struct(VkSurfaceCapabilitiesKHR); vk.getPhysicalDeviceSurfaceCapabilitiesKHR(physical,surface,caps)
             fun cap(field: String)=caps.u32(VkSurfaceCapabilitiesKHR,field)
-            require(cap("supportedUsageFlags") and VK_IMAGE_USAGE_TRANSFER_DST_BIT != 0) { "Surface sans transfert destination" }
+            require(cap("supportedUsageFlags") and VK_IMAGE_USAGE_TRANSFER_DST_BIT != 0) { "The surface cannot be a transfer destination" }
             val n=s.allocate(JAVA_INT); vk.getPhysicalDeviceSurfaceFormatsKHR(physical,surface,n,MemorySegment.NULL)
             val formats=s.structs(VkSurfaceFormatKHR,n.get(JAVA_INT,0)); vk.getPhysicalDeviceSurfaceFormatsKHR(physical,surface,n,formats)
             fun format(i: Int)=formats.at(VkSurfaceFormatKHR,i).u32(VkSurfaceFormatKHR,"format")
@@ -385,7 +394,13 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
      * Dessine une image. [camera] : projection × vue ; [oeil] : position de la caméra et [temps] (s),
      * transmis au shader pour le liseré lumineux.
      */
-    fun dessiner(objets: List<Objet>, camera: Mat4, hud: Maillage, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f) = stack.frame { s ->
+    /** Frees the GPU copies of every mesh (when the game leaves a scene for another). */
+    fun oublier() {
+        dev.deviceWaitIdle()
+        meshes.values.forEach { destroy(it) }; meshes.clear(); hudEnvoye=null
+    }
+
+    fun dessiner(objets: List<Node>, camera: Mat4, hud: Mesh, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f) = stack.frame { s ->
         var index=-1
         if(surface!=0L) {
             val out=s.allocate(JAVA_INT)
@@ -395,13 +410,13 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             index=out.get(JAVA_INT,0)
         }
         // La frame précédente est terminée avant toute écriture de mémoire hôte.
-        fun prepare(m: Maillage) {
-            if(m.sommets.isEmpty() || meshes.containsKey(m)) return
-            val b=buffer(m.sommets.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
-            upload(b,m.sommets); meshes[m]=b
+        fun prepare(m: Mesh) {
+            if(m.vertices.isEmpty() || meshes.containsKey(m)) return
+            val b=buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+            upload(b,m.vertices); meshes[m]=b
         }
-        for(o in objets) if(o.visible) { prepare(o.maillage); for(p in o.parties) prepare(p.maillage) }
-        if(hud!==hudEnvoye) { upload(hudBuffer!!,hud.sommets); hudEnvoye=hud }
+        for(o in objets) if(o.visible) { prepare(o.mesh); for(p in o.parts) prepare(p.mesh) }
+        if(hud!==hudEnvoye) { upload(hudBuffer!!,hud.vertices); hudEnvoye=hud }
         val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
         try {
             dev.resetCommandBuffer(command,0)
@@ -418,7 +433,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val constants=s.allocate(JAVA_FLOAT,32)
             val values=FloatArray(32)
             val handle=s.allocate(JAVA_LONG); val offsets=s.longs(0L)
-            fun draw(b: Buffer, mesh: Maillage, model: Mat4, vp: Mat4) {
+            fun draw(b: Buffer, mesh: Mesh, model: Mat4, vp: Mat4) {
                 // 128 octets : mvp (16), modèle en trois lignes (12), œil et temps (4).
                 (vp*model).writeTo(values,0)
                 values[16]=model.m00; values[17]=model.m10; values[18]=model.m20; values[19]=model.m30
@@ -428,15 +443,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 MemorySegment.copy(values,0,constants,JAVA_FLOAT,0,32)
                 dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT,0,128,constants)
                 handle.set(JAVA_LONG,0,b.buffer); dev.cmdBindVertexBuffers(command,0,1,handle,offsets)
-                dev.cmdDraw(command,mesh.sommets.size/9,1,0,0)
+                dev.cmdDraw(command,mesh.vertices.size/9,1,0,0)
             }
-            for(o in objets) if(o.visible && !o.ombre) {
-                val m=o.matrice()
-                meshes[o.maillage]?.let { draw(it,o.maillage,m,camera) }
-                for(p in o.parties) meshes[p.maillage]?.let { draw(it,p.maillage,m*p.pose,camera) }
+            for(o in objets) if(o.visible && !o.isShadow) {
+                val m=o.matrix()
+                meshes[o.mesh]?.let { draw(it,o.mesh,m,camera) }
+                for(p in o.parts) meshes[p.mesh]?.let { draw(it,p.mesh,m*p.pose,camera) }
             }
             dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
-            for(o in objets) if(o.visible && o.ombre) meshes[o.maillage]?.let { draw(it,o.maillage,o.matrice(),camera) }
+            for(o in objets) if(o.visible && o.isShadow) meshes[o.mesh]?.let { draw(it,o.mesh,o.matrix(),camera) }
             dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
             draw(hudBuffer!!,hud,Mat4.IDENTITY,Mat4.IDENTITY)
             dev.cmdEndRenderPass(command)
@@ -466,7 +481,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                     "swapchainCount" to 1, "pSwapchains" to s.longs(swapchain), "pImageIndices" to s.ints(index))
                 val result=dev.queuePresentKHR(queue,pi)
                 dev.queueWaitIdle(queue)
-                if(result==VK_ERROR_OUT_OF_DATE_KHR || result==VK_SUBOPTIMAL_KHR) recreateSwapchain() else result.vkCheck("Présentation")
+                if(result==VK_ERROR_OUT_OF_DATE_KHR || result==VK_SUBOPTIMAL_KHR) recreateSwapchain() else result.vkCheck("Present")
             } else dev.queueWaitIdle(queue)
             if(capture!=null && readback!=null) save(readback,capture)
         } finally { if(readback!=null) destroy(readback) }

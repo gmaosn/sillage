@@ -12,22 +12,22 @@ import java.nio.file.Path
 /** Chargeur glTF 2 binaire, entièrement JVM. Aucun moteur natif ni Assimp.
  * Lit la hiérarchie des nœuds, les couleurs de matériau ou de sommet et les animations TRS. */
 object Glb {
-    fun charger(chemin: String): Maillage = chargerModele(chemin).aplatir().also {
-        require(it.sommets.isNotEmpty()) { "GLB sans triangles : $chemin" } }
+    fun load(path: String): Mesh = loadModel(path).flatten().also {
+        require(it.triangleCount > 0) { "GLB without triangles: $path" } }
 
-    fun chargerModele(chemin: String): Modele = lireModele(octets(chemin))
+    fun loadModel(path: String): Model = readModel(bytes(path))
 
-    fun lire(bytes: ByteArray): Maillage = lireModele(bytes).aplatir().also { require(it.sommets.isNotEmpty()) { "GLB sans triangles" } }
+    fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }
 
-    private fun octets(chemin: String): ByteArray =
-        if (Files.exists(Path.of(chemin))) Files.readAllBytes(Path.of(chemin))
-        else Glb::class.java.getResourceAsStream("/" + chemin)?.use { it.readAllBytes() } ?: error("GLB introuvable : " + chemin)
+    private fun bytes(path: String): ByteArray =
+        if (Files.exists(Path.of(path))) Files.readAllBytes(Path.of(path))
+        else Glb::class.java.getResourceAsStream("/" + path)?.use { it.readAllBytes() } ?: error("GLB not found (file or resource): " + path)
 
-    fun lireModele(bytes: ByteArray): Modele {
-        require(bytes.size >= 20) { "GLB tronqué" }
+    fun readModel(bytes: ByteArray): Model {
+        require(bytes.size >= 20) { "Truncated GLB" }
         val file = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        require(file.int == 0x46546c67 && file.int == 2) { "Un GLB glTF 2.0 est requis" }
-        require(file.int == bytes.size) { "Taille GLB invalide" }
+        require(file.int == 0x46546c67 && file.int == 2) { "A glTF 2.0 GLB file is required" }
+        require(file.int == bytes.size) { "Invalid GLB size" }
         var json: Json.Obj? = null
         var bin: ByteBuffer? = null
         while (file.remaining() >= 8) {
@@ -36,52 +36,52 @@ object Glb {
             val chunk = ByteArray(size); file.get(chunk)
             when (type) {
                 0x4e4f534a -> json = Json.parse(chunk.toString(Charsets.UTF_8).trimEnd('\u0000', ' ')) as? Json.Obj
-                    ?: throw IllegalArgumentException("Le JSON d'un GLB doit être un objet")
+                    ?: throw IllegalArgumentException("The JSON of a GLB must be an object")
                 0x004e4942 -> bin = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN)
             }
         }
-        val doc = requireNotNull(json) { "Chunk JSON absent" }
-        require(!doc.has("skins")) { "Les squelettes ne sont pas encore pris en charge : animer des objets séparés (nœuds)" }
+        val doc = requireNotNull(json) { "Missing JSON chunk" }
+        require(!doc.has("skins")) { "Skins (skeletons) are not supported yet: animate separate objects (nodes) instead" }
         val required = doc.arr("extensionsRequired")
-        require(required == null || required.size == 0) { "Extensions GLB requises non prises en charge : " + required }
+        require(required == null || required.size == 0) { "Unsupported required GLB extensions: " + required }
         val buffers = doc.arr("buffers")
         val buffer: ByteBuffer = if (buffers == null || buffers.size == 0) ByteBuffer.allocate(0) else {
-            require(buffers.size == 1 && !buffers.obj(0).has("uri")) { "Le GLB doit embarquer son buffer" }
-            requireNotNull(bin) { "Chunk BIN absent" }
+            require(buffers.size == 1 && !buffers.obj(0).has("uri")) { "The GLB must embed its buffer" }
+            requireNotNull(bin) { "Missing BIN chunk" }
         }
         /** Element [i] of a glTF array, refused cleanly when the file points outside it. */
         fun Json.Arr?.at(i: Int?, quoi: String): Json.Obj {
-            require(this != null && i != null && i in 0 until size) { "GLB : $quoi ${i ?: "absent"} hors limites" }
+            require(this != null && i != null && i in 0 until size) { "GLB: $quoi ${i ?: "missing"} out of range" }
             return obj(i)
         }
-        fun FloatArray.taille(n: Int, quoi: String): FloatArray { require(size >= n) { "GLB : $quoi trop court ($size valeurs au lieu de $n)" }; return this }
+        fun FloatArray.taille(n: Int, quoi: String): FloatArray { require(size >= n) { "GLB: $quoi too short ($size values instead of $n)" }; return this }
         val accessors = doc.arr("accessors") ?: Json.Arr(emptyList())
         val views = doc.arr("bufferViews") ?: Json.Arr(emptyList())
         fun accessor(index: Int, expected: String): Pair<Json.Obj, Int> {
             val a = accessors.at(index, "accessor")
-            require(!a.has("sparse") && a.string("type") == expected) { "Accessor GLB non pris en charge (attendu $expected)" }
-            val viewIndex = requireNotNull(a.int("bufferView")) { "Accessor GLB sans bufferView" }
-            require(viewIndex in 0 until views.size) { "BufferView GLB $viewIndex absent" }
+            require(!a.has("sparse") && a.string("type") == expected) { "Unsupported GLB accessor (expected $expected)" }
+            val viewIndex = requireNotNull(a.int("bufferView")) { "GLB accessor without bufferView" }
+            require(viewIndex in 0 until views.size) { "Missing GLB bufferView $viewIndex" }
             val v = views.obj(viewIndex)
-            require((v.int("buffer") ?: 0) == 0) { "GLB : un seul buffer est lu" }
+            require((v.int("buffer") ?: 0) == 0) { "GLB: only one buffer is read" }
             val start = (v.int("byteOffset") ?: 0).toLong() + (a.int("byteOffset") ?: 0)
-            require(start in 0..buffer.limit().toLong()) { "GLB : accessor $index hors du buffer" }
-            val count = requireNotNull(a.int("count")) { "GLB : accessor $index sans count" }
-            require(count >= 0 && count <= buffer.limit()) { "GLB : count $count impossible pour un buffer de ${buffer.limit()} octets" }
+            require(start in 0..buffer.limit().toLong()) { "GLB: accessor $index outside the buffer" }
+            val count = requireNotNull(a.int("count")) { "GLB: accessor $index without count" }
+            require(count >= 0 && count <= buffer.limit()) { "GLB: count $count impossible for a buffer of ${buffer.limit()} bytes" }
             return a to start.toInt()
         }
         fun values(index: Int, type: String): List<FloatArray> {
             val (a, offset) = accessor(index, type)
-            val components = when(type) { "SCALAR" -> 1; "VEC3" -> 3; "VEC4" -> 4; else -> error("Type invalide") }
+            val components = when(type) { "SCALAR" -> 1; "VEC3" -> 3; "VEC4" -> 4; else -> error("Invalid accessor type " + type) }
             val componentType = a.int("componentType")
-            val width = when(componentType) {5126 -> 4; 5121 -> 1; 5123 -> 2; else -> error("Type de composante non pris en charge")}
+            val width = when(componentType) {5126 -> 4; 5121 -> 1; 5123 -> 2; else -> error("Unsupported component type")}
             val v = views.obj(a.int("bufferView")!!)
             val stride = v.int("byteStride") ?: (width * components)
             require(stride in width * components..255) { "GLB : byteStride $stride invalide" }
             val normalized = a.bool("normalized") ?: false
             return List(requireNotNull(a.int("count"))) { i -> FloatArray(components) { c ->
                 val o = offset + i * stride + c * width
-                require(o >= 0 && o + width <= buffer.limit()) { "Accessor hors du buffer" }
+                require(o >= 0 && o + width <= buffer.limit()) { "Accessor outside the buffer" }
                 when(componentType) {
                     5126 -> buffer.getFloat(o)
                     5121 -> (buffer.get(o).toInt() and 255).toFloat() / if(normalized) 255f else 1f
@@ -90,7 +90,7 @@ object Glb {
             } }
         }
         fun floats(index: Int, type: String): FloatArray {
-            require(accessors.at(index, "accessor").int("componentType") == 5126) { "Les animations GLB doivent être en flottants" }
+            require(accessors.at(index, "accessor").int("componentType") == 5126) { "GLB animations must be floats" }
             val list = values(index, type)
             return FloatArray(list.sumOf { it.size }).also { out -> var k = 0; for (v in list) for (x in v) out[k++] = x }
         }
@@ -100,7 +100,7 @@ object Glb {
             val width = when(type) {5121 -> 1; 5123 -> 2; 5125 -> 4; else -> error("Indices GLB invalides")}
             return IntArray(requireNotNull(a.int("count"))) { i ->
                 val o = offset + i * width
-                require(o >= 0 && o + width <= buffer.limit()) { "Indices hors du buffer" }
+                require(o >= 0 && o + width <= buffer.limit()) { "Indices outside the buffer" }
                 when(type) {5121 -> buffer.get(o).toInt() and 255; 5123 -> buffer.getShort(o).toInt() and 65535; else -> buffer.getInt(o)}
             }
         }
@@ -110,26 +110,26 @@ object Glb {
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
                 val p = primitive as Json.Obj
-                require((p.int("mode") ?: 4) == 4) { "Seuls les triangles sont pris en charge" }
+                require((p.int("mode") ?: 4) == 4) { "Only triangles are supported" }
                 val attributes = requireNotNull(p.obj("attributes"))
                 val positions = values(requireNotNull(attributes.int("POSITION")), "VEC3")
-                val colors = attributes.int("COLOR_0")?.let { values(it, requireNotNull(accessors.at(it, "accessor").string("type")) { "GLB : couleurs sans type" }) }
-                ?.onEach { require(it.size >= 3) { "GLB : couleurs de sommets incomplètes" } }
-                var color = Couleur(0.8f,0.8f,0.8f)
+                val colors = attributes.int("COLOR_0")?.let { values(it, requireNotNull(accessors.at(it, "accessor").string("type")) { "GLB: colours without a type" }) }
+                ?.onEach { require(it.size >= 3) { "GLB: incomplete vertex colours" } }
+                var color = Color(0.8f,0.8f,0.8f)
                 p.int("material")?.let { materialIndex ->
-                    val material = doc.arr("materials").at(materialIndex, "matériau")
+                    val material = doc.arr("materials").at(materialIndex, "material")
                     val pbr = material.obj("pbrMetallicRoughness")
                     require(pbr?.has("baseColorTexture") != true) {
-                        "Textures non prises en charge : utiliser des couleurs de matériaux Blender" }
-                    pbr?.arr("baseColorFactor")?.floats()?.taille(3, "baseColorFactor")?.let { color = Couleur(it[0],it[1],it[2]) }
+                        "Textures are not supported: use material colours (Base Color in Blender)" }
+                    pbr?.arr("baseColorFactor")?.floats()?.taille(3, "baseColorFactor")?.let { color = Color(it[0],it[1],it[2]) }
                 }
                 val ids = p.int("indices")?.let { indices(it) } ?: IntArray(positions.size) { it }
                 require(ids.size % 3 == 0)
                 for(i in ids.indices step 3) {
                     val a=ids[i]; val b=ids[i+1]; val c=ids[i+2]
-                    require(a in positions.indices && b in positions.indices && c in positions.indices) { "Indice GLB hors limites" }
+                    require(a in positions.indices && b in positions.indices && c in positions.indices) { "GLB index out of range" }
                     val vc = colors?.let { cs ->
-                        Couleur(color.r * (cs[a][0].toDouble() + cs[b][0] + cs[c][0]).toFloat()/3,
+                        Color(color.r * (cs[a][0].toDouble() + cs[b][0] + cs[c][0]).toFloat()/3,
                             color.g * (cs[a][1].toDouble() + cs[b][1] + cs[c][1]).toFloat()/3,
                             color.b * (cs[a][2].toDouble() + cs[b][2] + cs[c][2]).toFloat()/3) } ?: color
                     for (v in intArrayOf(a, b, c)) for (j in 0..2) out.add(positions[v][j])
@@ -144,56 +144,56 @@ object Glb {
         val parents = IntArray(nodesJson.size) { -1 }
         for (i in 0 until nodesJson.size) nodesJson.obj(i).arr("children")?.forEach {
             val c = (it as Json.Num).toInt()
-            require(c in 0 until nodesJson.size) { "Enfant GLB $c absent" }
-            require(parents[c] < 0 && c != i) { "Cycle ou nœud partagé dans la hiérarchie GLB" }
+            require(c in 0 until nodesJson.size) { "Missing GLB child $c" }
+            require(parents[c] < 0 && c != i) { "Cycle or shared node in the GLB hierarchy" }
             parents[c] = i
         }
         val meshCache = HashMap<Int, FloatArray>()
-        val noeuds = List(nodesJson.size) { i ->
+        val nodes = List(nodesJson.size) { i ->
             val node = nodesJson.obj(i)
             val matrix = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats().taille(16, "matrix")) }
-            Noeud(
-                nom = node.string("name"),
+            ModelNode(
+                name = node.string("name"),
                 parent = parents[i],
-                enfants = node.arr("children")?.ints() ?: IntArray(0),
+                children = node.arr("children")?.ints() ?: IntArray(0),
                 translation = node.arr("translation")?.floats()?.taille(3, "translation")?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ZERO,
                 rotation = node.arr("rotation")?.floats()?.taille(4, "rotation")?.let { Quat(it[0], it[1], it[2], it[3]).normalized() } ?: Quat.IDENTITY,
-                echelle = node.arr("scale")?.floats()?.taille(3, "scale")?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE,
-                matrice = matrix,
+                scale = node.arr("scale")?.floats()?.taille(3, "scale")?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE,
+                matrix = matrix,
                 triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) } } ?: FloatArray(0),
             )
         }
         val scenes = doc.arr("scenes")
         val racines = if (scenes == null || scenes.size == 0) IntArray(nodesJson.size) { it }.filter { parents[it] < 0 }.toIntArray()
-            else scenes.at(doc.int("scene") ?: 0, "scène").arr("nodes")?.ints() ?: IntArray(0)
-        for (r in racines) require(r in noeuds.indices && parents[r] < 0) { "Racine de scène GLB invalide : $r" }
+            else scenes.at(doc.int("scene") ?: 0, "scene").arr("nodes")?.ints() ?: IntArray(0)
+        for (r in racines) require(r in nodes.indices && parents[r] < 0) { "Invalid GLB scene root: $r" }
 
         val clips = LinkedHashMap<String, Clip>()
         doc.arr("animations")?.forEachIndexed { index, a ->
             val anim = a as Json.Obj
-            val samplers = requireNotNull(anim.arr("samplers")) { "Animation GLB sans samplers" }
-            val canaux = requireNotNull(anim.arr("channels")) { "Animation GLB sans canaux" }.map { ch ->
+            val samplers = requireNotNull(anim.arr("samplers")) { "GLB animation without samplers" }
+            val canaux = requireNotNull(anim.arr("channels")) { "GLB animation without channels" }.map { ch ->
                 val c = ch as Json.Obj
-                val target = requireNotNull(c.obj("target")) { "Canal d'animation sans cible" }
-                val node = requireNotNull(target.int("node")) { "Canal d'animation sans nœud" }
-                require(node in noeuds.indices) { "Canal d'animation : nœud $node absent" }
-                require(noeuds[node].matrice == null) { "Un nœud animé doit utiliser translation/rotation/scale, pas matrix" }
+                val target = requireNotNull(c.obj("target")) { "Animation channel without a target" }
+                val node = requireNotNull(target.int("node")) { "Animation channel without a node" }
+                require(node in nodes.indices) { "Animation channel: no node $node" }
+                require(nodes[node].matrix == null) { "An animated node must use translation/rotation/scale, not matrix" }
                 val chemin = when (val path = target.string("path")) {
-                    "translation" -> Chemin.TRANSLATION; "rotation" -> Chemin.ROTATION; "scale" -> Chemin.ECHELLE
+                    "translation" -> ChannelTarget.TRANSLATION; "rotation" -> ChannelTarget.ROTATION; "scale" -> ChannelTarget.SCALE
                     else -> throw IllegalArgumentException("Animation de « $path » non prise en charge (seulement translation, rotation, scale)")
                 }
                 val sampler = samplers.at(c.int("sampler"), "sampler")
                 val palier = when (val interp = sampler.string("interpolation") ?: "LINEAR") {
                     "LINEAR" -> false; "STEP" -> true
-                    else -> throw IllegalArgumentException("Interpolation $interp non prise en charge (LINEAR ou STEP)")
+                    else -> throw IllegalArgumentException("Unsupported interpolation $interp (LINEAR or STEP)")
                 }
-                Canal(node, chemin, floats(requireNotNull(sampler.int("input")), "SCALAR"),
-                    floats(requireNotNull(sampler.int("output")), if (chemin == Chemin.ROTATION) "VEC4" else "VEC3"), palier)
+                Channel(node, chemin, floats(requireNotNull(sampler.int("input")), "SCALAR"),
+                    floats(requireNotNull(sampler.int("output")), if (chemin == ChannelTarget.ROTATION) "VEC4" else "VEC3"), palier)
             }
             val nom = anim.string("name") ?: "animation$index"
             clips[nom] = Clip(nom, canaux)
         }
         val materialNames = doc.arr("materials")?.map { (it as Json.Obj).string("name") ?: "" } ?: emptyList()
-        return Modele(noeuds, racines, clips, materialNames)
+        return Model(nodes, racines, clips, materialNames)
     }
 }

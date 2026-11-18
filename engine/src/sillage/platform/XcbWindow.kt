@@ -66,7 +66,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     private var mouseDx = 0f; private var mouseDy = 0f
     private var scroll = 0f
     private var resized = false
-    private val keys = BooleanArray(Key.COUNT)
+    private val keys = BooleanArray(KEY_COUNT)
 
     override var shouldClose = false; private set
     // Sans gestionnaire de fenêtres (Xvfb), aucun FocusIn n'arrive : la fenêtre est réputée active.
@@ -81,7 +81,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     init {
         conn = PSig.P_PP.invokeExact(Xcb.connect, NULL, NULL) as MemorySegment
         check(conn != NULL && (PSig.I_P.invokeExact(Xcb.hasError, conn) as Int) == 0) {
-            "Connexion X11 impossible (DISPLAY=${System.getenv("DISPLAY")})" }
+            "Cannot connect to X11 (DISPLAY=${System.getenv("DISPLAY")})" }
         try {
             val setup = PSig.P_P.invokeExact(Xcb.getSetup, conn) as MemorySegment
             val iterator = Xcb.ROOTS.invokeExact(Xcb.rootsIterator, arena as SegmentAllocator, setup) as MemorySegment
@@ -107,7 +107,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     private fun atom(name: String): Int = stack.frame { s ->
         val cookie = PSig.I_PBSP.invokeExact(Xcb.internAtom, conn, 0.toByte(), name.length.toShort(), s.allocateFrom(name)) as Int
         val reply = PSig.P_PIP.invokeExact(Xcb.internAtomReply, conn, cookie, NULL) as MemorySegment
-        check(reply != NULL) { "Atome X11 $name indisponible" }
+        check(reply != NULL) { "X11 atom $name unavailable" }
         val a = reply.reinterpret(12).get(JAVA_INT, 8)
         Native.free(reply)
         a
@@ -162,7 +162,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
                 when ((ev.get(JAVA_BYTE, 0).toInt() and 0x7f)) {
                     Xcb.KEY_PRESS, Xcb.KEY_RELEASE -> {
                         val code = (ev.get(JAVA_BYTE, 1).toInt() and 0xff) - 8  // X11 = evdev + 8
-                        if (code in 0 until Key.COUNT) keys[code] = (ev.get(JAVA_BYTE, 0).toInt() and 0x7f) == Xcb.KEY_PRESS
+                        if (code in 0 until KEY_COUNT) keys[code] = (ev.get(JAVA_BYTE, 0).toInt() and 0x7f) == Xcb.KEY_PRESS
                     }
                     Xcb.BUTTON_PRESS -> when (ev.get(JAVA_BYTE, 1).toInt() and 0xff) {
                         1 -> if (!mouseCaptured) mouseCaptured = true
@@ -194,7 +194,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
         poll()
     }
 
-    override fun isDown(key: Int) = key in 0 until Key.COUNT && keys[key]
+    override fun isDown(key: Int) = key in 0 until KEY_COUNT && keys[key]
     override fun consumeMouseDelta(): FloatArray { val d = floatArrayOf(mouseDx, mouseDy); mouseDx = 0f; mouseDy = 0f; return d }
     override fun consumeScroll(): Float { val s = scroll; scroll = 0f; return s }
     override fun consumeResize(): Boolean { val r = resized; resized = false; return r }

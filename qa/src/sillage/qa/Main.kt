@@ -8,7 +8,7 @@ import kotlin.system.exitProcess
 
 /**
  * Contrôle qualité de Sillage : une batterie de vérifications du moteur physique, du personnage, des
- * requêtes de collision, du rendu 3D, des chargeurs de fichiers, de l'endurance et des performances.
+ * requêtes de collision, du rendu 3D, des chargeurs de fichiers, de l'API publique, de l'endurance et des performances.
  * Chaque contrôle donne une mesure, son seuil et son état ; le rapport va dans build/qa/rapport.md.
  *
  *   ./kotlin run -m qa --jvm-args="--enable-native-access=ALL-UNNAMED -Xmx2g" -- [--rapide] [--seulement physique,rendu]
@@ -22,6 +22,7 @@ fun main(args: Array<String>) {
         "personnage" to { personnage() },
         "rendu" to { rendu() },
         "chargeurs" to { chargeurs() },
+        "api" to { api() },
         "endurance" to { endurance() },
         "performance" to { performance() },
     )
@@ -46,7 +47,7 @@ class Qa(val rapide: Boolean, val graine: Long, val refaire: Boolean) {
     val resultats = ArrayList<Resultat>()
     private var groupe = ""
     private val titres = mapOf("physique" to "Physique : invariants", "collisions" to "Collisions et requêtes : comparées à une référence indépendante",
-        "personnage" to "Personnage : parcours aléatoires et cas limites", "rendu" to "Rendu 3D", "chargeurs" to "Chargeurs : fichiers abîmés",
+        "personnage" to "Personnage : parcours aléatoires et cas limites", "rendu" to "Rendu 3D", "chargeurs" to "Chargeurs : fichiers abîmés", "api" to "API publique : parties réelles",
         "endurance" to "Endurance", "performance" to "Performance")
 
     /** Nombre de cas tirés au sort : peu en mode rapide. */

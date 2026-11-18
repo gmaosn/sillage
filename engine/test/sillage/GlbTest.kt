@@ -33,51 +33,51 @@ class GlbTest {
         "buffers":[{"byteLength":36}]$extra}""", floats(0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, -1f))
 
     @Test fun triangleAvecTranslationEchelleEtCouleur() {
-        val m = Glb.lire(triangle("""{"mesh":0,"translation":[10,1,0],"scale":[2,2,2]}"""))
-        assertEquals(27, m.sommets.size)
+        val m = Glb.read(triangle("""{"mesh":0,"translation":[10,1,0],"scale":[2,2,2]}"""))
+        assertEquals(27, m.vertices.size)
         val attendus = listOf(floatArrayOf(10f, 1f, 0f), floatArrayOf(12f, 1f, 0f), floatArrayOf(10f, 1f, -2f))
-        for ((k, p) in attendus.withIndex()) for (c in 0..2) assertEquals(p[c], m.sommets[k * 9 + c], 1e-5f)
-        assertEquals(1f, m.sommets[4], 1e-5f, "la normale doit pointer vers le haut")
-        assertEquals(.5f, m.sommets[6]); assertEquals(.25f, m.sommets[7]); assertEquals(1f, m.sommets[8])
+        for ((k, p) in attendus.withIndex()) for (c in 0..2) assertEquals(p[c], m.vertices[k * 9 + c], 1e-5f)
+        assertEquals(1f, m.vertices[4], 1e-5f, "la normale doit pointer vers le haut")
+        assertEquals(.5f, m.vertices[6]); assertEquals(.25f, m.vertices[7]); assertEquals(1f, m.vertices[8])
     }
 
     @Test fun hierarchieEtRotation() {
         // Parent tourné de 90° autour de Y (quaternion), enfant translaté de 1 sur X → enfant en z = -1.
         val s = Math.sqrt(.5).toFloat()
-        val m = Glb.lire(triangle("""{"rotation":[0,$s,0,$s],"children":[1]},{"mesh":0,"translation":[1,0,0]}"""))
-        assertEquals(0f, m.sommets[0], 1e-5f)
-        assertEquals(-1f, m.sommets[2], 1e-5f)
+        val m = Glb.read(triangle("""{"rotation":[0,$s,0,$s],"children":[1]},{"mesh":0,"translation":[1,0,0]}"""))
+        assertEquals(0f, m.vertices[0], 1e-5f)
+        assertEquals(-1f, m.vertices[2], 1e-5f)
     }
 
     @Test fun echelleNegativeGardeLesNormalesVersLeHaut() {
-        val m = Glb.lire(triangle("""{"mesh":0,"scale":[-1,1,1]}"""))
-        assertEquals(1f, m.sommets[4], 1e-5f)
+        val m = Glb.read(triangle("""{"mesh":0,"scale":[-1,1,1]}"""))
+        assertEquals(1f, m.vertices[4], 1e-5f)
     }
 
     @Test fun texturesRefusees() {
         val e = assertFailsWith<IllegalArgumentException> {
-            Glb.lire(triangle("""{"mesh":0}""", """{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}"""))
+            Glb.read(triangle("""{"mesh":0}""", """{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}"""))
         }
         assertContains(e.message!!, "Textures")
     }
 
     @Test fun squelettesRefuses() {
-        val e = assertFailsWith<IllegalArgumentException> { Glb.lire(triangle("""{"mesh":0}""", extra = ""","skins":[{}]""")) }
-        assertContains(e.message!!, "squelettes")
+        val e = assertFailsWith<IllegalArgumentException> { Glb.read(triangle("""{"mesh":0}""", extra = ""","skins":[{}]""")) }
+        assertContains(e.message!!, "Skins")
     }
 
     @Test fun fichierTronqueOuFauxRefuse() {
-        assertFailsWith<IllegalArgumentException> { Glb.lire(ByteArray(10)) }
-        assertFailsWith<IllegalArgumentException> { Glb.lire(ByteArray(40)) }
+        assertFailsWith<IllegalArgumentException> { Glb.read(ByteArray(10)) }
+        assertFailsWith<IllegalArgumentException> { Glb.read(ByteArray(40)) }
     }
 
     @Test fun modelesDeLaDemo() {
         var dir = Path.of("").toAbsolutePath()
         while (!Files.exists(dir.resolve("project.yaml"))) dir = requireNotNull(dir.parent) { "racine du projet introuvable" }
         for (nom in listOf("terrain", "village", "marin", "palmiers", "ciel", "port")) {
-            val m = Glb.charger(dir.resolve("demo/resources/models/$nom.glb").toString())
-            assertTrue(m.triangles.size > 10, "$nom : ${m.triangles.size} triangles")
-            assertTrue(m.sommets.all { it.isFinite() }, "$nom : valeur non finie")
+            val m = Glb.load(dir.resolve("demo/resources/models/$nom.glb").toString())
+            assertTrue(m.triangleCount > 10, "$nom : ${m.triangleCount} triangles")
+            assertTrue(m.vertices.all { it.isFinite() }, "$nom : valeur non finie")
         }
     }
 }

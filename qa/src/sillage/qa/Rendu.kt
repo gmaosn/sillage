@@ -1,9 +1,9 @@
 package sillage.qa
 
-import sillage.Bilan
+import sillage.RunReport
 import sillage.Glb
-import sillage.demo.ile
-import sillage.jeu
+import sillage.demo.island
+import sillage.game
 import sillage.math.Vec3
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -12,12 +12,12 @@ import javax.imageio.ImageIO
 import kotlin.math.*
 
 /** Rend l'île sans fenêtre et sans son ; rend le bilan, l'image est écrite dans [capture]. */
-fun rendreIle(capture: Path?, images: Int, vue: String? = null, taille: String? = null): Bilan {
+fun rendreIle(capture: Path?, images: Int, vue: String? = null, taille: String? = null): RunReport {
     val args = ArrayList(listOf("--headless", "--mute", "--frames", images.toString()))
     if (capture != null) { Files.createDirectories(capture.parent); args += listOf("--capture", capture.toString()) }
     if (vue != null) args += listOf("--look-at", vue)
-    if (taille != null) args += listOf("--taille", taille)
-    return jeu("QA", args.toTypedArray(), ile)
+    if (taille != null) args += listOf("--size", taille)
+    return game("QA", args.toTypedArray(), island)
 }
 
 /** Écart entre deux images : part des pixels dont une composante diffère de plus de 16, et écart moyen (0–255). */
@@ -90,7 +90,7 @@ fun Qa.rendu() {
     controle("modèles de la démo : triangles valides", "aucune valeur non finie, aucun triangle dégénéré dans les collisions") {
         val lignes = ArrayList<String>(); var ok = true
         for (nom in modeles) {
-            val m = Glb.chargerModele("models/$nom.glb"); val (pos, mats) = m.surfaces()
+            val m = Glb.loadModel("models/$nom.glb"); val (pos, mats) = m.surfaces()
             var nonFinis = 0; var degeneres = 0
             for (t in mats.indices) {
                 val a = Vec3(pos[9 * t], pos[9 * t + 1], pos[9 * t + 2]); val b = Vec3(pos[9 * t + 3], pos[9 * t + 4], pos[9 * t + 5]); val c = Vec3(pos[9 * t + 6], pos[9 * t + 7], pos[9 * t + 8])
@@ -106,9 +106,9 @@ fun Qa.rendu() {
     controle("solides de collision tournés vers l'extérieur", "terrain, ponton et toit") {
         val faux = ArrayList<String>(); val vus = ArrayList<String>()
         for ((nom, materiaux) in listOf("terrain" to listOf("herbe", "sable", "bois"), "village" to listOf("toit"))) {
-            val m = Glb.chargerModele("models/$nom.glb"); val (pos, mats) = m.surfaces()
+            val m = Glb.loadModel("models/$nom.glb"); val (pos, mats) = m.surfaces()
             for (mat in materiaux) {
-                val id = m.materiaux.indexOf(mat)
+                val id = m.materials.indexOf(mat)
                 val tris = mats.indices.filter { mats[it] == id }.map { t -> Triple(Vec3(pos[9 * t], pos[9 * t + 1], pos[9 * t + 2]), Vec3(pos[9 * t + 3], pos[9 * t + 4], pos[9 * t + 5]), Vec3(pos[9 * t + 6], pos[9 * t + 7], pos[9 * t + 8])) }
                 for ((k, comp) in composantes(tris).withIndex()) {
                     val verdict = orientation(comp, sol = mat == "herbe" || mat == "sable")

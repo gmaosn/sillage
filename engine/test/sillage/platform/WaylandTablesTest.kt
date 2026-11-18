@@ -1,6 +1,7 @@
 package sillage.platform
 
 import java.lang.foreign.SymbolLookup
+import sillage.Key
 import java.lang.foreign.Arena
 import kotlin.test.*
 

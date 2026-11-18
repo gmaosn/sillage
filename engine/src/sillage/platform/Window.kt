@@ -6,29 +6,8 @@ import sillage.SurfaceSource
  * Keys by physical position, named after the US layout (Linux evdev codes): the key under the
  * left middle finger is [W] on QWERTY and Z on AZERTY, so one binding serves both layouts.
  */
-object Key {
-    const val ESCAPE = 1
-    const val TAB = 15
-    const val Q = 16
-    const val W = 17
-    const val E = 18
-    const val R = 19
-    const val A = 30
-    const val S = 31
-    const val D = 32
-    const val Z = 44
-    const val SHIFT = 42
-    /** M en QWERTY (50) et en AZERTY (39, la touche « ; » du QWERTY). */
-    const val M = 50
-    const val M_AZERTY = 39
-    const val RIGHT_SHIFT = 54
-    const val SPACE = 57
-    const val UP = 103
-    const val LEFT = 105
-    const val RIGHT = 106
-    const val DOWN = 108
-    internal const val COUNT = 256
-}
+/** Number of key codes the windows track (Linux evdev codes, see [sillage.Key]). */
+internal const val KEY_COUNT = 256
 
 /** A desktop window that Vulkan can present to, with keyboard and mouse input. */
 internal interface Window : SurfaceSource, AutoCloseable {
@@ -62,10 +41,10 @@ internal fun openWindow(title: String, width: Int, height: Int): Window {
         "wayland" -> true
         "x11" -> false
         null, "" -> !System.getenv("WAYLAND_DISPLAY").isNullOrEmpty()
-        else -> throw IllegalArgumentException("SILLAGE_PLATFORM=$forced : wayland ou x11")
+        else -> throw IllegalArgumentException("SILLAGE_PLATFORM=$forced: use wayland or x11")
     }
     if (wayland) return WaylandWindow(title, width, height)
     check(!System.getenv("DISPLAY").isNullOrEmpty()) {
-        "Pas de session graphique (ni WAYLAND_DISPLAY ni DISPLAY). Utiliser --headless pour le rendu Vulkan hors écran." }
+        "No graphical session (neither WAYLAND_DISPLAY nor DISPLAY). Use --headless to render off screen." }
     return XcbWindow(title, width, height)
 }

@@ -2,4 +2,5 @@ modules:
   - bench
   - demo
   - engine
+  - playground
   - qa

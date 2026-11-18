@@ -6,215 +6,218 @@ import sillage.math.Vec3
 import sillage.math.slerpInto
 
 /** A node of a GLB model: rest transform, children, and its own triangles in node space. */
-class Noeud internal constructor(
-    val nom: String?,
+class ModelNode internal constructor(
+    val name: String?,
     val parent: Int,
-    val enfants: IntArray,
+    val children: IntArray,
     val translation: Vec3,
     val rotation: Quat,
-    val echelle: Vec3,
+    val scale: Vec3,
     /** Set when the GLB gives a `matrix` instead of TRS; such a node cannot be animated. */
-    val matrice: Mat4?,
+    val matrix: Mat4?,
     /** Per triangle ([TRI] floats): a, b, c (9 floats), the colour r, g, b, then the material index (−1: none). */
     internal val triangles: FloatArray,
 ) {
-    val local: Mat4 get() = matrice ?: Mat4.trs(translation, rotation, echelle)
+    val local: Mat4 get() = matrix ?: Mat4.trs(translation, rotation, scale)
 }
 
-enum class Chemin(val composantes: Int) { TRANSLATION(3), ROTATION(4), ECHELLE(3) }
+/** What a channel animates. */
+enum class ChannelTarget(val components: Int) { TRANSLATION(3), ROTATION(4), SCALE(3) }
 
 /** One animated property of one node: key times and values, linear (slerp for rotations) or step. */
-class Canal internal constructor(val noeud: Int, val chemin: Chemin, val temps: FloatArray, val valeurs: FloatArray, val palier: Boolean) {
+class Channel internal constructor(val node: Int, val target: ChannelTarget, val times: FloatArray, val values: FloatArray, val step: Boolean) {
     init {
-        require(temps.isNotEmpty()) { "Canal d'animation sans clé" }
-        require(valeurs.size == temps.size * chemin.composantes) { "Canal d'animation : ${valeurs.size} valeurs pour ${temps.size} clés" }
-        for (i in 1 until temps.size) require(temps[i] > temps[i - 1]) { "Temps d'animation non croissants" }
+        require(times.isNotEmpty()) { "Animation channel without keys" }
+        require(values.size == times.size * target.components) { "Animation channel: ${values.size} values for ${times.size} keys" }
+        for (i in 1 until times.size) require(times[i] > times[i - 1]) { "Animation key times must increase" }
     }
 }
 
 /** A glTF animation: several channels sharing one timeline. */
-class Clip internal constructor(val nom: String, val canaux: List<Canal>) {
-    val duree: Float = canaux.maxOfOrNull { it.temps.last() } ?: 0f
+class Clip internal constructor(val name: String, val channels: List<Channel>) {
+    val duration: Float = channels.maxOfOrNull { it.times.last() } ?: 0f
 }
 
-/** A GLB scene kept as a hierarchy, with its animations. */
+/** Floats per model triangle: 9 positions, r, g, b, material index. */
 internal const val TRI = 13
 
-class Modele internal constructor(val noeuds: List<Noeud>, val racines: IntArray, val clips: Map<String, Clip>,
-                                  /** Material names of the GLB, by index (as named in Blender). */
-                                  val materiaux: List<String> = emptyList()) {
+/** A GLB scene kept as a hierarchy, with its animations. */
+class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray, val clips: Map<String, Clip>,
+                                 /** Material names of the GLB, by index (as named in Blender). */
+                                 val materials: List<String> = emptyList()) {
     /** Node indices with every parent before its children, in scene order. */
-    val ordre: IntArray = ArrayList<Int>().also { out ->
-        val vus = BooleanArray(noeuds.size)
-        fun visiter(i: Int) {
-            require(!vus[i]) { "Cycle ou nœud partagé dans la hiérarchie GLB" }
-            vus[i] = true; out.add(i)
-            for (e in noeuds[i].enfants) visiter(e)
+    val order: IntArray = ArrayList<Int>().also { out ->
+        val seen = BooleanArray(nodes.size)
+        fun visit(i: Int) {
+            require(!seen[i]) { "Cycle or shared node in the GLB hierarchy" }
+            seen[i] = true; out.add(i)
+            for (e in nodes[i].children) visit(e)
         }
-        for (r in racines) visiter(r)
+        for (r in roots) visit(r)
     }.toIntArray()
 
     /** Each node's triangles as a mesh in node space, shared by every instance of the model. */
-    private val maillagesLocaux: Map<Int, Maillage> by lazy {
-        ordre.filter { noeuds[it].triangles.isNotEmpty() }.associateWith { i ->
-            val g = Geometrie(); val t = noeuds[i].triangles
+    private val localMeshes: Map<Int, Mesh> by lazy {
+        order.filter { nodes[it].triangles.isNotEmpty() }.associateWith { i ->
+            val g = MeshBuilder(); val t = nodes[i].triangles
             for (k in t.indices step TRI)
                 g.triangle(Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]),
-                    Couleur(t[k + 9], t[k + 10], t[k + 11]))
-            g.construire().lisse()
+                    Color(t[k + 9], t[k + 10], t[k + 11]))
+            g.build().smooth()
         }
     }
 
-    /** The whole scene in its rest pose as one world-space mesh (static models, collisions). */
-    fun aplatir(): Maillage {
-        val g = Geometrie()
-        fun visiter(i: Int, parent: Mat4) {
-            val n = noeuds[i]
-            val monde = parent * n.local
-            val miroir = monde.determinant3x3() < 0
+    /** The whole scene in its rest pose as one world-space mesh (static models). */
+    fun flatten(): Mesh {
+        val g = MeshBuilder()
+        fun visit(i: Int, parent: Mat4) {
+            val n = nodes[i]
+            val world = parent * n.local
+            val mirrored = world.determinant3x3() < 0
             val t = n.triangles
             for (k in t.indices step TRI) {
-                val a = monde.transformPoint(Vec3(t[k], t[k + 1], t[k + 2]))
-                val b = monde.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
-                val c = monde.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
-                val couleur = Couleur(t[k + 9], t[k + 10], t[k + 11])
-                // Normales par face recalculées pour les aplats, y compris après une échelle négative.
-                if (miroir) g.triangle(a, c, b, couleur) else g.triangle(a, b, c, couleur)
+                val a = world.transformPoint(Vec3(t[k], t[k + 1], t[k + 2]))
+                val b = world.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
+                val c = world.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
+                val color = Color(t[k + 9], t[k + 10], t[k + 11])
+                // Face normals recomputed, also after a negative scale.
+                if (mirrored) g.triangle(a, c, b, color) else g.triangle(a, b, c, color)
             }
-            for (e in n.enfants) visiter(e, monde)
+            for (e in n.children) visit(e, world)
         }
-        for (r in racines) visiter(r, Mat4.IDENTITY)
-        return g.construire().lisse()
+        for (r in roots) visit(r, Mat4.IDENTITY)
+        return g.build().smooth()
     }
 
     /**
      * The scene in its rest pose as world-space triangles for collision (9 floats each, same winding
-     * as [aplatir]) and, for each triangle, its material index in [materiaux] (−1: none).
+     * as [flatten]) and, for each triangle, its material index in [materials] (−1: none).
      */
     fun surfaces(): Pair<FloatArray, IntArray> {
         val pos = ArrayList<Float>(); val mat = ArrayList<Int>()
-        fun visiter(i: Int, parent: Mat4) {
-            val n = noeuds[i]
-            val monde = parent * n.local
-            val miroir = monde.determinant3x3() < 0
+        fun visit(i: Int, parent: Mat4) {
+            val n = nodes[i]
+            val world = parent * n.local
+            val mirrored = world.determinant3x3() < 0
             val t = n.triangles
             for (k in t.indices step TRI) {
-                val pts = (0..2).map { v -> monde.transformPoint(Vec3(t[k + 3 * v], t[k + 3 * v + 1], t[k + 3 * v + 2])) }
-                for (p in if (miroir) listOf(pts[0], pts[2], pts[1]) else pts) { pos.add(p.x); pos.add(p.y); pos.add(p.z) }
+                val pts = (0..2).map { v -> world.transformPoint(Vec3(t[k + 3 * v], t[k + 3 * v + 1], t[k + 3 * v + 2])) }
+                for (p in if (mirrored) listOf(pts[0], pts[2], pts[1]) else pts) { pos.add(p.x); pos.add(p.y); pos.add(p.z) }
                 mat.add(t[k + 12].toInt())
             }
-            for (e in n.enfants) visiter(e, monde)
+            for (e in n.children) visit(e, world)
         }
-        for (r in racines) visiter(r, Mat4.IDENTITY)
+        for (r in roots) visit(r, Mat4.IDENTITY)
         return pos.toFloatArray() to mat.toIntArray()
     }
 
     /** New parts for one instance: one per node that has triangles. */
-    fun parties(): List<Partie> = ordre.filter { it in maillagesLocaux }.map { Partie(it, maillagesLocaux.getValue(it)) }
+    fun parts(): List<Part> = order.filter { it in localMeshes }.map { Part(it, localMeshes.getValue(it)) }
 }
 
-/** A drawable piece of an animated object; [pose] places it in the object's space. */
-class Partie internal constructor(val noeud: Int, val maillage: Maillage) {
+/** A drawable piece of an animated node; [pose] places it in the node's space. */
+class Part internal constructor(val node: Int, val mesh: Mesh) {
     var pose: Mat4 = Mat4.IDENTITY
         internal set
 }
 
 /**
- * Plays the clips of a [Modele] on one instance's parts. Switching clip cross-fades from the pose
+ * Plays the clips of a [Model] on one instance's parts. Switching clip cross-fades from the pose
  * reached at that moment. The pose lives in flat arrays (translation, rotation, scale per node).
  */
-class Animateur(val modele: Modele, private val parties: List<Partie>) {
-    private val n = modele.noeuds.size
+class Animator(val model: Model, private val parts: List<Part>) {
+    private val n = model.nodes.size
     private val pt = FloatArray(3 * n); private val pr = FloatArray(4 * n); private val ps = FloatArray(3 * n)
     private val ft = FloatArray(3 * n); private val fr = FloatArray(4 * n); private val fs = FloatArray(3 * n)
-    private val monde = arrayOfNulls<Mat4>(n)
+    private val world = arrayOfNulls<Mat4>(n)
     private var clip: Clip? = null
-    private var boucle = true
-    private var fondu = 0f
-    private var fonduTotal = 0f
+    private var loop = true
+    private var fade = 0f
+    private var fadeTotal = 0f
     /** Time in the current clip, in seconds of clip time. */
-    var temps = 0f
+    var time = 0f
         private set
     /** Playback rate: 1 is the authored speed. */
-    var vitesse = 1f
-    val animation: String? get() = clip?.nom
+    var speed = 1f
+    /** Name of the clip playing, if any. */
+    val current: String? get() = clip?.name
 
-    init { repos(); poser() }
+    init { rest(); pose() }
 
-    /** Current pose of the node named [nom] in the model's space, or null when the model has no such node. */
-    fun noeud(nom: String): Mat4? = modele.noeuds.indexOfFirst { it.nom == nom }.takeIf { it >= 0 }?.let { monde[it] }
+    /** Current pose of the node named [name] in the model's space, or null when the model has no such node. */
+    fun nodePose(name: String): Mat4? = model.nodes.indexOfFirst { it.name == name }.takeIf { it >= 0 }?.let { world[it] }
 
-    /** Starts [nom] unless it is already playing; [fondu] seconds of cross-fade from the current pose. */
-    fun jouer(nom: String, boucle: Boolean = true, fondu: Float = .15f, vitesse: Float = this.vitesse) {
-        val c = modele.clips[nom] ?: throw IllegalArgumentException(
-            "Animation « $nom » absente du modèle (disponibles : ${modele.clips.keys.joinToString()})")
-        this.vitesse = vitesse
-        this.boucle = boucle
+    /** Starts [name] unless it is already playing; [fade] seconds of cross-fade from the current pose. */
+    fun play(name: String, loop: Boolean = true, fade: Float = .15f, speed: Float = this.speed) {
+        val c = model.clips[name] ?: throw IllegalArgumentException(
+            "No animation « $name » in the model (it has: ${model.clips.keys.joinToString()})")
+        this.speed = speed
+        this.loop = loop
         if (c === clip) return
         pt.copyInto(ft); pr.copyInto(fr); ps.copyInto(fs)
-        this.fondu = fondu; fonduTotal = fondu
-        clip = c; temps = 0f
+        this.fade = fade; fadeTotal = fade
+        clip = c; time = 0f
     }
 
-    fun avancer(dt: Float) {
-        temps += dt * vitesse
-        echantillonner()
-        if (fondu > 0f) {
-            fondu -= dt
-            if (fondu > 0f) melanger(1f - fondu / fonduTotal)
+    fun advance(dt: Float) {
+        time += dt * speed
+        sample()
+        if (fade > 0f) {
+            fade -= dt
+            if (fade > 0f) blend(1f - fade / fadeTotal)
         }
-        poser()
+        pose()
     }
 
-    private fun repos() {
+    private fun rest() {
         for (i in 0 until n) {
-            val nd = modele.noeuds[i]
+            val nd = model.nodes[i]
             pt[3 * i] = nd.translation.x; pt[3 * i + 1] = nd.translation.y; pt[3 * i + 2] = nd.translation.z
             pr[4 * i] = nd.rotation.x; pr[4 * i + 1] = nd.rotation.y; pr[4 * i + 2] = nd.rotation.z; pr[4 * i + 3] = nd.rotation.w
-            ps[3 * i] = nd.echelle.x; ps[3 * i + 1] = nd.echelle.y; ps[3 * i + 2] = nd.echelle.z
+            ps[3 * i] = nd.scale.x; ps[3 * i + 1] = nd.scale.y; ps[3 * i + 2] = nd.scale.z
         }
     }
 
-    private fun echantillonner() {
-        repos()
+    private fun sample() {
+        rest()
         val c = clip ?: return
         val x = when {
-            c.duree <= 0f -> 0f
-            boucle -> temps.mod(c.duree)
-            else -> minOf(temps, c.duree)
+            c.duration <= 0f -> 0f
+            loop -> time.mod(c.duration)
+            else -> minOf(time, c.duration)
         }
-        for (canal in c.canaux) echantillon(canal, x)
+        for (channel in c.channels) sample(channel, x)
     }
 
-    private fun echantillon(c: Canal, x: Float) {
-        val k = c.chemin.composantes
-        val dst = when (c.chemin) { Chemin.TRANSLATION -> pt; Chemin.ROTATION -> pr; Chemin.ECHELLE -> ps }
-        val base = c.noeud * k
-        val t = c.temps; val v = c.valeurs
+    private fun sample(c: Channel, x: Float) {
+        val k = c.target.components
+        val dst = when (c.target) { ChannelTarget.TRANSLATION -> pt; ChannelTarget.ROTATION -> pr; ChannelTarget.SCALE -> ps }
+        val base = c.node * k
+        val t = c.times; val v = c.values
         if (t.size == 1 || x <= t[0]) { v.copyInto(dst, base, 0, k); return }
         if (x >= t[t.size - 1]) { v.copyInto(dst, base, (t.size - 1) * k, t.size * k); return }
         var lo = 0; var hi = t.size - 1
         while (hi - lo > 1) { val mid = (lo + hi) ushr 1; if (t[mid] <= x) lo = mid else hi = mid }
-        if (c.palier) { v.copyInto(dst, base, lo * k, lo * k + k); return }
+        if (c.step) { v.copyInto(dst, base, lo * k, lo * k + k); return }
         val u = (x - t[lo]) / (t[hi] - t[lo])
-        if (c.chemin == Chemin.ROTATION) slerpInto(v, lo * 4, v, hi * 4, u, dst, base)
+        if (c.target == ChannelTarget.ROTATION) slerpInto(v, lo * 4, v, hi * 4, u, dst, base)
         else for (j in 0 until k) dst[base + j] = v[lo * k + j] + (v[hi * k + j] - v[lo * k + j]) * u
     }
 
     /** Pose = frozen pose → sampled pose at [u] ∈ [0, 1]. */
-    private fun melanger(u: Float) {
+    private fun blend(u: Float) {
         for (j in pt.indices) pt[j] = ft[j] + (pt[j] - ft[j]) * u
         for (j in ps.indices) ps[j] = fs[j] + (ps[j] - fs[j]) * u
         for (i in 0 until n) slerpInto(fr, 4 * i, pr, 4 * i, u, pr, 4 * i)
     }
 
-    private fun poser() {
-        for (i in modele.ordre) {
-            val nd = modele.noeuds[i]
-            val local = nd.matrice ?: Mat4.trs(Vec3(pt[3 * i], pt[3 * i + 1], pt[3 * i + 2]),
+    private fun pose() {
+        for (i in model.order) {
+            val nd = model.nodes[i]
+            val local = nd.matrix ?: Mat4.trs(Vec3(pt[3 * i], pt[3 * i + 1], pt[3 * i + 2]),
                 Quat(pr[4 * i], pr[4 * i + 1], pr[4 * i + 2], pr[4 * i + 3]), Vec3(ps[3 * i], ps[3 * i + 1], ps[3 * i + 2]))
-            monde[i] = if (nd.parent < 0) local else monde[nd.parent]!! * local
+            world[i] = if (nd.parent < 0) local else world[nd.parent]!! * local
         }
-        for (p in parties) p.pose = monde[p.noeud]!!
+        for (p in parts) p.pose = world[p.node]!!
     }
 }

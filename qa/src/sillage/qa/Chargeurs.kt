@@ -85,7 +85,7 @@ fun Qa.chargeurs() {
         for (nom in listOf("terrain", "village", "marin", "palmiers", "port", "caisse", "ballon")) {
             val source = ressource("models/$nom.glb")
             val longueurJson = ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN).getInt(12)
-            val b = essayer(abimer(source, rnd, cas(150, 1200), 20 until 20 + longueurJson)) { Glb.lireModele(it) }
+            val b = essayer(abimer(source, rnd, cas(150, 1200), 20 until 20 + longueurJson)) { Glb.readModel(it) }
             total.lus += b.lus; total.refuses += b.refuses; total.plantages += b.plantages; total.bloques += b.bloques
             b.exemples.forEach { (k, v) -> total.exemples.putIfAbsent(k, "$nom, $v") }
         }

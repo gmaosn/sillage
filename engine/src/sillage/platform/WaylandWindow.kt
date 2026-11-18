@@ -61,7 +61,7 @@ internal object Wl {
         val count = i.get(JAVA_INT, 12)
         val methods = i.get(ADDRESS, 16).reinterpret(24L * count)
         (0 until count).firstOrNull { Native.string(methods.get(ADDRESS, 24L * it)) == name }
-            ?: throw IllegalArgumentException("Requête Wayland $name absente de ${Native.string(i.get(ADDRESS, 0))}")
+            ?: throw IllegalArgumentException("No Wayland request $name in ${Native.string(i.get(ADDRESS, 0))}")
     }
 }
 
@@ -173,7 +173,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     private var mouseDx = 0f; private var mouseDy = 0f
     private var scroll = 0f
     private var discreteThisFrame = false
-    private val keys = BooleanArray(Key.COUNT)
+    private val keys = BooleanArray(KEY_COUNT)
 
     override var shouldClose = false; private set
     // Une fenêtre Wayland n'apparaît qu'après sa première image, et n'a le focus qu'une fois apparue :
@@ -188,7 +188,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
 
     init {
         display = PSig.P_P.invokeExact(Wl.connect, NULL) as MemorySegment
-        check(display != NULL) { "Connexion au compositeur Wayland impossible (WAYLAND_DISPLAY=${System.getenv("WAYLAND_DISPLAY")})" }
+        check(display != NULL) { "Cannot connect to the Wayland compositor (WAYLAND_DISPLAY=${System.getenv("WAYLAND_DISPLAY")})" }
         try {
             val target = MethodHandles.lookup().findVirtual(WaylandWindow::class.java, "dispatch", MethodType.methodType(
                 Int::class.javaPrimitiveType, MemorySegment::class.java, MemorySegment::class.java, Int::class.javaPrimitiveType,
@@ -198,7 +198,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
             registry = request(display, "get_registry", Wl.registry, 0, null)
             listen(registry) { event, a -> if (event == "global") global(a.u(0), a.s(1), a.u(2)) }
             roundtrip()
-            check(compositor != NULL && wmBase != NULL) { "Le compositeur n'offre pas wl_compositor et xdg_wm_base" }
+            check(compositor != NULL && wmBase != NULL) { "The compositor offers no wl_compositor and xdg_wm_base" }
             roundtrip() // capacités du siège, pointeur et clavier
 
             surface = request(compositor, "create_surface", Wl.surface, 0, null)
@@ -234,7 +234,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
                 request(decoration, "set_mode", null, 0, 2 /* server_side */)
             }
             request(surface, "commit", null, 0)
-            while (!configured) { roundtrip(); check(!shouldClose) { "Fenêtre fermée avant d'être configurée" } }
+            while (!configured) { roundtrip(); check(!shouldClose) { "Window closed before it was configured" } }
         } catch (t: Throwable) { close(); throw t }
     }
 
@@ -310,7 +310,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
         }
     }
 
-    private fun setKey(code: Int, down: Boolean) { if (code in 0 until Key.COUNT) keys[code] = down }
+    private fun setKey(code: Int, down: Boolean) { if (code in 0 until KEY_COUNT) keys[code] = down }
 
     private fun applyCapture() {
         if (pointer == NULL) return
@@ -360,7 +360,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
         checkHealth()
     }
 
-    override fun isDown(key: Int) = key in 0 until Key.COUNT && keys[key]
+    override fun isDown(key: Int) = key in 0 until KEY_COUNT && keys[key]
 
     override fun consumeMouseDelta(): FloatArray { val d = floatArrayOf(mouseDx, mouseDy); mouseDx = 0f; mouseDy = 0f; return d }
     override fun consumeScroll(): Float { val s = scroll; scroll = 0f; return s }
@@ -394,7 +394,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
                 is Double -> array.set(JAVA_INT, 8L * i, (v * 256).toInt())
                 is String -> array.set(ADDRESS, 8L * i, s.allocateFrom(v))
                 is MemorySegment -> array.set(ADDRESS, 8L * i, v)
-                else -> throw IllegalArgumentException("Argument Wayland non pris en charge : $v")
+                else -> throw IllegalArgumentException("Unsupported Wayland argument: $v")
             }
         }
         // Un objet créé prend la version de son parent, sauf avec wl_registry.bind qui la choisit.
@@ -408,9 +408,9 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     }
 
     private fun listen(proxy: MemorySegment, handler: (String, MemorySegment) -> Unit) {
-        check(proxy != NULL) { "Objet Wayland non créé" }
+        check(proxy != NULL) { "Wayland object not created" }
         handlers[proxy.address()] = handler
-        check((PSig.I_PPPP.invokeExact(Wl.addDispatcher, proxy, dispatcher, NULL, NULL) as Int) == 0) { "wl_proxy_add_dispatcher a échoué" }
+        check((PSig.I_PPPP.invokeExact(Wl.addDispatcher, proxy, dispatcher, NULL, NULL) as Int) == 0) { "wl_proxy_add_dispatcher failed" }
     }
 
     /** The single event entry point, called from libwayland during dispatch. Never throws. */
@@ -433,9 +433,9 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     private fun flush() { (PSig.I_P.invokeExact(Wl.flush, display) as Int) }
 
     private fun checkHealth() {
-        failure?.let { failure = null; throw IllegalStateException("Erreur dans un événement Wayland", it) }
+        failure?.let { failure = null; throw IllegalStateException("Error in a Wayland event", it) }
         val error = PSig.I_P.invokeExact(Wl.getError, display) as Int
-        check(error == 0) { "Erreur de protocole Wayland (errno $error)" }
+        check(error == 0) { "Wayland protocol error (errno $error)" }
     }
 
     private fun MemorySegment.u(i: Int): Int = get(JAVA_INT, 8L * i)
