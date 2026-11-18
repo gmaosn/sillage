@@ -1,5 +1,6 @@
 package sillage.physics
 
+import sillage.math.Quat
 import sillage.math.Vec3
 import kotlin.math.abs
 import kotlin.math.max
@@ -10,13 +11,7 @@ import kotlin.math.sqrt
 class RayHit(val distance: Float, val point: Vec3, val normal: Vec3, val body: Body?, val material: Material?)
 
 /** Pose of body [i] from its current position and rotation (queries run between steps). */
-internal fun PhysicsWorld.poseOf(i: Int): Pose {
-    val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
-    return Pose(Vec3(px[i], py[i], pz[i]),
-        Vec3(1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)),
-        Vec3(2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)),
-        Vec3(2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)))
-}
+internal fun PhysicsWorld.poseOf(i: Int): Pose = poseOf(Vec3(px[i], py[i], pz[i]), Quat(qx[i], qy[i], qz[i], qw[i]))
 
 /**
  * Casts a ray from [origin] along [direction] up to [maxDistance]. With [radius] > 0 the ray is a
@@ -126,7 +121,7 @@ internal class Touches {
     fun clear() { points.clear(); normals.clear(); separations.clear(); bodies.clear(); materials.clear() }
 }
 
-internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, exclude: Int, out: Touches) {
+internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, exclude: Int, out: Touches, meshes: Boolean = true) {
     out.clear()
     val scratch = ContactPoints()
     val reach = shape.boundingRadius + margin
@@ -145,8 +140,9 @@ internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, excl
         collide(shapes[i]!!, poseOf(i), shape, pose, margin, scratch)
         take(i, null)
     }
+    if (!meshes) return
     val found = IntList(); val stack = IntList()
-    for (mesh in meshes) {
+    for (mesh in this.meshes) {
         found.clear()
         mesh.query(pose.p.x - reach, pose.p.y - reach, pose.p.z - reach, pose.p.x + reach, pose.p.y + reach, pose.p.z + reach, found, stack)
         for (f in 0 until found.size) {

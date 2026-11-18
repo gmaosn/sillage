@@ -246,8 +246,11 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private val pairsA = IntList(); private val pairsB = IntList()
     private val found = IntList(); private val stack = IntList()
     private val scratch = ContactPoints()
+    internal val triggers = ArrayList<Trigger>()
+    internal val triggerScratch = Touches()
+    private val events = ArrayList<() -> Unit>()
 
-    /** Advances the simulation by [dt] seconds. */
+    /** Advances the simulation by [dt] seconds, then tells the [Trigger]s who came in and who left. */
     fun step(dt: Float) {
         if (dt <= 0f || count == 0) return
         val h = dt / substeps
@@ -270,6 +273,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         // Les points de ce pas deviennent « précédents » ; l'autre ensemble servira au pas suivant.
         points.keep()
         val spare = previous; previous = points; points = spare
+        // Zones last, and their callbacks after every zone is checked: a callback may move or add things.
+        if (triggers.isNotEmpty()) {
+            events.clear()
+            for (k in triggers.indices) triggers[k].check(events)
+            for (e in events) e()
+        }
     }
 
     private fun moving(i: Int) = when (types[i]) {

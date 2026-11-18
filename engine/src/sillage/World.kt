@@ -10,7 +10,9 @@ import sillage.physics.Character
 import sillage.physics.Material
 import sillage.physics.PhysicsWorld
 import sillage.physics.Sphere
+import sillage.physics.Trigger
 import sillage.physics.TriangleMesh
+import sillage.physics.addTrigger
 import sillage.physics.groundBelow
 import sillage.physics.raycast
 import kotlin.math.*
@@ -53,6 +55,7 @@ class Monde {
     lateinit var joueur: Joueur
         private set
     val coquillages = ArrayList<Objet>()
+    private val zonesCoquillages = ArrayList<Trigger>()
     var recoltes = 0
     val camera = Camera()
     var temps = 0f
@@ -149,6 +152,14 @@ class Monde {
         for(i in 0..5) { g.triangle(top,ring[i],ring[(i+1)%6],color); g.triangle(bottom,ring[(i+1)%6],ring[i],color) }
         val o=Objet(g.construire()); o.position=Vec3(x,sol(x,z)+.65f,z)
         objets.add(o); coquillages.add(o)
+        // Une zone autour du coquillage : le marin le ramasse en y entrant.
+        val zone=corps.addTrigger(Sphere(.8f),o.position)
+        zone.filter={ it.tag is Character }
+        zone.onEnter={
+            zone.enabled=false; o.visible=false; recoltes++; celebration=.9f
+            println("Coquillages : " + recoltes + "/" + coquillages.size)
+        }
+        zonesCoquillages.add(zone)
     }
     /** Rapproche l'angle [de] de [vers] d'au plus [pas] radians, par le plus court chemin. */
     private fun tourner(de: Float, vers: Float, pas: Float): Float {
@@ -192,7 +203,10 @@ class Monde {
         }
     }
 
-    fun reinitialiser() { joueur.reapparaitre(); recoltes=0; coquillages.forEach { it.visible=true } }
+    fun reinitialiser() {
+        joueur.reapparaitre(); recoltes=0
+        coquillages.forEach { it.visible=true }; zonesCoquillages.forEach { it.enabled=true }
+    }
 
     /** Une image de jeu : [mouvement] voulu (−1..1 par axe, déjà tourné selon la caméra), [marche] avec Maj. */
     fun miseAJour(mouvement: Vec3, saut: Boolean, dt: Float, marche: Boolean = false) {
@@ -204,13 +218,7 @@ class Monde {
         corps.step(dt.coerceIn(1f/240f,1f/30f))
         for((o,b) in lies) { o.position=b.position; o.orientation=b.rotation }
         placerOmbres()
-        coquillages.forEachIndexed { i,o ->
-            o.rotation=temps*1.1f+i
-            if(o.visible && joueur.position.plus(0f,.4f,0f).distanceTo(o.position)<1.15f) {
-                o.visible=false; recoltes++; celebration=.9f
-                println("Coquillages : " + recoltes + "/" + coquillages.size)
-            }
-        }
+        coquillages.forEachIndexed { i,o -> o.rotation=temps*1.1f+i }
     }
 }
 
