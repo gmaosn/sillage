@@ -12,8 +12,9 @@ import javax.imageio.ImageIO
 import kotlin.math.*
 
 /** Rend l'île sans fenêtre et sans son ; rend le bilan, l'image est écrite dans [capture]. */
-fun rendreIle(capture: Path?, images: Int, vue: String? = null, taille: String? = null): RunReport {
+fun rendreIle(capture: Path?, images: Int, vue: String? = null, taille: String? = null, heure: Float? = null): RunReport {
     val args = ArrayList(listOf("--headless", "--mute", "--frames", images.toString()))
+    if (heure != null) args += listOf("--hour", heure.toString())
     if (capture != null) { Files.createDirectories(capture.parent); args += listOf("--capture", capture.toString()) }
     if (vue != null) args += listOf("--look-at", vue)
     if (taille != null) args += listOf("--size", taille)
@@ -41,16 +42,18 @@ fun Qa.rendu() {
     val dossier = Path.of("build/qa/images"); val refs = Path.of("qa/reference")
     val vues = linkedMapOf(
         "ile" to "0,14,20,0,1,0", "maison" to "-0.5,3.2,3.5,-3,2.2,-2", "ponton" to "1,3,15,-2.5,0.8,10",
-        "phare" to "8,4,2,4,4,-3", "marin" to "0.9,2.75,1.7,-1,2.35,4")
+        "phare" to "8,4,2,4,4,-3", "marin" to "0.9,2.75,1.7,-1,2.35,4", "nuit" to "12.5,3.4,8.5,2,1.6,-1")
+    // La nuit : le feu de camp (flammes, étincelles, fumée, lumière), la lampe du phare, les fenêtres, les lucioles.
+    val heures = mapOf("nuit" to 21.5f)
     for ((nom, vue) in vues) {
         val ref = refs.resolve("vue-$nom.png"); val img = dossier.resolve("vue-$nom.png")
         if (refaire || !Files.exists(ref)) {
             info("vue « $nom » : image de référence") {
-                rendreIle(img, 60, vue); Files.createDirectories(refs); Files.copy(img, ref, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                rendreIle(img, 60, vue, heure = heures[nom]); Files.createDirectories(refs); Files.copy(img, ref, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                 "référence enregistrée dans $ref"
             }
         } else controle("vue « $nom » comparée à la référence", "≤ 0,2 % de pixels, écart moyen ≤ 0,5") {
-            rendreIle(img, 60, vue)
+            rendreIle(img, 60, vue, heure = heures[nom])
             val (part, moyen) = comparer(ImageIO.read(img.toFile()), ImageIO.read(ref.toFile()))
             "${pct(part)} de pixels différents, écart moyen ${f2(moyen)}" to (part <= .002 && moyen <= .5)
         }

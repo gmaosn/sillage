@@ -55,6 +55,10 @@ class Player internal constructor(scene: Scene, val character: Character, var sp
     val animations = PlayerAnimations()
     /** Footsteps, jump and landing sounds. */
     var sounds = true
+    /** A puff of dust when it lands on sand or a path, a splash when it falls into water. */
+    var effects = true
+    internal var fxAir = 0f
+    internal var fxGrounded = true
 
     /** Where its feet are; setting it teleports it. */
     override var position: Vec3

@@ -56,20 +56,25 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         for (r in roots) visit(r)
     }.toIntArray()
 
-    /** Each node's triangles as a mesh in node space, shared by every instance of the model. */
+    /** Each node's triangles as a mesh in node space (knowing each triangle's material), shared by every instance of the model. */
     private val localMeshes: Map<Int, Mesh> by lazy {
         order.filter { nodes[it].triangles.isNotEmpty() }.associateWith { i ->
-            val g = MeshBuilder(); val t = nodes[i].triangles
-            for (k in t.indices step TRI)
+            val g = MeshBuilder(); val t = nodes[i].triangles; val mats = ArrayList<Int>()
+            for (k in t.indices step TRI) {
+                val before = g.triangleCount
                 g.triangle(Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]),
                     Color(t[k + 9], t[k + 10], t[k + 11]))
-            g.build().smooth()
+                if (g.triangleCount > before) mats.add(t[k + 12].toInt())
+            }
+            g.build().smooth().withMaterials(mats.toIntArray())
         }
     }
 
-    /** The whole scene in its rest pose as one world-space mesh (static models). */
-    fun flatten(): Mesh {
-        val g = MeshBuilder()
+    /** The whole scene in its rest pose as one world-space mesh (static models), knowing each triangle's material. */
+    fun flatten(): Mesh = flat
+
+    private val flat: Mesh by lazy {
+        val g = MeshBuilder(); val mats = ArrayList<Int>()
         fun visit(i: Int, parent: Mat4) {
             val n = nodes[i]
             val world = parent * n.local
@@ -80,13 +85,15 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                 val b = world.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
                 val c = world.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
                 val color = Color(t[k + 9], t[k + 10], t[k + 11])
-                // Face normals recomputed, also after a negative scale.
+                // Face normals recomputed, also after a negative scale; degenerate triangles are skipped.
+                val before = g.triangleCount
                 if (mirrored) g.triangle(a, c, b, color) else g.triangle(a, b, c, color)
+                if (g.triangleCount > before) mats.add(t[k + 12].toInt())
             }
             for (e in n.children) visit(e, world)
         }
         for (r in roots) visit(r, Mat4.IDENTITY)
-        return g.build().smooth()
+        g.build().smooth().withMaterials(mats.toIntArray())
     }
 
     /**
@@ -116,7 +123,10 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
 }
 
 /** A drawable piece of an animated node; [pose] places it in the node's space. */
-class Part internal constructor(val node: Int, val mesh: Mesh) {
+class Part internal constructor(val node: Int, mesh: Mesh) {
+    /** Its triangles (in its node's space). */
+    var mesh: Mesh = mesh
+        internal set
     var pose: Mat4 = Mat4.IDENTITY
         internal set
 }

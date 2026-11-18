@@ -23,7 +23,7 @@ class PointLight internal constructor(
 ) {
     var enabled = true
     internal var removed = false
-    internal val seed = (Math.random() * 1000).toFloat()
+    internal var seed = 0f
 
     /** Where it is in the world now. */
     val worldPosition: Vec3 get() = node?.let { it.position + it.rotation.rotate(position * it.scale) } ?: position
@@ -71,16 +71,19 @@ class ParticleStyle(
 
 /** Ready-made particle styles. */
 object Particles {
-    val FIRE = ParticleStyle(Color(1f, .62f, .18f), Color(.9f, .16f, .04f), size = .16f, endSize = .04f, life = .8f, speed = 1.1f,
-        spread = 14f, area = .18f, gravity = -1.2f, drag = 1.5f, wander = .25f, wind = .2f, glow = true, brightness = 3.2f)
-    val SMOKE = ParticleStyle(Color(.30f, .29f, .30f), Color(.62f, .62f, .64f), size = .12f, endSize = .7f, life = 3.2f, speed = .9f,
-        spread = 12f, area = .1f, gravity = -.35f, drag = .8f, wander = .15f, wind = .8f, opacity = .5f)
+    /** Flames: bright yellow at the root, red and thin at the tips (about 60 per second for a campfire). */
+    val FIRE = ParticleStyle(Color(1f, .78f, .30f), Color(.85f, .12f, .03f), size = .12f, endSize = .02f, life = .65f, speed = 1.2f,
+        spread = 12f, area = .16f, gravity = -1.6f, drag = 1.6f, wander = .35f, wind = .2f, glow = true, brightness = 2.6f)
+    val SMOKE = ParticleStyle(Color(.42f, .41f, .42f), Color(.78f, .78f, .80f), size = .14f, endSize = .65f, life = 3.4f, speed = .8f,
+        spread = 12f, area = .08f, gravity = -.35f, drag = .8f, wander = .15f, wind = .8f, opacity = .38f)
     val SPARKS = ParticleStyle(Color(1f, .85f, .4f), Color(1f, .35f, .08f), size = .03f, endSize = .015f, life = 1.2f, speed = 2.4f,
         spread = 25f, gravity = -.4f, drag = .9f, wander = .9f, wind = .3f, glow = true, brightness = 4f, twinkle = .5f)
+    /** Drops thrown up by something falling into water (made by the scene itself). */
     val SPLASH = ParticleStyle(Color(.85f, .95f, 1f), Color(.75f, .9f, 1f), size = .07f, endSize = .03f, life = .7f, speed = 3f,
         spread = 35f, area = .2f, gravity = 9.8f, drag = .3f, opacity = .9f)
     val SPRAY = ParticleStyle(Color(.95f, .98f, 1f), size = .05f, endSize = .2f, life = 1.1f, speed = 1.4f, spread = 40f, area = .3f,
         gravity = 2f, drag = 1f, wind = .5f, opacity = .45f)
+    /** A puff of dust (players landing on sand or a path). */
     val DUST = ParticleStyle(Color(.80f, .68f, .48f), Color(.86f, .78f, .62f), size = .05f, endSize = .2f, life = .7f, speed = .9f,
         spread = 70f, area = .12f, gravity = .8f, drag = 3f, wind = .3f, opacity = .55f)
     val FIREFLIES = ParticleStyle(Color(.75f, 1f, .35f), size = .035f, life = 6f, lifeSpread = .4f, speed = .2f, spread = 180f,

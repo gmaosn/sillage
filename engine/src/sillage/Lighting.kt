@@ -143,7 +143,7 @@ class Lighting {
         fun c(r: Float, g: Float, b: Float) = Color(r, g, b)
         /** The light of the day by the sun's height (sine of its elevation); by night the main light is the moon's. */
         val KEYS = listOf(
-            Key(-.30f, c(.20f, .26f, .45f), c(.07f, .09f, .20f), c(.10f, .14f, .28f), c(.05f, .05f, .08f),
+            Key(-.30f, c(.15f, .21f, .42f), c(.06f, .08f, .19f), c(.08f, .12f, .27f), c(.04f, .04f, .07f),
                 c(.006f, .012f, .04f), c(.015f, .03f, .08f), c(.035f, .06f, .13f), c(0f, 0f, 0f)),
             Key(-.12f, c(.17f, .19f, .36f), c(.09f, .10f, .22f), c(.15f, .16f, .32f), c(.07f, .06f, .09f),
                 c(.02f, .03f, .09f), c(.06f, .06f, .16f), c(.20f, .12f, .21f), c(.55f, .22f, .16f)),

@@ -14,6 +14,9 @@ fun main(args: Array<String>) { game("Sillage - Les Alizés", args, island) }
 /** L'île, aussi utilisée par le contrôle qualité (module qa). */
 val island: Scene.() -> Unit = {
     fallLimit = -6f
+    // L'heure de l'île : fin d'après-midi au départ, une journée entière en dix minutes (T fait filer le temps).
+    lighting.time = 16.5f
+    lighting.dayLength = 600f
     water(level = -.22, color = Color.hex(0x3AAFD0), shallows = Color.hex(0xA6EDE2), reach = 7)
     model("models/terrain.glb").solid()              // herbe, sable et bois du ponton : chacun sa surface
     val village = model("models/village.glb")
@@ -21,6 +24,7 @@ val island: Scene.() -> Unit = {
     village.solid("toit")
     model("models/palmiers.glb").play("vent")
     val port = model("models/port.glb").play("vie")
+    lightsAndLife(village, port)
     model("models/ciel.glb").play("vol").castsShadow = false       // nuages et mouettes : trop haut pour une ombre nette
     // La barque se visite et tangue avec la houle : son pont elliptique en deux boîtes, son mât.
     port.collider(Box(.7f, .25f, .75f), vec(0, -.04, 0), part = "bateau")
@@ -49,7 +53,11 @@ val island: Scene.() -> Unit = {
     val shell = shellMesh()
     for ((k, xz) in listOf(-4f to 4f, 3f to 4f, 7f to -2f, -7f to -3f, 2f to -6f, -1.8f to 9.3f).withIndex()) {
         val (x, z) = xz
-        pickup(mesh(shell, at = vec(x, groundHeight(x, z) + .65f, z)).rotate(y = k * 57).spin(63)) { println("Coquillages : ${pickups.count { it.collected }}/${pickups.size}") }
+        val at = vec(x, groundHeight(x, z) + .65f, z)
+        pickup(mesh(shell, at = at).rotate(y = k * 57).spin(63)) {
+            burst(Particles.SPARKLE, at, 28)
+            println("Coquillages : ${pickups.count { it.collected }}/${pickups.size}")
+        }
     }
 
     // Corps rigides : on peut les pousser, les faire tomber, taper dans le ballon.
@@ -75,6 +83,41 @@ val island: Scene.() -> Unit = {
     camera.switchKey = Key.V
 
     interfaceAlizes()
+}
+
+/**
+ * Ce qui vit sur l'île : l'herbe, les fleurs et les buissons au vent ; les fenêtres, la lanterne du ponton
+ * et la lampe du phare qui s'allument au crépuscule ; le feu de camp de la plage (flammes, étincelles,
+ * fumée, lumière qui vacille) ; la fumée de la cheminée ; les lucioles la nuit.
+ */
+private fun Scene.lightsAndLife(village: Node, port: Node) {
+    village.sway(.07, "touffe", "fleur_*", reach = .3)
+    village.sway(.035, "buisson", "buisson_fonce", "baie", reach = .8)
+
+    val warm = Color.hex(0xFFC870)
+    village.glow(Color.hex(0xFFB85C), "vitre", intensity = 2.4, atNight = true)
+    village.glow(warm, "lampe", intensity = 5, atNight = true)
+    port.glow(Color.hex(0xFFE9B0), "lampe", intensity = 7, atNight = true)
+    village.glow(Color.hex(0xFF6A1E), "braise", intensity = 3.5)
+    light(warm, intensity = 1.6, radius = 6, at = vec(-.85, 2.5, 12.35), onlyAtNight = true, flicker = .15)    // lanterne du ponton
+    light(Color.hex(0xFFB060), intensity = 1.2, radius = 5, at = vec(-3, 2.4, -.3), onlyAtNight = true)        // fenêtres de la maison
+
+    // Le feu de camp : toujours allumé, sa lumière compte surtout le soir.
+    val fire = vec(8, groundHeight(8, 2.4), 2.4)
+    val glow = light(Color.hex(0xFF9440), intensity = 1.6, radius = 7, at = fire + vec(0, .55, 0), flicker = 1)
+    emit(Particles.FIRE, at = fire + vec(0, .1, 0), rate = 70)
+    emit(Particles.SPARKS, at = fire + vec(0, .25, 0), rate = 5)
+    emit(Particles.SMOKE, at = fire + vec(0, .75, 0), rate = 4)
+    block(8f, 2.4f, .95f, .5f, .95f, thin = true)
+    emit(Particles.SMOKE, at = vec(-2.0, 4.75, -2.6), rate = 3.5)                     // cheminée
+
+    // Les lucioles sortent à la nuit, au-dessus de l'herbe.
+    val fireflies = emit(Particles.FIREFLIES, at = vec(0, groundHeight(0, 0) + .7f, 0), rate = 7)
+    onUpdate {
+        glow.intensity = .6f + .9f * lighting.night
+        fireflies.enabled = lighting.night > .45f
+        if (input.isDown(Key.T)) lighting.time = (lighting.time ?: 12f) + it * 1.5f    // une heure et demie par seconde
+    }
 }
 
 /** Un volume de collision invisible posé sur le terrain (ou à la hauteur [base]). */
@@ -111,12 +154,19 @@ private fun Scene.interfaceAlizes() {
         hud.text(text, 0, y, size, color, Hud.Anchor.TOP))
     val title = shadowed("LES ALIZES", 46, 5, gold) + shadowed("UNE ILE, SIX COQUILLAGES", 96, 1.75, paper)
 
-    hud.panel(24, 24, 196, 36, ink, Hud.Anchor.TOP_RIGHT, opacity = .72)
+    val counter = hud.panel(24, 24, 196, 56, ink, Hud.Anchor.TOP_RIGHT, opacity = .72)
     hud.text({ "COQUILLAGES  ${pickups.count { it.collected }} / ${pickups.size}" }, 42, 36.75, 1.5, paper, Hud.Anchor.TOP_RIGHT)
+    // L'heure, refaite seulement quand la minute change (le texte est relu à chaque image).
+    var minute = -1; var hour = ""
+    hud.text({
+        val m = ((lighting.time ?: 12f) * 60).toInt()
+        if (m != minute) { minute = m; hour = "HEURE  %02d:%02d".format(m / 60 % 24, m % 60) }
+        hour
+    }, 42, 61, 1.25, gold, Hud.Anchor.TOP_RIGHT)
 
     val help = listOf(hud.panel(24, 24, 912, 48, ink, Hud.Anchor.BOTTOM_LEFT, opacity = .7),
         hud.text("ZQSD / WASD  BOUGER    MAJ  MARCHER    ESPACE  SAUTER    SOURIS  CAMERA", 42, 49.5, 1.5, paper, Hud.Anchor.BOTTOM_LEFT),
-        hud.text("MOLETTE  ZOOM    V  VUE    M  SON    R  RECOMMENCER    TAB  SOURIS    ECHAP  QUITTER", 42, 33.25, 1.25, gold, Hud.Anchor.BOTTOM_LEFT))
+        hud.text("MOLETTE  ZOOM    V  VUE    T  HEURE    M  SON    R  RECOMMENCER    TAB  SOURIS    ECHAP  QUITTER", 42, 33.25, 1.25, gold, Hud.Anchor.BOTTOM_LEFT))
     val helpKey = hud.text("H  AIDE", 24, 24, 1.25, paper, Hud.Anchor.BOTTOM_RIGHT)
     val treasure = listOf(hud.panel(0, -68, 520, 84, ink, Hud.Anchor.CENTER, opacity = .85),
         hud.text("TRESOR DES ALIZES", 0, -81.5, 3, gold, Hud.Anchor.CENTER),
@@ -133,6 +183,7 @@ private fun Scene.interfaceAlizes() {
         val fadeHelp = ((helpUntil - time) / .6f).coerceIn(0f, 1f)
         help.forEachIndexed { k, e -> e.opacity = fadeHelp * (if (k == 0) .7f else 1f); e.visible = fadeHelp > 0f }
         helpKey.visible = fadeHelp < 1f
+        counter.color = ink.mix(Color.hex(0x3D6E7C), Math.round(lighting.night * 16) / 16f)   // la nuit, le panneau se détache du ciel
         val all = pickups.isNotEmpty() && pickups.all { it.collected }
         treasure.forEach { it.visible = all }
         hud.mouseHint = if (all) null else "TAB POUR CAPTURER LA SOURIS"

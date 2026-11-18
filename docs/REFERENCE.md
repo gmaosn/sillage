@@ -62,6 +62,12 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `time`, `fps` | seconds since the start; frames per second over the last half second |
 | `fallLimit` | a player below this height (−10) respawns |
 | `groundHeight(x, z)` | height of the solid meshes under a point, 0 where there are none |
+| `autoTextures` | models (and `ground`) get ready-made textures from their material names (true); set it before adding them |
+| **Lamps and particles** | |
+| `light(color = warm, intensity = 1.5, radius = 6, at, onlyAtNight = false, flicker = 0)` | a `PointLight` |
+| `lights`, `removeLight(light)` | the lamps; the 16 nearest the camera are drawn |
+| `emit(style, at, rate = 20)`, `removeEmitter(emitter)` | an `Emitter`: `rate` particles per second |
+| `burst(style, at, count = 12, direction = style.direction)` | particles all at once |
 | **Time and events** | |
 | `onUpdate { dt -> … }` | every frame, with the frame's duration |
 | `onKey(key) { … }` | when a key goes down |
@@ -101,7 +107,12 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `play(clip, loop = true, speed = 1, fade = .15)` | plays a clip of its model, cross-fading |
 | `onUpdate { dt -> … }` | every frame, with the node as receiver |
 | `spin(degreesPerSecond = 90, axis = Y)` | turns on itself |
-| `remove()` | |
+| `texture(texture, vararg materials, tile, strength)` | lays a `Texture` (null: none) on it, or on the triangles of `materials` |
+| `glow(color, vararg materials, intensity = 1, atNight = false)` | its own light (above 1 it blooms), or only at night |
+| `sway(metres = .05, vararg materials, reach = 1)` | moves in the wind, less near the ground; materials may end with `*` |
+| `light(color, intensity, radius, offset, onlyAtNight, flicker)` | a `PointLight` that follows it |
+| `emit(style, rate = 20, offset)` | an `Emitter` that follows it |
+| `remove()` | also removes its lamps and emitters |
 
 `Impact` is the sound a body makes when it hits something: `AUTO` (a wooden knock for boxes, a rubber bounce for balls), `WOOD`, `RUBBER`, `SILENT`.
 
@@ -117,6 +128,7 @@ A `Node` that walks, runs, jumps, climbs low steps, stands on and pushes things,
 | `keys` | a `PlayerKeys`: `forward`, `back`, `left`, `right`, `jump`, `walk` (arrays of `Key` codes) |
 | `animations` | a `PlayerAnimations`: clip names `idle`, `walk`, `run`, `jump`, `fall`, `land` (after `landAfter` s in the air), `push`, `celebrate`, `wave` (after `idleFor` s still); `null` skips a clip |
 | `sounds` | footsteps, jump and landing sounds |
+| `effects` | dust when it lands on sand or a path, a splash when it falls into water |
 | `view` | the camera mode, as a shortcut |
 | `position` | the point between the feet; setting it teleports |
 | `spawn` | where `respawn` and `restart` put it |
@@ -173,7 +185,7 @@ Elements (`Hud.Element`) have `x`, `y`, `anchor`, `visible`, `opacity` (0 to 1, 
 
 ### `Lighting`
 
-Set while building the scene: the values are compiled into the shader when the scene starts.
+Light and air of a scene. Every value can change at any time; turning `shadows` on or off takes effect in the next scene.
 
 | Property | |
 |---|---|
@@ -181,8 +193,31 @@ Set while building the scene: the values are compiled into the shader when the s
 | `shadeColor` | colour of the sides turned away from the sun |
 | `skyAmbient`, `groundAmbient` | light from above and from below |
 | `zenith`, `skyMiddle`, `horizon` | the sky's gradient (the horizon colour is also the haze) |
+| `sunGlow` | the glow around the sun, and its glitter on water |
 | `fogStart`, `fogEnd` | the haze begins and hides everything beyond (45 m, 150 m) |
 | `shadows`, `shadowRange` | cast shadows (true), drawn within this many metres of what the camera looks at (24) |
+| `time` | the hour, 0 to 24 (null: none, the values above stay as set); once set, the sun, the moon and the colours follow it |
+| `dayLength` | seconds of play for 24 hours (0: the hour stands still) |
+| `sunrise`, `sunTilt` | where the sun rises (a direction on the ground) and how far from the zenith it passes at noon (30°) |
+| `night`, `moonDirection` | read only: 0 by day, 1 at night; towards the moon |
+| `wind` | on the ground plane (x, z), its length the strength (0 calm, 1 a strong breeze) |
+| `glow`, `outlines`, `vignette`, `saturation` | halo around what is brighter than white (0.8), ink along silhouettes (0.85), darker corners (0.22), colour richness (1.06) |
+
+### Lamps and particles
+
+`PointLight`: `color`, `intensity`, `radius`, `position` (in the world, or in its node's space), `node`, `onlyAtNight`, `flicker` (0 steady, 1 a flame), `enabled`, `worldPosition`.
+
+`Emitter`: `style`, `rate` (per second), `position` (in the world or its node's space), `node`, `enabled`.
+
+`ParticleStyle(color, endColor = color, size = .1, endSize = size, life = 1, lifeSpread = .3, speed = 1, speedSpread = .5, direction = Y, spread = 30, area = 0, gravity = 0, drag = 0, wander = 0, wind = 0, opacity = 1, glow = false, brightness = 1, twinkle = 0)`: sizes are radii in metres; `spread` the half-angle of the cone (degrees, 180 every way); `area` the radius of the disc they are born in; `gravity` in m/s² downwards (negative: they rise); `drag` per second; `wander` a random drift (m/s); `wind` how much `Lighting.wind` carries them; glowing particles add their light (`brightness` above 1 blooms), the others are lit like the scene.
+
+`Particles`: `FIRE`, `SMOKE`, `SPARKS`, `SPLASH`, `SPRAY`, `DUST`, `FIREFLIES`, `SPARKLE`.
+
+### `Texture` and `Textures`
+
+`Texture`: a detail pattern that shades the colour it lies on (mid-grey: unchanged). `name`, `size` (pixels, a power of two), `tile` (metres per repeat), `strength`, `mapping` (`Texture.Mapping.SIDES`: from the three axes, blended by the slope; `FACES`: along each flat face, rows level). `Texture.paint(name, tile = 1, strength = 1, size = 256, mapping = SIDES) { u, v -> color }` paints one from a function (u, v from 0 to 1; it must join up at the edges). Textures are painted in the background and sent to the GPU once.
+
+`Textures`: `GRASS`, `SAND`, `WOOD`, `PLANKS`, `ROOF_TILES`, `STONE`, `ROCK`, `PLASTER`, `FABRIC`, `LEAVES`, `BARK`, `ALL`; `named(material)` picks one from a material name in English or French (case and accents ignored), or null.
 
 ### `Color`, `Mesh`, `MeshBuilder`, `vec`
 
@@ -196,7 +231,7 @@ Set while building the scene: the values are compiled into the shader when the s
 
 ### Models and animation
 
-`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy and clips. `read(bytes)` and `readModel(bytes)` do the same from bytes. Paths are looked up on disk, then in the resources. Textures, skins and cubic-spline curves are refused with a message.
+`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy and clips. `read(bytes)` and `readModel(bytes)` do the same from bytes. Paths are looked up on disk, then in the resources. Image textures, skins and cubic-spline curves are refused with a message.
 
 | Class | |
 |---|---|
@@ -204,7 +239,7 @@ Set while building the scene: the values are compiled into the shader when the s
 | `ModelNode` | `name`, `parent`, `children`, `translation`, `rotation`, `scale`, `matrix` (when given instead of TRS), `local` |
 | `Clip` | `name`, `channels`, `duration` |
 | `Channel` | `node`, `target` (`ChannelTarget.TRANSLATION`, `ROTATION`, `SCALE`), `times`, `values`, `step` |
-| `Part` | a drawable piece: `node`, `mesh`, `pose` |
+| `Part` | a drawable piece: `node`, `mesh` (its own copy once textured, glowing or swaying), `pose` |
 | `Animator` | plays clips on one instance: `model`, `time`, `speed`, `current`, `play(name, loop = true, fade = .15, speed)`, `advance(dt)`, `nodePose(name)` (a part's current matrix in model space) |
 
 ---

@@ -17,7 +17,7 @@ fun main(args: Array<String>) {
 }
 ```
 
-The two demos show the whole API at work: `playground/` is made of shapes only (crates, balls, a ramp, a lift, stars to collect), `demo/` is an island built from glTF models (animated scenery, a rocking boat, shells, sea sounds).
+The two demos show the whole API at work: `playground/` is made of shapes only (crates, balls, a ramp, a lift, stars to collect), `demo/` is an island built from glTF models (animated scenery, a rocking boat, shells, sea sounds, the hours of a day with lamps at night, a campfire, plants in the wind).
 
 This guide tours the engine by topic. The [tutorial](TUTORIAL.md) builds a first game step by step, [PHYSICS.md](PHYSICS.md) covers the physics engine, [REFERENCE.md](REFERENCE.md) lists the whole public API, and [ARCHITECTURE.md](ARCHITECTURE.md) explains how the engine is built.
 
@@ -35,6 +35,7 @@ Tab captures and frees the mouse, Escape quits. The program's arguments reach th
 |---|---|
 | `--headless --frames N --capture shot.png` | runs without a window and saves the last frame |
 | `--look-at ex,ey,ez,tx,ty,tz` | fixed camera for captures |
+| `--hour H` | starts at hour H (0 to 24), for scenes that keep the time of day |
 | `--size WxH` | size of the off-screen image |
 | `--smoke` | scripted check: the player walks and jumps, the run fails if it cannot |
 | `--route "x,z x,z j w p2"` | the player follows points (`j` jumps, `w` toggles walking, `pN` waits N s) |
@@ -42,6 +43,7 @@ Tab captures and frees the mouse, Escape quits. The program's arguments reach th
 | `--mute`, `--audio-device NAME` | sound off, or another ALSA device |
 | `--record-audio file.wav` | with `--headless`: records what the game would play |
 | `--export-sounds dir` | writes the engine's synthesised sounds as WAV files |
+| `--export-textures dir` | writes the ready-made textures as PNG files (the pattern, and the pattern on a typical colour) |
 | `--validation` | Vulkan validation layers |
 
 `game` returns a `RunReport` (frames drawn, CPU time per frame, GPU time per frame, time to the first frame, player position), which makes scripted checks easy.
@@ -85,6 +87,31 @@ lamp.remove()
 
 `Mesh.box`, `sphere`, `capsule`, `cylinder`, `cone`, `plane`, `disk` give ready shapes; `MeshBuilder` assembles your own from triangles, quads, boxes and disks, and `smooth()` rounds normals under a crease angle. Faces are flat-shaded by default, which suits the toon look.
 
+### Textures
+
+A texture in Sillage is a detail pattern: it shades the colour of what it lies on, mid-grey leaving it as it is. A model keeps its colours and gains grain, planks, tiles or blades of grass; nothing has to be painted in a separate image. The engine paints its ready-made textures itself, in the background, when they are first used:
+
+| `Textures.` | | `Textures.` | |
+|---|---|---|---|
+| `GRASS` | blades in tufts, light and dark patches | `ROCK` | patches, cracks, level strata |
+| `SAND` | grains, wind ripples, specks of shell | `PLASTER` | soft patches, speckle, faint streaks |
+| `WOOD` | grain without seams | `FABRIC` | woven threads |
+| `PLANKS` | planks with seams and staggered joints | `LEAVES` | dabs of light and shade |
+| `ROOF_TILES` | rows of rounded clay tiles | `BARK` | fibres and rings |
+| `STONE` | cobbles with dark joints | | |
+
+Models get them by themselves from their material names, in English or French: a material called `grass`, `Herbe`, `roof.001`, `bois_clair` or `galet` gets grass, roof tiles, wood or rock (`Textures.named(name)` tells which). `ground()` gets the texture of its surface. Set `autoTextures = false` before adding models to keep plain colours.
+
+```kotlin
+box(1, at = vec(0, .5, 0)).texture(Textures.PLANKS)                   // a whole node
+model("models/house.glb").texture(Textures.STONE, "Wall", tile = 2)   // only the triangles of one material
+model("models/cart.glb").texture(null, "wheel")                       // none
+```
+
+`tile` is how many metres one repeat covers, `strength` how marked the pattern is (each texture has its own). A texture lies on the object itself, so it moves with it, in one of two ways (`Texture.mapping`): `SIDES` looks from the three axes and blends by the slope, without seams on round shapes (grass on hills, rocks, plaster); `FACES` runs along each flat face, rows level and climbing the slope (roof tiles on any roof, planks on walls). Textured copies of the same mesh stay one draw call.
+
+`Texture.paint(name, tile, strength, size) { u, v -> color }` makes your own from a function of the place in the square (u and v from 0 to 1; the pattern must join up at the edges). `--export-textures dir` writes the ready-made ones as images to look at.
+
 ## Physics
 
 A node only takes part in the physics when you say how:
@@ -127,7 +154,7 @@ Without a model the player is a capsule. With a model, the player plays its clip
 
 The player is a character controller: it climbs steps up to 35 cm, walks slopes up to 50°, stands on moving platforms, pushes dynamic bodies with a bounded force, and is never pushed into walls or squeezed through gaps. It respawns at `spawn` below `fallLimit`.
 
-From the game: `move(direction, walk)` and `jump()` drive it (set `controls = false` to drive it yourself, for an AI or a cut scene), `position = …` teleports it, `respawn()`, `celebrate()`. `onGround`, `velocity`, `isMoving` and `character` (the controller, with what it stands on and what it pushes) tell you its state. `players` holds them all; `player` is the first.
+`effects` (true) makes a puff of dust when it lands on sand or a path and a splash when it falls into water. From the game: `move(direction, walk)` and `jump()` drive it (set `controls = false` to drive it yourself, for an AI or a cut scene), `position = …` teleports it, `respawn()`, `celebrate()`. `onGround`, `velocity`, `isMoving` and `character` (the controller, with what it stands on and what it pushes) tell you its state. `players` holds them all; `player` is the first.
 
 ## The camera
 
@@ -196,7 +223,7 @@ A pickup hides its node when a player touches it, plays a chime and makes the pl
 
 `time` is the scene's clock in seconds, `fps` the frame rate.
 
-## Light and sky
+## Light, sky and the hour
 
 ```kotlin
 lighting.sunDirection = vec(-.3, .6, .5)
@@ -204,15 +231,54 @@ lighting.sunColor = Color(1f, .8f, .6f)
 lighting.fogStart = 30f; lighting.fogEnd = 90f
 ```
 
-The sun, ambient light, sky gradient and fog are compiled into the shader when the scene starts, so set them in the scene's setup (a scene reached with `goTo` can have its own).
+By default a scene has a clear day that stands still: the sun, its colour, the shade colour, the ambient light from the sky and the ground, the sky's gradient and the haze are in `lighting`. Everything can change at any time, during the game too.
 
-Everything casts a shadow from the sun on what is below it, within `lighting.shadowRange` metres (24) of what the camera looks at; the shadows fade out beyond. `lighting.shadows = false` turns them off. A node that should not cast one (a cloud high in the sky, a decal) sets `castsShadow = false`; it still receives the others. With cast shadows, players also keep a light round shadow straight under them, which shows where a jump will land; without them, every moving thing gets a round shadow (`node.shadow()` adds one).
+Give the scene an hour and the light follows it:
 
-Water finds its shores by itself: wherever solid ground rises gently out of it, `water()` lays a lagoon of the `shallows` colour reaching `reach` metres out, a lacy line of foam that swells against the beach and a line of surf rolling in. Raised things standing in the water, such as a pier's deck, leave the water under them open. The shores are looked for once the scene is built, so the order of the calls does not matter.
+```kotlin
+lighting.time = 16.5f          // half past four in the afternoon
+lighting.dayLength = 600f      // a whole day in ten minutes of play; 0 (the default): the hour stands still
+```
+
+The sun rises at 6 on the side of `sunrise`, stands highest at noon (`sunTilt` degrees from the zenith) and sets at 18; the colours go through dawn, day, a warm sunset and the blue of night, when the moon takes over as the main light and the stars come out. `lighting.night` goes from 0 by day to 1 at night: lamps that light only at night follow it, and a game can too (`if (lighting.night > .5f) …`).
+
+Three settings finish the picture: `glow` (0.8), the halo around what is brighter than white (the sun, its glitter on water, lamps, embers, sparks); `outlines` (0.85), ink lines along silhouettes; `vignette` (0.22), darker corners. `saturation` (1.06) makes the colours richer or plainer.
+
+Everything casts a shadow from the sun (or the moon) on what is below it, within `lighting.shadowRange` metres (24) of what the camera looks at; the shadows fade out beyond. `lighting.shadows = false` turns them off (for the next scene). A node that should not cast one (a cloud high in the sky, a decal) sets `castsShadow = false`; it still receives the others. With cast shadows, players also keep a light round shadow straight under them, which shows where a jump will land; without them, every moving thing gets a round shadow (`node.shadow()` adds one).
+
+Water finds its shores by itself: wherever solid ground rises gently out of it, `water()` lays a lagoon of the `shallows` colour reaching `reach` metres out, a lacy line of foam that swells against the beach and a line of surf rolling in. Raised things standing in the water, such as a pier's deck, leave the water under them open. The sky is mirrored at grazing angles, and the sun, the moon and the lamps glitter on the small waves. The shores are looked for once the scene is built, so the order of the calls does not matter.
+
+## Lamps, glow and wind
+
+```kotlin
+light(Color.hex(0xFFC870), intensity = 1.5, radius = 6, at = vec(0, 2.5, 3), onlyAtNight = true)
+lantern.light(offset = vec(0, .3, 0), flicker = .2)          // a lamp that follows its node
+house.glow(Color.hex(0xFFB85C), "window", intensity = 2.4, atNight = true)
+village.sway(.07, "grass", "flower*", reach = .3)
+```
+
+A lamp brightens what is around it, falling off with the square of the distance and gone at `radius` metres; it casts no shadow. `intensity` 1 lights a white wall a metre away about as much as daylight. `flicker` makes it waver (1 for a flame), `onlyAtNight` lights it as night falls. The 16 lamps nearest the camera are drawn; `lights` lists them, `removeLight` or the lamp's `enabled` turns one off.
+
+`glow` gives triangles their own light: they shine without lighting anything around them (add a lamp for that); above 1 they bloom. With `atNight`, only at night: lit windows, a lighthouse lamp.
+
+`sway` makes plants move in `lighting.wind` (a direction on the ground, its length the strength): each point moves up to `metres` in a breeze of strength 1, less near the ground (with the square of its height, up to `reach` metres). For a model, the material names say what sways; a trailing `*` matches the start of a name.
+
+## Particles
+
+```kotlin
+emit(Particles.FIRE, at = vec(8, 1, 2), rate = 70)
+emit(Particles.SMOKE, at = vec(-2, 4.8, -2.6), rate = 4)
+torch.emit(Particles.SPARKS, rate = 5, offset = vec(0, .4, 0))
+burst(Particles.SPARKLE, at = shell.position, count = 28)
+```
+
+An emitter sends particles from a place or a node, so many per second; `burst` sends some at once. `Particles` has ready-made styles: `FIRE`, `SMOKE`, `SPARKS`, `SPLASH`, `SPRAY`, `DUST`, `FIREFLIES`, `SPARKLE`. A `ParticleStyle` of your own says how they look (colour and size from birth to death) and move (speed, cone, gravity, drag, wander, how much the wind carries them); glowing ones add their light to what is behind them and bloom, the others are lit like the scene. Particles live in flat arrays (4096 at most) and are drawn in one call.
+
+The scene makes some by itself: a puff of dust where a player lands on sand or a path, a splash where a player or a body falls into water (`player.effects = false` turns a player's off).
 
 ## Models
 
-Models are glTF binary files (`.glb`): meshes with flat colours (`baseColorFactor`), a node hierarchy and node animations (translation, rotation, scale; linear and step). Textures and skins are refused with a clear message: the toon look relies on colours, and characters are made of rigid parts animated as a hierarchy. `node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part.
+Models are glTF binary files (`.glb`): meshes with flat colours (`baseColorFactor`), a node hierarchy and node animations (translation, rotation, scale; linear and step). Image textures and skins are refused with a clear message: the toon look relies on colours, detail comes from the engine's textures chosen by material name (see Textures), and characters are made of rigid parts animated as a hierarchy. `node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part.
 
 Paths are looked up on disk first, then in the classpath resources (`resources/models/…` in the module).
 
@@ -238,10 +304,11 @@ What the engine does by itself:
 - **One draw call per mesh.** Every copy of a mesh is drawn in one call, with its model matrices in an instance buffer. Primitives of the same size and colour share their mesh, so a thousand `box(.5)` cost one draw; for your own meshes, build one `Mesh` and give it to many nodes (`mesh(crate, at = …)`). To change one node's look, give it another mesh rather than editing a shared one.
 - **Two frames in flight.** The CPU prepares the next frame while the GPU draws the last one.
 - **Shadows in one extra pass.** The shadow map is drawn from the sun with the same instance data, in a depth-only pass; on the demo island it costs about 0.2 ms of CPU per frame.
+- **The picture in linear light.** The scene is drawn in 16-bit floating point with 4× anti-aliasing, then a halo (five levels down and up) and a last pass for the ink lines, the tone and the vignette. This is what the GPU spends most on: on the island, about 0.8 ms per frame in 1280 × 800 and 2.9 ms in 2560 × 1600 (0.4 and 1.1 ms before, with plain 8-bit colour); in 2560 × 1600 the 16-bit image costs about 0.9 ms, the anti-aliasing 1 ms, the textures 0.3 ms and the halo 0.1 ms.
 - **Queries through a grid.** Rays, sphere sweeps and contact queries (the player, shadows, the camera) only look at the bodies near them.
 - **No garbage in the hot loops.** Collision tests, rays and sweeps work on plain numbers and create no objects; the physics step, the mixer and the frame recording reuse their buffers. The garbage collector has little to do while the game runs.
 
-Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo island takes about 0.6 ms of CPU and 0.3 ms of GPU per frame; 10,000 crates on screen, 1.4 ms CPU and 0.4 ms GPU; a heap of 3,000 falling crates with shadows, 7 ms per frame; 10,000 awake bodies in a heap, about 22 ms per physics step.
+Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo island takes about 0.6 ms of CPU and 0.8 ms of GPU per frame in 1280 × 800 (before the pass in linear light: 0.4 ms of GPU); 10,000 crates on screen, 1.4 ms CPU and 0.4 ms GPU; a heap of 3,000 falling crates with shadows, about 2 ms per frame; 10,000 awake bodies in a heap, about 22 ms per physics step.
 
 ### Shipping a game
 

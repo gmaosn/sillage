@@ -33,20 +33,32 @@ data class Color(val r: Float, val g: Float, val b: Float) {
  * per triangle. Build one with [MeshBuilder] or the shapes in the companion ([box], [sphere]…), or load
  * a model. A vertex with a zero normal is unlit (drawn in its plain colour, like the sky or the HUD).
  */
+/** Floats per vertex of [Mesh.effects]. */
+internal const val EFFECT_FLOATS = 8
+
 class Mesh(val vertices: FloatArray) {
     init { require(vertices.size % 27 == 0) { "A mesh is made of whole triangles (27 floats each)" } }
 
     val triangleCount: Int get() = vertices.size / 27
     /**
-     * Per vertex, 4 floats: its own light (r, g, b; all negative: only at night, see [Lighting.night]) and how
-     * far it sways in the wind (metres at most). Null: none (most meshes).
+     * Per vertex, [EFFECT_FLOATS] floats: its own light (r, g, b; all negative: only at night, see
+     * [Lighting.night]), how far it sways in the wind (m), its texture (its [Texture.id], 0: none), the
+     * texture's tile (m), strength and mapping (0 sides, 1 faces). Null: none (most meshes).
      */
     internal var effects: FloatArray? = null
         private set
-    /** The same triangles with [effects] (4 floats per vertex). */
+    /** Per triangle, its material's index in the model it comes from (−1: none); null for meshes made by hand. */
+    internal var materials: IntArray? = null
+        private set
+    /** The same triangles with [effects] ([EFFECT_FLOATS] per vertex), keeping the materials. */
     internal fun withEffects(effects: FloatArray): Mesh {
-        require(effects.size == vertices.size / 9 * 4) { "4 effect floats per vertex" }
-        return Mesh(vertices).also { it.effects = effects }
+        require(effects.size == vertices.size / 9 * EFFECT_FLOATS) { "$EFFECT_FLOATS effect floats per vertex" }
+        return Mesh(vertices).also { it.effects = effects; it.materials = materials }
+    }
+    /** The same mesh, knowing the material of each triangle. */
+    internal fun withMaterials(materials: IntArray): Mesh {
+        require(materials.size == triangleCount) { "One material per triangle" }
+        return Mesh(vertices).also { it.materials = materials; it.effects = effects }
     }
     /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
     internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
@@ -236,6 +248,8 @@ class MeshBuilder {
     // A float array that grows (an ArrayList<Float> would box every number).
     private var data = FloatArray(1024)
     private var size = 0
+    /** Triangles added so far. */
+    val triangleCount: Int get() = size / 27
     private fun put(p: Vec3, n: Vec3, c: Color) {
         if (size + 9 > data.size) data = data.copyOf(data.size * 2)
         data[size] = p.x; data[size + 1] = p.y; data[size + 2] = p.z

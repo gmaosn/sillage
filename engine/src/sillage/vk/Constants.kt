@@ -185,3 +185,7 @@ internal const val VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE = 4
 internal const val VK_FORMAT_R16G16B16A16_SFLOAT = 97
 internal const val VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6
 internal const val VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT = 0x10
+internal const val VK_SAMPLER_MIPMAP_MODE_LINEAR = 1
+internal const val VK_SAMPLER_ADDRESS_MODE_REPEAT = 0
+internal const val VK_IMAGE_VIEW_TYPE_2D_ARRAY = 5
+internal const val VK_BUFFER_USAGE_TRANSFER_SRC_BIT = 0x1

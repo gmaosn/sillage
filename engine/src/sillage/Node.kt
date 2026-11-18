@@ -47,6 +47,7 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     internal var water: WaterLook? = null        // a water surface, drawn by the water shader
     internal var isSky = false                   // the sky dome, drawn by the sky shader
     internal var removed = false
+    internal var fxY = Float.NaN                 // height at the last frame, to see it fall into water
     internal val behaviours = ArrayList<Node.(Float) -> Unit>()
 
     /** Rotation about the vertical axis, in degrees (0 faces −Z, 90 faces −X). */
@@ -143,6 +144,31 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     fun light(color: Color = Color(1f, .72f, .38f), intensity: Number = 1.5, radius: Number = 6, offset: Vec3 = Vec3.ZERO,
               onlyAtNight: Boolean = false, flicker: Number = 0): PointLight =
         scene.lightOn(this, PointLight(color, intensity.toFloat(), radius.toFloat(), offset, this, onlyAtNight, flicker.toFloat()))
+
+    /**
+     * Sways in the wind ([Lighting.wind]): its points move up to [metres] in a breeze of strength 1, those
+     * near the ground less (with the square of their height above it, up to [reach] metres). For a model,
+     * only the triangles of [materials] (a trailing `*` matches the start of a name: `"flower*"`). Grass,
+     * flowers, bushes, flags. The node gets its own copy of its mesh.
+     */
+    fun sway(metres: Number = .05, vararg materials: String, reach: Number = 1): Node {
+        scene.sway(this, metres.toFloat(), reach.toFloat(), materials); return this }
+
+    /**
+     * Shines with its own light, [color] × [intensity] (above 1 it glows, see [Lighting.glow]); with
+     * [atNight], only as night falls. For a model, only the triangles of [materials]: lit windows, a lamp,
+     * embers. It lights nothing around it: add a [light] for that.
+     */
+    fun glow(color: Color, vararg materials: String, intensity: Number = 1, atNight: Boolean = false): Node {
+        scene.glow(this, color, intensity.toFloat(), atNight, materials); return this }
+
+    /**
+     * Lays [texture] on it (null: none), repeating every [tile] metres with [strength] (the texture's own
+     * by default). For a model, only the triangles of [materials]. Models already get textures from their
+     * material names: see [Scene.autoTextures].
+     */
+    fun texture(texture: Texture?, vararg materials: String, tile: Number? = null, strength: Number? = null): Node {
+        scene.texture(this, texture, tile?.toFloat(), strength?.toFloat(), materials); return this }
 
     /** Particles flowing from this node, at [offset] in its space: see [Scene.emit]. */
     fun emit(style: ParticleStyle, rate: Number = 20, offset: Vec3 = Vec3.ZERO): Emitter =

@@ -118,6 +118,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var shadowFramebuffer=0L
     private var shadowPipeline=0L
     private var sampler=0L                     // compares depths in the shadow map
+    private var repeat=0L                      // reads the detail textures: repeating, filtered between levels
+    // Detail textures (Texture): one layer each, every level, in one array image; made again when new textures appear.
+    private var textures: Image?=null
+    private var textureCount=-1                // textures in the array (-1: none yet, the neutral placeholder)
+    private var texturesPainted=false          // all of them painted, none left neutral
+    private var uploads: MemorySegment=MemorySegment.NULL   // a command buffer for sending textures
     private var linear=0L                      // reads the passes' images, filtered, clamped at the edges
     private var setLayout=0L
     private var postSetLayout=0L
@@ -182,9 +188,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.createCommandPool(s.struct(VkCommandPoolCreateInfo,
                     "flags" to VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, "queueFamilyIndex" to family),out)
                 pool=out.get(JAVA_LONG,0)
-                val cmd=s.allocate(ADDRESS,FRAMES.toLong())
+                val cmd=s.allocate(ADDRESS,FRAMES+1L)
                 dev.allocateCommandBuffers(s.struct(VkCommandBufferAllocateInfo,
-                    "commandPool" to pool, "level" to VK_COMMAND_BUFFER_LEVEL_PRIMARY, "commandBufferCount" to FRAMES),cmd)
+                    "commandPool" to pool, "level" to VK_COMMAND_BUFFER_LEVEL_PRIMARY, "commandBufferCount" to FRAMES+1),cmd)
+                uploads=cmd.getAtIndex(ADDRESS,FRAMES.toLong())
                 for(f in 0 until FRAMES) {
                     dev.createFence(s.struct(VkFenceCreateInfo, "flags" to VK_FENCE_CREATE_SIGNALED_BIT),out); val fence=out.get(JAVA_LONG,0)
                     dev.createSemaphore(s.struct(VkSemaphoreCreateInfo),out); val acquired=out.get(JAVA_LONG,0)
@@ -201,6 +208,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             createRenderPasses()
             createShadowResources()
             createDescriptors()
+            syncTextures(target==null)
             createPipelines()
             if(surface != 0L) recreateSwapchain() else createTargets()
             println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " msaa=" + echantillons + " validation=" + validation)
@@ -339,7 +347,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     /** The zeros read as the effects of meshes without any, enough for [vertices] vertices. */
     private fun growZero(vertices: Int) {
         zero?.let { dev.deviceWaitIdle(); destroy(it) }
-        val b=buffer(Integer.highestOneBit(maxOf(vertices,1024)-1)*2L*16,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+        val b=buffer(Integer.highestOneBit(maxOf(vertices,1024)-1)*2L*4*EFFECT_FLOATS,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
         stack.frame { s -> val p=s.allocate(ADDRESS); dev.mapMemory(b.memory,0,b.size,p)
             try { p.get(ADDRESS,0).reinterpret(b.size).fill(0) } finally { dev.unmapMemory(b.memory) } }
         zero=b
@@ -446,21 +454,28 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             "addressModeV" to VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, "addressModeW" to VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
             "maxAnisotropy" to 1f, "borderColor" to VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE),p)
         linear=p.get(JAVA_LONG,0)
+        dev.createSampler(s.struct(VkSamplerCreateInfo, "magFilter" to VK_FILTER_LINEAR, "minFilter" to VK_FILTER_LINEAR,
+            "mipmapMode" to VK_SAMPLER_MIPMAP_MODE_LINEAR, "addressModeU" to VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            "addressModeV" to VK_SAMPLER_ADDRESS_MODE_REPEAT, "addressModeW" to VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            "maxAnisotropy" to 1f, "maxLod" to 16f, "borderColor" to VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE),p)
+        repeat=p.get(JAVA_LONG,0)
     }
 
     /**
-     * Descriptor sets. The scene's, one per frame in flight: the shadow map (binding 0) and the frame's
-     * uniform block (binding 1). The later passes': two images each (written with the images, see [createTargets]).
+     * Descriptor sets. The scene's, one per frame in flight: the shadow map (binding 0), the frame's
+     * uniform block (binding 1) and the detail textures (binding 2, written by [syncTextures]). The later passes': two images each (written with the images, see [createTargets]).
      */
     private fun createDescriptors() = stack.frame { s ->
         val p=s.allocate(JAVA_LONG)
-        var b=s.structs(VkDescriptorSetLayoutBinding,2)
+        var b=s.structs(VkDescriptorSetLayoutBinding,3)
         b.at(VkDescriptorSetLayoutBinding,0).put(VkDescriptorSetLayoutBinding, "binding" to 0,
             "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 1, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT)
         b.at(VkDescriptorSetLayoutBinding,1).put(VkDescriptorSetLayoutBinding, "binding" to 1,
             "descriptorType" to VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, "descriptorCount" to 1,
             "stageFlags" to (VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT))
-        dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 2, "pBindings" to b),p)
+        b.at(VkDescriptorSetLayoutBinding,2).put(VkDescriptorSetLayoutBinding, "binding" to 2,
+            "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 1, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT)
+        dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 3, "pBindings" to b),p)
         setLayout=p.get(JAVA_LONG,0)
         b=s.structs(VkDescriptorSetLayoutBinding,2)
         for(i in 0..1) b.at(VkDescriptorSetLayoutBinding,i).put(VkDescriptorSetLayoutBinding, "binding" to i,
@@ -468,7 +483,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 2, "pBindings" to b),p)
         postSetLayout=p.get(JAVA_LONG,0)
         val sizes=s.structs(VkDescriptorPoolSize,2)
-        sizes.at(VkDescriptorPoolSize,0).put(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to FRAMES+4*BLOOM_LEVELS)
+        sizes.at(VkDescriptorPoolSize,0).put(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 2*FRAMES+4*BLOOM_LEVELS)
         sizes.at(VkDescriptorPoolSize,1).put(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, "descriptorCount" to FRAMES)
         dev.createDescriptorPool(s.struct(VkDescriptorPoolCreateInfo, "maxSets" to FRAMES+2*BLOOM_LEVELS, "poolSizeCount" to 2, "pPoolSizes" to sizes),p)
         descriptorPool=p.get(JAVA_LONG,0)
@@ -489,6 +504,113 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         dev.allocateDescriptorSets(s.struct(VkDescriptorSetAllocateInfo, "descriptorPool" to descriptorPool,
             "descriptorSetCount" to 2*BLOOM_LEVELS, "pSetLayouts" to s.longs(*LongArray(2*BLOOM_LEVELS) { postSetLayout })),sets)
         for(i in postSets.indices) postSets[i]=sets.getAtIndex(JAVA_LONG,i.toLong())
+    }
+
+    /**
+     * Sends the detail textures to the GPU when new ones have been made since the last time (rare: when a
+     * scene is built): one array image, a layer per texture with every level, the layers as large as the
+     * largest texture (a smaller one is repeated pixel by pixel). Before any texture, a neutral grey layer.
+     * Textures are painted in the background: unless [wait], those not painted yet stay neutral for a few
+     * frames and everything is sent again once they all are (a window opens sooner; without a window, and
+     * for captures, the renderer waits, so that a frame is the same from run to run).
+     */
+    private fun syncTextures(wait: Boolean) {
+        val count=Texture.count()
+        if(count==textureCount && texturesPainted) return
+        val all=Texture.all()
+        val painted=all.all { it.ready }
+        if(count==textureCount && !painted && !wait) return
+        texturesPainted=wait || painted
+        val size=all.maxOfOrNull { it.size } ?: 4
+        val levels=31-Integer.numberOfLeadingZeros(size)+1
+        val layers=maxOf(1,all.size)
+        // The pixels, level after level, every layer of a level side by side (one copy per level).
+        var total=0L; for(j in 0 until levels) total+=4L*(size shr j)*(size shr j)*layers
+        val staging=buffer(total,VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+        dev.deviceWaitIdle()
+        try {
+            stack.frame { s ->
+                val p=s.allocate(ADDRESS); dev.mapMemory(staging.memory,0,staging.size,p)
+                val out=p.get(ADDRESS,0).reinterpret(staging.size)
+                var at=0L
+                for(j in 0 until levels) {
+                    val side=size shr j
+                    for(l in 0 until layers) {
+                        val t=all.getOrNull(l)?.takeIf { wait || it.ready }
+                        if(t==null) { out.asSlice(at,4L*side*side).fill(128.toByte()); at+=4L*side*side; continue }
+                        val px=t.pixels
+                        // This level's size in the texture: its own level j−shift, or level 0 repeated.
+                        val shift=31-Integer.numberOfLeadingZeros(size/t.size)
+                        if(j>=shift) {
+                            var offset=0; var sz=t.size; repeat(j-shift) { offset+=4*sz*sz; sz/=2 }
+                            MemorySegment.copy(px,offset,out,JAVA_BYTE,at,4*side*side)
+                        } else {
+                            val k=1 shl (shift-j)
+                            for(y in 0 until side) for(x in 0 until side) {
+                                val src=4*((y/k)*t.size+x/k)
+                                MemorySegment.copy(px,src,out,JAVA_BYTE,at+4L*(y*side+x),4)
+                            }
+                        }
+                        at+=4L*side*side
+                    }
+                }
+                dev.unmapMemory(staging.memory)
+            }
+            textures?.let { destroy(it) }
+            val img=stack.frame { s ->
+                val q=s.allocate(JAVA_LONG)
+                dev.createImage(s.struct(VkImageCreateInfo, "imageType" to VK_IMAGE_TYPE_2D, "format" to VK_FORMAT_R8G8B8A8_UNORM,
+                    "extent.width" to size, "extent.height" to size, "extent.depth" to 1, "mipLevels" to levels, "arrayLayers" to layers,
+                    "samples" to VK_SAMPLE_COUNT_1_BIT, "tiling" to VK_IMAGE_TILING_OPTIMAL, "usage" to (VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_SAMPLED_BIT),
+                    "sharingMode" to VK_SHARING_MODE_EXCLUSIVE, "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED),q)
+                val image=q.get(JAVA_LONG,0)
+                val req=s.struct(VkMemoryRequirements); dev.getImageMemoryRequirements(image,req)
+                dev.allocateMemory(s.struct(VkMemoryAllocateInfo, "allocationSize" to req.u64(VkMemoryRequirements,"size"),
+                    "memoryTypeIndex" to memoryType(req.u32(VkMemoryRequirements,"memoryTypeBits"),VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)),q)
+                val mem=q.get(JAVA_LONG,0)
+                dev.bindImageMemory(image,mem,0)
+                dev.createImageView(s.struct(VkImageViewCreateInfo, "image" to image, "viewType" to VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+                    "format" to VK_FORMAT_R8G8B8A8_UNORM, "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_COLOR_BIT,
+                    "subresourceRange.levelCount" to levels, "subresourceRange.layerCount" to layers),q)
+                Image(image,mem,q.get(JAVA_LONG,0))
+            }
+            textures=img
+            stack.frame { s ->
+                val cmd=uploads
+                dev.resetCommandBuffer(cmd,0)
+                dev.beginCommandBuffer(cmd,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+                fun all(old: Int, new: Int, srcAccess: Int, dstAccess: Int, srcStage: Int, dstStage: Int) {
+                    val b=s.struct(VkImageMemoryBarrier, "oldLayout" to old, "newLayout" to new, "srcAccessMask" to srcAccess, "dstAccessMask" to dstAccess,
+                        "srcQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "dstQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "image" to img.image,
+                        "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_COLOR_BIT, "subresourceRange.levelCount" to levels, "subresourceRange.layerCount" to layers)
+                    dev.cmdPipelineBarrier(cmd,srcStage,dstStage,0,0,MemorySegment.NULL,0,MemorySegment.NULL,1,b)
+                }
+                all(VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT)
+                val regions=s.structs(VkBufferImageCopy,levels)
+                var at=0L
+                for(j in 0 until levels) {
+                    val side=size shr j
+                    regions.at(VkBufferImageCopy,j).put(VkBufferImageCopy, "bufferOffset" to at,
+                        "imageSubresource.aspectMask" to VK_IMAGE_ASPECT_COLOR_BIT, "imageSubresource.mipLevel" to j,
+                        "imageSubresource.baseArrayLayer" to 0, "imageSubresource.layerCount" to layers,
+                        "imageExtent.width" to side, "imageExtent.height" to side, "imageExtent.depth" to 1)
+                    at+=4L*side*side*layers
+                }
+                dev.cmdCopyBufferToImage(cmd,staging.buffer,img.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,levels,regions)
+                all(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                dev.endCommandBuffer(cmd)
+                dev.queueSubmit(queue,1,s.struct(VkSubmitInfo, "commandBufferCount" to 1, "pCommandBuffers" to s.pointers(cmd)),0L)
+                dev.queueWaitIdle(queue)
+                for(f in frames) {
+                    val w=s.struct(VkWriteDescriptorSet, "dstSet" to f.set, "dstBinding" to 2, "descriptorCount" to 1,
+                        "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "pImageInfo" to s.struct(VkDescriptorImageInfo,
+                            "sampler" to repeat, "imageView" to img.view, "imageLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+                    dev.updateDescriptorSets(1,w)
+                }
+            }
+            textureCount=all.size
+        } finally { destroy(staging) }
     }
 
     private fun writePostSet(set: Long, first: Image, second: Image) = stack.frame { s ->
@@ -557,20 +679,20 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
 
     /**
      * Vertex inputs. The scene's meshes: binding 0 the mesh (position, normal, colour), binding 1 one model
-     * matrix per copy as three rows, binding 2 per vertex its own light and sway ([Mesh.effects], or zeros).
+     * matrix per copy as three rows, binding 2 per vertex its own light and sway, its texture ([Mesh.effects], or zeros).
      */
     private fun sceneInput(s: NativeStack, shadow: Boolean): MemorySegment {
         val bindings=s.structs(VkVertexInputBindingDescription,3)
         bindings.at(VkVertexInputBindingDescription,0).put(VkVertexInputBindingDescription, "binding" to 0, "stride" to 36, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
         bindings.at(VkVertexInputBindingDescription,1).put(VkVertexInputBindingDescription, "binding" to 1, "stride" to 48, "inputRate" to VK_VERTEX_INPUT_RATE_INSTANCE)
-        bindings.at(VkVertexInputBindingDescription,2).put(VkVertexInputBindingDescription, "binding" to 2, "stride" to 16, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
-        val locations=if(shadow) intArrayOf(0,3,4,5,6) else intArrayOf(0,1,2,3,4,5,6)
+        bindings.at(VkVertexInputBindingDescription,2).put(VkVertexInputBindingDescription, "binding" to 2, "stride" to 4*EFFECT_FLOATS, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
+        val locations=if(shadow) intArrayOf(0,3,4,5,6) else intArrayOf(0,1,2,3,4,5,6,7)
         val attrs=s.structs(VkVertexInputAttributeDescription,locations.size)
         for((k,loc) in locations.withIndex()) {
             val (binding,format,offset)=when(loc) {
                 in 0..2 -> Triple(0,VK_FORMAT_R32G32B32_SFLOAT,loc*12)
                 in 3..5 -> Triple(1,VK_FORMAT_R32G32B32A32_SFLOAT,(loc-3)*16)
-                else -> Triple(2,VK_FORMAT_R32G32B32A32_SFLOAT,0)
+                else -> Triple(2,VK_FORMAT_R32G32B32A32_SFLOAT,(loc-6)*16)
             }
             attrs.at(VkVertexInputAttributeDescription,k).put(VkVertexInputAttributeDescription,
                 "binding" to binding, "location" to loc, "format" to format, "offset" to offset)
@@ -763,7 +885,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             upload(b,m.vertices); meshes[m]=b
             val e=m.effects
             if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
-            else if(m.vertices.size/9*16L>zero!!.size) growZero(m.vertices.size/9)
+            else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
         }
         for(b in opaque) b.count=0
         for(b in quiet) b.count=0
@@ -866,6 +988,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             check(result==VK_SUCCESS || result==VK_SUBOPTIMAL_KHR) { "vkAcquireNextImageKHR: " + result }
             index=out.get(JAVA_INT,0)
         }
+        syncTextures(surface==0L || capture!=null)
         gather(objets,hidden)
         if(hud!==f.hudSent) { upload(f.hud!!,hud.vertices); f.hudSent=hud }
         // Instance rows of every batch, side by side, then the particles.
@@ -1084,7 +1207,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                         pipelineDown,pipelineUp,pipelineComposite,shadowPipeline)) dev.destroyPipeline(p)
                 dev.destroyPipelineLayout(layout); dev.destroyPipelineLayout(postLayout)
                 dev.destroyDescriptorPool(descriptorPool); dev.destroyDescriptorSetLayout(setLayout); dev.destroyDescriptorSetLayout(postSetLayout)
-                dev.destroySampler(sampler); dev.destroySampler(linear)
+                dev.destroySampler(sampler); dev.destroySampler(linear); dev.destroySampler(repeat)
+                textures?.let { destroy(it) }; textures=null
                 dev.destroyFramebuffer(shadowFramebuffer); dev.destroyRenderPass(shadowPass)
                 shadowMap?.let { destroy(it) }; shadowMap=null
                 destroyTargets()

@@ -15,8 +15,8 @@ float sunlight() {
     return mix(sum / 9.0, 1.0, smoothstep(0.8, 1.0, edge));
 }
 
-// The point lights' light on a surface of normal n at p: soft toon steps, fading to nothing at each
-// light's radius.
+// The point lights' light on a surface of normal n at p: soft toon steps, bright near the lamp and
+// falling off like the square of the distance, smoothly to nothing at each light's radius.
 vec3 pointLights(vec3 n, vec3 p) {
     vec3 sum = vec3(0.0);
     int count = int(fr.skyAmb.w);
@@ -26,8 +26,8 @@ vec3 pointLights(vec3 n, vec3 p) {
         float d2 = dot(l, l);
         if (d2 >= r * r) continue;
         float d = sqrt(d2);
-        float fall = 1.0 - d2 / (r * r);
-        fall *= fall;
+        float x2 = d2 / (r * r);
+        float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
         float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
         sum += fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
     }

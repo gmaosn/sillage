@@ -146,6 +146,7 @@ class Scene {
         val node = Node(this, if (m.clips.isEmpty()) flat.getOrPut(path) { m.flatten().also { require(it.triangleCount > 0) { "GLB without triangles: $path" } } } else Mesh.EMPTY)
         node.model = m
         if (m.clips.isNotEmpty()) { node.parts = m.parts(); node.animator = Animator(m, node.parts) }
+        if (autoTextures) texturesByName(node)
         node.scale = scale.toFloat()
         return add(node, at)
     }
@@ -154,6 +155,7 @@ class Scene {
     fun ground(size: Number = 400, color: Color = Color.GRASS, surface: Material = Material.GRASS, at: Vec3 = Vec3.ZERO): Node {
         val s = size.toFloat() / 2
         val node = add(Node(this, Mesh.plane(2 * s, 2 * s, color)), at)
+        if (autoTextures) Textures.named(surface.name)?.let { node.texture(it) }
         physics.addMesh(TriangleMesh(floatArrayOf(-s, 0f, -s, -s, 0f, s, s, 0f, s, -s, 0f, -s, s, 0f, s, s, 0f, -s).also {
             for (i in it.indices step 3) { it[i] += at.x; it[i + 1] += at.y; it[i + 2] += at.z } }, surface))
         return node
@@ -170,10 +172,12 @@ class Scene {
         node.water = WaterLook(color, shallows ?: color.mix(Color.hex(0xB8F2E6), .6f), reach.toFloat())
         node.castsShadow = false
         pendingWater.add(Triple(node, level.toFloat(), size.toFloat()))
+        waterAreas.add(floatArrayOf(level.toFloat(), size.toFloat() / 2))
         return add(node, Vec3.ZERO)
     }
     // Water is shaped by the shores around it: its mesh is made once the scene is built, before the first frame.
     private val pendingWater = ArrayList<Triple<Node, Float, Float>>()
+    private val waterAreas = ArrayList<FloatArray>()          // level, half size
 
     /**
      * A player: walks, runs and jumps with the keyboard (WASD, arrows, space, shift to walk), the camera
@@ -188,11 +192,132 @@ class Scene {
             p.model = m
             if (m.clips.isEmpty()) p.mesh = flat.getOrPut(model) { m.flatten() }
             else { p.parts = m.parts(); p.animator = Animator(m, p.parts) }
+            if (autoTextures) texturesByName(p)
         } else p.mesh = Mesh.capsule(radius.toFloat(), height.toFloat(), Color.ORANGE).transformed(Mat4.translation(Vec3(0f, height.toFloat() / 2, 0f)))
         all.add(p); playerList.add(p)
         addShadow(p, radius.toFloat() * 1.5f)
         p.setup()
         return p
+    }
+
+    // ------------------------------------------------------------------ looks: textures, glow, wind
+
+    /**
+     * Models get ready-made textures by themselves, from their material names (see [Textures.named]):
+     * "grass", "Roof", "bois_clair"…; [ground] gets the texture of its surface. Set it to false before
+     * adding them to keep plain colours (a node can also drop its texture with `texture(null)`).
+     */
+    var autoTextures = true
+
+    private val autoTextured = java.util.IdentityHashMap<Mesh, Mesh>()
+    private val sharedTextured = java.util.IdentityHashMap<Mesh, HashMap<List<Float>, Mesh>>()
+    private val groundCache = HashMap<Long, Float>()
+
+    /** Each mesh of [node] (its own, then its parts') with its placement in the world and a way to replace it. */
+    private class Target(val mesh: Mesh, val place: Mat4, val set: (Mesh) -> Unit)
+    private fun targets(node: Node): List<Target> {
+        val out = ArrayList<Target>()
+        val m = node.matrix()
+        if (node.mesh.triangleCount > 0) out.add(Target(node.mesh, m) { node.mesh = it })
+        for (p in node.parts) out.add(Target(p.mesh, m * p.pose) { p.mesh = it })
+        return out
+    }
+
+    /** The material indices of [node]'s model named by [names] (a trailing * matches the start of a name); null: every triangle. */
+    private fun materialIds(node: Node, names: Array<out String>, what: String): Set<Int>? {
+        if (names.isEmpty()) return null
+        val m = requireNotNull(node.model) { "$what(…, \"${names.first()}\"): only a model has materials" }
+        val ids = HashSet<Int>()
+        for (n in names) {
+            val found = m.materials.indices.filter { i -> if (n.endsWith("*")) m.materials[i].startsWith(n.dropLast(1)) else m.materials[i] == n }
+            require(found.isNotEmpty()) { "$what: no material « $n » in the model (it has: ${m.materials.joinToString()})" }
+            ids.addAll(found)
+        }
+        return ids
+    }
+
+    /**
+     * Changes the per-vertex looks of the triangles of [node] whose material is in [ids] (all if null):
+     * [apply] writes the [EFFECT_FLOATS] floats of one vertex at [o] in its effects, knowing where it is in the world.
+     */
+    private inline fun changeLooks(node: Node, ids: Set<Int>?, what: String, apply: (e: FloatArray, o: Int, world: Vec3) -> Unit) {
+        var touched = 0
+        for (t in targets(node)) {
+            val mesh = t.mesh; val v = mesh.vertices; val mats = mesh.materials
+            val e = mesh.effects?.copyOf() ?: FloatArray(v.size / 9 * EFFECT_FLOATS)
+            var any = false
+            for (tri in 0 until mesh.triangleCount) {
+                if (ids != null && (mats == null || mats[tri] !in ids)) continue
+                any = true; touched++
+                for (k in 0..2) {
+                    val vi = 3 * tri + k
+                    apply(e, vi * EFFECT_FLOATS, t.place.transformPoint(Vec3(v[9 * vi], v[9 * vi + 1], v[9 * vi + 2])))
+                }
+            }
+            if (any) t.set(mesh.withEffects(e))
+        }
+        require(touched > 0 || node.mesh.triangleCount == 0 && node.parts.isEmpty()) { "$what: no triangle to change" }
+    }
+
+    internal fun sway(node: Node, metres: Float, reach: Float, names: Array<out String>) {
+        require(reach > 0f) { "sway: reach must be positive" }
+        changeLooks(node, materialIds(node, names, "sway"), "sway") { e, o, p ->
+            val key = (Math.round(p.x * 200f).toLong() shl 32) xor (Math.round(p.z * 200f).toLong() and 0xFFFFFFFFL)
+            val ground = groundCache.getOrPut(key) {
+                physics.raycast(Vec3(p.x, p.y + .05f, p.z), Vec3(0f, -1f, 0f), 50f, filter = { false })?.point?.y ?: (p.y - reach)
+            }
+            val h = ((p.y - ground) / reach).coerceIn(0f, 1f)
+            e[o + 3] = metres * h * h
+        }
+    }
+
+    internal fun glow(node: Node, color: Color, intensity: Float, atNight: Boolean, names: Array<out String>) {
+        val k = if (atNight) -intensity else intensity
+        changeLooks(node, materialIds(node, names, "glow"), "glow") { e, o, _ ->
+            e[o] = color.r * k; e[o + 1] = color.g * k; e[o + 2] = color.b * k
+        }
+    }
+
+    internal fun texture(node: Node, texture: Texture?, tile: Float?, strength: Float?, names: Array<out String>) {
+        val id = texture?.id?.toFloat() ?: 0f
+        val t = tile ?: texture?.tile ?: 1f; val k = strength ?: texture?.strength ?: 0f
+        val mode = if (texture?.mapping == Texture.Mapping.FACES) 1f else 0f
+        // A shared mesh (primitives, models) textured whole stays shared: thousands of textured boxes are one draw.
+        val single = node.parts.isEmpty() && names.isEmpty() && node.mesh.effects == null
+        if (single) {
+            val source = node.mesh
+            node.mesh = sharedTextured.getOrPut(source) { HashMap() }.getOrPut(listOf(id, t, k, mode)) {
+                val e = FloatArray(source.vertices.size / 9 * EFFECT_FLOATS)
+                for (o in e.indices step EFFECT_FLOATS) { e[o + 4] = id; e[o + 5] = t; e[o + 6] = k; e[o + 7] = mode }
+                source.withEffects(e)
+            }
+            return
+        }
+        changeLooks(node, materialIds(node, names, "texture"), "texture") { e, o, _ -> e[o + 4] = id; e[o + 5] = t; e[o + 6] = k; e[o + 7] = mode }
+    }
+
+    /** The ready-made textures a model's material names call for, laid once per mesh and shared by every copy. */
+    private fun texturesByName(node: Node) {
+        val m = node.model ?: return
+        val byMaterial = m.materials.map { Textures.named(it) }
+        if (byMaterial.all { it == null }) return
+        fun textured(mesh: Mesh): Mesh = autoTextured.getOrPut(mesh) {
+            val mats = mesh.materials ?: return@getOrPut mesh
+            val e = mesh.effects?.copyOf() ?: FloatArray(mesh.vertices.size / 9 * EFFECT_FLOATS)
+            var any = false
+            for (tri in 0 until mesh.triangleCount) {
+                val tex = mats[tri].let { if (it in byMaterial.indices) byMaterial[it] else null } ?: continue
+                any = true
+                for (k in 0..2) {
+                    val o = (3 * tri + k) * EFFECT_FLOATS
+                    e[o + 4] = tex.id.toFloat(); e[o + 5] = tex.tile; e[o + 6] = tex.strength
+                    e[o + 7] = if (tex.mapping == Texture.Mapping.FACES) 1f else 0f
+                }
+            }
+            if (any) mesh.withEffects(e) else mesh
+        }
+        if (node.mesh.triangleCount > 0) node.mesh = textured(node.mesh)
+        for (p in node.parts) p.mesh = textured(p.mesh)
     }
 
     // ------------------------------------------------------------------ physics behind the nodes
@@ -422,14 +547,15 @@ class Scene {
     val lights: List<PointLight> get() = lightList
 
     /**
-     * A lamp at [at]: it brightens what is within [radius] metres, warm by default. [onlyAtNight]: it lights
+     * A lamp at [at]: it brightens what is around it, falling off with the square of the distance and gone
+     * at [radius] metres, warm by default ([intensity] 1: a white wall a metre away about as lit as by day). [onlyAtNight]: it lights
      * up as night falls (see [Lighting.time]); [flicker]: how much it wavers, 1 for a flame.
      */
     fun light(color: Color = Color(1f, .72f, .38f), intensity: Number = 1.5, radius: Number = 6, at: Vec3 = Vec3.ZERO,
               onlyAtNight: Boolean = false, flicker: Number = 0): PointLight =
-        PointLight(color, intensity.toFloat(), radius.toFloat(), at, null, onlyAtNight, flicker.toFloat()).also { lightList.add(it) }
+        PointLight(color, intensity.toFloat(), radius.toFloat(), at, null, onlyAtNight, flicker.toFloat()).also { it.seed = lightList.size * 37.7f; lightList.add(it) }
 
-    internal fun lightOn(node: Node, light: PointLight): PointLight { lightList.add(light); return light }
+    internal fun lightOn(node: Node, light: PointLight): PointLight { light.seed = lightList.size * 37.7f; lightList.add(light); return light }
     fun removeLight(light: PointLight) { lightList.remove(light) }
 
     /** Particles flowing from [at], [rate] per second, in [style] (see [Particles] for ready-made ones). */
@@ -455,6 +581,41 @@ class Scene {
             particles.spawn(e.style, p.x, p.y, p.z, n)
         }
         particles.update(dt, lighting.wind.x, lighting.wind.z, time)
+    }
+
+    /** What the scene does by itself: dust where players land on sand or a path, splashes where things fall into water. */
+    private fun automaticEffects(dt: Float) {
+        for (k in 0 until playerList.size) {
+            val p = playerList[k]
+            if (!p.effects) continue
+            if (p.onGround) {
+                if (!p.fxGrounded && p.fxAir > .3f) {
+                    val surface = p.character.groundBody?.let { surfaces[it.id] } ?: p.character.groundMaterial?.name
+                    if (surface == "sand" || surface == "road") {
+                        val pos = p.position
+                        burst(Particles.DUST, Vec3(pos.x, pos.y + .03f, pos.z), (5 + 12 * ((p.fxAir - .3f) / .6f).coerceIn(0f, 1f)).toInt())
+                    }
+                }
+                p.fxAir = 0f
+            } else p.fxAir += dt
+            p.fxGrounded = p.onGround
+            splashes(p, p.position.y + .3f, p.velocity.y)
+        }
+        for (k in 0 until linked.size) { val n = linked[k]; splashes(n, n.position.y, n.body?.velocity?.y ?: 0f) }
+    }
+
+    private fun splashes(n: Node, y: Float, vy: Float) {
+        val before = n.fxY
+        n.fxY = y
+        if (before.isNaN() || vy > -1.5f) return
+        for (k in 0 until waterAreas.size) {
+            val w = waterAreas[k]
+            val p = n.position
+            if (before > w[0] && y <= w[0] && abs(p.x) < w[1] && abs(p.z) < w[1]) {
+                val count = (8 + 3 * -vy).toInt().coerceAtMost(48)
+                particles.spawn(Particles.SPLASH, p.x, w[0] + .02f, p.z, count)
+            }
+        }
     }
 
     /** The lamps nearest [eye] (at most [MAX_LIGHTS], dimmed by day if they only light at night, wavering) and the particles. */
@@ -519,6 +680,7 @@ class Scene {
         for (k in 0 until playerList.size) { val p = playerList[k]; p.forcedClip = forcedPlayerClip; p.update(dt) }
         placeShadows()
         lighting.advance(dt)
+        automaticEffects(dt)
         updateEffects(dt)
         sounds.update(dt)
     }

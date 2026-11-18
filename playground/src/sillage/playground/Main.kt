@@ -12,18 +12,19 @@ val playground: Scene.() -> Unit = {
     ground()
 
     // A ramp up to a platform, with a finish pad on top.
-    box(6, .4, 3, Color.STONE, at = vec(6, .9, -4)).rotate(z = 18).solid()
-    box(4, 2, 4, Color.STONE, round = .1, at = vec(10.5, 1, -4)).solid()
+    // Stone, crates of planks: ready-made textures, painted by the engine (the lawn got its grass by itself).
+    box(6, .4, 3, Color.STONE, at = vec(6, .9, -4)).rotate(z = 18).solid().texture(Textures.STONE)
+    box(4, 2, 4, Color.STONE, round = .1, at = vec(10.5, 1, -4)).solid().texture(Textures.STONE)
     val pad = cylinder(1.4, .12, Color.GREEN, at = vec(10.5, 2.06, -4))
     zone(Box(1.4f, 1f, 1.4f), at = vec(10.5, 3, -4), onEnter = { if (it is Player) { pad.mesh = Mesh.cylinder(1.4f, .12f, Color.YELLOW); play(Sounds.pickup()) } })
 
     // A lift going up and down: a kinematic body moved by the game, it carries the player.
     box(2, .3, 2, Color.ORANGE, round = .05, at = vec(-6, .15, -6)).kinematic()
         .onUpdate { position = vec(-6, .15 + 1.5 * (1 - cos(time * .8f)), -6) }
-    box(3, 3, 3, Color.STONE, at = vec(-6, 1.5, -9.6)).solid()
+    box(3, 3, 3, Color.STONE, at = vec(-6, 1.5, -9.6)).solid().texture(Textures.ROCK)
 
     // A wall of crates and a few balls.
-    for (row in 0 until 4) for (col in 0 until 3) box(.8, round = .06, at = vec(-1.2 + col * .82, .4 + row * .81, -8)).dynamic()
+    for (row in 0 until 4) for (col in 0 until 3) box(.8, round = .06, at = vec(-1.2 + col * .82, .4 + row * .81, -8)).texture(Textures.PLANKS).dynamic()
     val colors = listOf(Color.RED, Color.BLUE, Color.YELLOW, Color.GREEN, Color.PURPLE)
     for ((k, c) in colors.withIndex()) sphere(.3 + k * .06, c, at = vec(3 + k * 1.2, .5, 3)).dynamic(bounce = .6)
 
@@ -38,7 +39,7 @@ val playground: Scene.() -> Unit = {
         for (n in 0 until 400) {
             val x = n % 8; val z = (n / 8) % 8; val y = n / 64
             dropped += box(.5, color = if ((x + y + z) % 2 == 0) Color.WOOD else Color.ORANGE, round = .04,
-                at = vec(p.x + (x - 3.5) * .55, 6 + y * .55, p.z - 6 + (z - 3.5) * .55)).dynamic()
+                at = vec(p.x + (x - 3.5) * .55, 6 + y * .55, p.z - 6 + (z - 3.5) * .55)).texture(Textures.PLANKS).dynamic()
         }
     }
     onRestart { dropped.forEach { it.remove() }; dropped.clear() }

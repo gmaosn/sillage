@@ -7,11 +7,11 @@ c'est ce que Blender exporte pour des objets en plusieurs pièces parentées.
 
 Fichiers produits dans demo/resources/models :
   terrain.glb  sol de l'île et ponton (collisions)
-  village.glb  décor fixe : maison, phare, rochers, fleurs, chemin...
+  village.glb  décor fixe : maison, phare, rochers, fleurs, chemin, feu de camp...
   marin.glb    le héros, en pièces, clips idle / run / jump / fall
   palmiers.glb palmiers, clip « vent »
   ciel.glb     nuages et mouettes, clip « vol »
-  port.glb     bateau, bouées, lampe du phare, fumée, clip « vie »
+  port.glb     bateau, bouées, lampe du phare, clip « vie »
 """
 from pathlib import Path
 import json, math, struct, random
@@ -33,7 +33,13 @@ COLORS = {
     'or': (.90, .62, .10), 'cuir': (.16, .07, .025), 'paille': (.80, .62, .25), 'semelle': (.05, .04, .03),
     'vitre': (.18, .36, .45), 'jaune': (.95, .75, .05), 'rose': (.90, .30, .45), 'violet': (.45, .20, .70),
     'fer': (.10, .10, .10), 'lampe': (1.0, .85, .35), 'orange': (.95, .35, .05), 'nuage': (.92, .94, .95),
-    'fumee': (.70, .70, .70),
+    # Matériaux à part pour ce que le moteur traite à part : les plantes (le vent), les murs enduits,
+    # les troncs et les galets (leurs textures), les braises (leur lueur).
+    'touffe': (.12, .36, .05), 'buisson_fonce': (.12, .36, .05), 'baie': (.83, .075, .025),
+    'fleur_tige': (.075, .32, .07), 'fleur_coeur': (.90, .62, .10), 'fleur_jaune': (.95, .75, .05),
+    'fleur_rose': (.90, .30, .45), 'fleur_blanche': (.78, .78, .72), 'fleur_violette': (.45, .20, .70),
+    'fleur_corail': (.83, .075, .025), 'enduit': (.87, .76, .49), 'tronc': (.29, .13, .045), 'coco': (.29, .13, .045),
+    'galet': (.42, .42, .40), 'braise': (1.0, .32, .06), 'cendre': (.10, .09, .085),
 }
 
 
@@ -293,7 +299,7 @@ for i in range(16):  # mêmes tirages qu'avant : les rochers ne bougent pas
     v.sphere(math.cos(a) * r, .7, math.sin(a) * r * .83, .55, .65, .4, 'roche', 12, 6)
 
 # Maison : façade avant vers +Z (z = -0.8), porte au milieu.
-v.box(-3, 1.45, -2, 2.7, 1.7, 2.4, 'creme')
+v.box(-3, 1.45, -2, 2.7, 1.7, 2.4, 'enduit')
 v.box(-3, 1.40, -2, 2.8, .12, 2.5, 'pierre')                                 # soubassement
 p = [(-4.7, 3.1, -3.5), (-1.3, 3.1, -3.5), (-4.7, 3.1, -.5), (-1.3, 3.1, -.5), (-3, 4.2, -3.5), (-3, 4.2, -.5)]
 # Faces tournées vers l'extérieur : le toit sert aussi de volume de collision (triangles à une face).
@@ -330,7 +336,7 @@ v.box(-4.0, y0 + .62, -.52, 1.0, .22, .05, 'bois_clair')
 for lx in (-4.42, -3.58): v.box(lx, y0, -.35, .07, .4, .3, 'bois')
 
 # Phare : porte, fenêtres, galerie, salle de la lampe (la lampe tournante est dans port.glb).
-v.cone(4, 2.85, -3, .68, .49, 3.3, 'creme', 12)
+v.cone(4, 2.85, -3, .68, .49, 3.3, 'enduit', 12)
 v.cone(4, 4.89, -3, .58, .55, .38, 'corail', 12)
 gy = ground(4, -2.3)
 v.box(4, gy - .05, -2.33, .42, .85, .08, 'bleu'); v.box(4, gy + .80, -2.34, .5, .08, .08, 'blanc')
@@ -362,7 +368,7 @@ def path(a, b, step=.62):
         off = .18 if i % 2 else -.18
         nx, nz = -(b[1] - a[1]) / d, (b[0] - a[0]) / d
         x += nx * off; z += nz * off
-        v.disk(x, ground(x, z) + .03, z, .22 + random.uniform(-.04, .04), .17, 'pierre', 7)
+        v.disk(x, ground(x, z) + .03, z, .22 + random.uniform(-.04, .04), .17, 'galet', 7)
 path((-3, -.1), (-1.85, 7.3))
 path((-2.4, .1), (3.6, -2.0))
 
@@ -370,16 +376,17 @@ path((-2.4, .1), (3.6, -2.0))
 for _ in range(26):
     cx = random.uniform(-8, 8); cz = random.uniform(-6.5, 6.5)
     if not on_grass(cx, cz): continue
-    color = random.choice(['jaune', 'rose', 'blanc', 'violet', 'corail'])
+    color = 'fleur_' + {'jaune': 'jaune', 'rose': 'rose', 'blanc': 'blanche', 'violet': 'violette', 'corail': 'corail'}[
+        random.choice(['jaune', 'rose', 'blanc', 'violet', 'corail'])]
     for _ in range(random.randint(3, 6)):
         x = cx + random.uniform(-.45, .45); z = cz + random.uniform(-.45, .45)
         if not on_grass(x, z): continue
         y = ground(x, z); h = random.uniform(.14, .26)
-        v.box(x, y, z, .02, h, .02, 'palme')
+        v.box(x, y, z, .02, h, .02, 'fleur_tige')
         for k in range(5):
             a = k * TAU / 5
             v.box(x + math.cos(a) * .045, y + h, z + math.sin(a) * .045, .05, .025, .05, color)
-        v.box(x, y + h + .01, z, .035, .03, .035, 'or')
+        v.box(x, y + h + .01, z, .035, .03, .035, 'fleur_coeur')
 for _ in range(110):
     x = random.uniform(-9, 9); z = random.uniform(-7.5, 7.5)
     if not on_grass(x, z): continue
@@ -388,21 +395,21 @@ for _ in range(110):
         a = random.uniform(0, TAU); lean = random.uniform(.03, .08)
         tip = (x + math.cos(a) * lean, y + random.uniform(.16, .28), z + math.sin(a) * lean)
         side = (math.cos(a + 1.6) * .035, 0, math.sin(a + 1.6) * .035)
-        v.face([add((x, y, z), side), add((x, y, z), mul(side, -1)), tip], 'herbe_fonce', (math.cos(a), .3, math.sin(a)))
+        v.face([add((x, y, z), side), add((x, y, z), mul(side, -1)), tip], 'touffe', (math.cos(a), .3, math.sin(a)))
 BUSHES = [(-2.0, -4.25), (5.5, -4.6), (2.6, 1.3), (-0.3, -3.7), (-6.4, -1.8), (6.6, .1)]
 for bx, bz in BUSHES:
     y0 = ground(bx, bz)
     for k in range(4):
         a = k * TAU / 4 + .5
-        v.sphere(bx + math.cos(a) * .28, y0 + .3, bz + math.sin(a) * .22, .38, .34, .36, 'buisson' if k % 2 else 'herbe_fonce', 14, 7)
-    for k in range(3): v.sphere(bx + random.uniform(-.3, .3), y0 + .55, bz - .3, .05, .05, .05, 'corail', 5, 3)
+        v.sphere(bx + math.cos(a) * .28, y0 + .3, bz + math.sin(a) * .22, .38, .34, .36, 'buisson' if k % 2 else 'buisson_fonce', 14, 7)
+    for k in range(3): v.sphere(bx + random.uniform(-.3, .3), y0 + .55, bz - .3, .05, .05, .05, 'baie', 5, 3)
 
 # Plage : galets, étoiles de mer, bois flotté, château de sable.
 for _ in range(36):
     a = random.uniform(0, TAU); r = random.uniform(9.9, 11.4)
     x = math.cos(a) * r; z = math.sin(a) * r * .83
     if -3.2 < x < -.4 and z > 6: continue
-    v.sphere(x, ground(x, z) + .02, z, random.uniform(.06, .13), .05, random.uniform(.05, .1), 'pierre', 6, 3)
+    v.sphere(x, ground(x, z) + .02, z, random.uniform(.06, .13), .05, random.uniform(.05, .1), 'galet', 6, 3)
 for a in [.6, 2.3, 3.9, 5.2]:
     x = math.cos(a) * 10.7; z = math.sin(a) * 10.7 * .83
     v.star(x, ground(x, z) + .02, z, .2, 'orange', a)
@@ -414,6 +421,20 @@ for dx, dz in [(-.45, -.45), (.45, -.45), (-.45, .45), (.45, .45)]:
     v.cone(sx + dx, sy, sz + dz, .14, .12, .5, 'sable_mouille', 8); v.cone(sx + dx, sy + .5, sz + dz, .12, 0, .14, 'sable', 8)
 v.cone(sx, sy + .32, sz, .22, .18, .34, 'sable_mouille', 8); v.cone(sx, sy + .66, sz, .2, 0, .2, 'sable', 8)
 v.box(sx, sy + .86, sz, .015, .3, .015, 'bois'); v.face([(sx, sy + 1.16, sz), (sx, sy + 1.04, sz), (sx + .16, sy + 1.1, sz)], 'corail', (0, 0, 1))
+# Feu de camp sur la plage, à l'est : un cercle de galets, des cendres, trois bûches en faisceau, des
+# braises (la démo y ajoute flammes, étincelles, fumée et lumière), une bûche pour s'asseoir.
+fx, fz = 8.0, 2.4; fy = ground(fx, fz)
+v.disk(fx, fy + .015, fz, .36, .36, 'cendre', 16)
+for k in range(9):
+    a = k * TAU / 9 + .2
+    v.sphere(fx + math.cos(a) * .46, fy + .05, fz + math.sin(a) * .46, .11 + .02 * (k % 3), .08, .1, 'galet', 7, 4)
+for k in range(3):
+    a = k * TAU / 3 + .4
+    v.tube((fx + math.cos(a) * .34, fy + .03, fz + math.sin(a) * .34), (fx + math.cos(a) * .05, fy + .42, fz + math.sin(a) * .05), .055, .04, 'bois', 7)
+for k in range(5):
+    a = k * TAU / 5 + 1.0
+    v.sphere(fx + math.cos(a) * .13, fy + .05, fz + math.sin(a) * .13, .08, .05, .07, 'braise', 6, 3)
+v.tube((fx - .35, fy + .14, fz + 1.25), (fx + .75, fy + .14, fz + 1.05), .15, .15, 'bois', 9)
 single(v, 'village.glb')
 
 
@@ -594,10 +615,10 @@ for i, (x, z) in enumerate([(-5, -1), (-6, 3), (6, 1), (1, -5), (-3, -4)]):
         t = k / 5
         pts.append((math.cos(lean_a) * lean * t * t, 2.95 * t, math.sin(lean_a) * lean * t * t))
     for k in range(5):
-        trunk.tube(pts[k], pts[k + 1], .2 - .02 * k, .18 - .02 * k, 'bois', 8)
+        trunk.tube(pts[k], pts[k + 1], .2 - .02 * k, .18 - .02 * k, 'tronc', 8)
         trunk.tube(add(pts[k + 1], (0, -.06, 0)), add(pts[k + 1], (0, .02, 0)), .2 - .02 * k, .19 - .02 * k, 'roche', 8)
     top = pts[-1]
-    for j in range(3): trunk.sphere(top[0] + .2 * math.cos(j * 2.1), top[1] - .2, top[2] + .2 * math.sin(j * 2.1), .13, .15, .13, 'bois', 12, 6)
+    for j in range(3): trunk.sphere(top[0] + .2 * math.cos(j * 2.1), top[1] - .2, top[2] + .2 * math.sin(j * 2.1), .13, .15, .13, 'coco', 12, 6)
     tree = palms.node(f'palmier{i}', trunk, proot, t=(x, 1.5, z))
     crown = Mesh()
     for j in range(8):
@@ -685,15 +706,7 @@ for s in (-1, 1): lamp.box(s * .3, .03, 0, .12, .4, .5, 'noir')
 lnode = port.node('lampe', lamp, None, t=(4, 6.16, -3))
 times2, vals2 = turn_keys(12, 2, 1, 8)
 port.channel('vie', lnode, 'rotation', times2, vals2)
-puff = Mesh(); puff.sphere(0, 0, 0, 1, 1, 1, 'fumee', 8, 4)
-smoke_times = keys(12, 97)
-for k in range(3):
-    node = port.node(f'fumee{k}', puff, None, t=(-2.0, 4.7, -2.6), s=(0, 0, 0))
-    def at(t, k=k):
-        u = ((t / 3) + k / 3) % 1.0
-        return (-2.0 + .5 * u, 4.75 + 1.6 * u, -2.6 + .2 * u), .42 * math.sin(math.pi * min(u / .9, 1.0)) ** .7
-    port.channel('vie', node, 'translation', smoke_times, [at(t)[0] for t in smoke_times])
-    port.channel('vie', node, 'scale', smoke_times, [(at(t)[1],) * 3 for t in smoke_times])
+# La fumée de la cheminée : des particules du moteur (démo).
 port.save('port.glb')
 
 

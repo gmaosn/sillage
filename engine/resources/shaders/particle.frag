@@ -20,7 +20,7 @@ void main() {
         outColor = vec4(tint.rgb * a * a * tint.a * 2.0, 0.0);
         return;
     }
-    float a = (1.0 - smoothstep(0.6, 1.0, r)) * tint.a;
+    float a = (1.0 - r * r) * (1.0 - r * r) * tint.a;      // soft all the way: puffs, not discs
     vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, 0.75) * 0.86 + fr.skyAmb.rgb * 0.3 + pointLights(vec3(0.0), world);
     outColor = vec4(hazed(tint.rgb * light, world) * a, a);
 }

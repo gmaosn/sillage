@@ -53,11 +53,14 @@ internal class Runtime(private val title: String, private val args: Array<String
   --route "x,z x,z j w p2 …"   the player follows points (j jumps, w walk/run, pN waits N s)
   --trace [--trace-every N]    print the player's state
   --animation clip        force the player's clip (captures)
+  --hour H                start at hour H (0 to 24, see Lighting.time)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
+  --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers""")
             return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
         }
         option("--export-sounds")?.let { exportSounds(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
+        option("--export-textures")?.let { exportTextures(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         val headless = "--headless" in args
         val smoke = "--smoke" in args
         val frames = option("--frames")?.toInt()?.also { require(it > 0) } ?: if (headless || smoke) 180 else Int.MAX_VALUE
@@ -76,6 +79,7 @@ internal class Runtime(private val title: String, private val args: Array<String
         }
         var scene = Scene().apply(setup)
         option("--animation")?.let { scene.forcedPlayerClip = it }
+        option("--hour")?.let { scene.lighting.time = it.toFloat() }
         scene.audio = audio
         val rate = audio?.mixer?.rate ?: 48_000
         val block = FloatArray(2 * 512)
