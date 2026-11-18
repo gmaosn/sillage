@@ -46,7 +46,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `cone(radius = .5, height = 1, color = YELLOW, at)` | standing on Y |
 | `plane(width = 10, depth = width, color = GRASS, at)` | flat, facing up, not solid |
 | `ground(size = 400, color = GRASS, surface = Material.GRASS, at)` | flat solid floor, its edge lost in the haze |
-| `water(level = 0, color = WATER, size = 300)` | flat sea or lake, not solid |
+| `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests |
 | `model(path, at, scale = 1)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
 | `mesh(mesh, at)` | a `Mesh` of your own |
 | `player(model = null, at, radius = .28, height = 1.8, setup = {})` | a `Player`; without a model, a capsule |
@@ -85,6 +85,7 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 |---|---|
 | `position`, `rotation`, `scale`, `yaw` | placement; `yaw` in degrees about Y (0 faces −Z) |
 | `visible`, `name`, `tag` | `tag` is yours: the engine never reads it |
+| `castsShadow` | whether it casts a shadow from the sun (true); it receives shadows either way |
 | `mesh` | what is drawn; replace it to change the look (primitives share meshes: do not edit one in place) |
 | `model`, `parts`, `animator` | for a model: where it came from, its drawable parts, its clip player |
 | `body` | its rigid body, once it takes part in the physics |
@@ -96,7 +97,7 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `solid(vararg materials, blocksCamera = true, surface)` | still and solid; a model collides with its triangles (only those of `materials` if given), each with the surface of its material name |
 | `kinematic()` | moved by the game: set `position`/`rotation`, the body follows smoothly and pushes what it meets |
 | `collider(shape, offset, part, surface = "wood", blocksCamera = true)` | an extra collision shape; with `part`, it follows that part of an animated model |
-| `shadow(radius)` | a soft round shadow under it |
+| `shadow(radius)` | a soft round shadow under it, drawn when the cast shadows are off (moving bodies get one by themselves) |
 | `play(clip, loop = true, speed = 1, fade = .15)` | plays a clip of its model, cross-fading |
 | `onUpdate { dt -> … }` | every frame, with the node as receiver |
 | `spin(degreesPerSecond = 90, axis = Y)` | turns on itself |
@@ -162,13 +163,13 @@ Texts and panels over the scene, on a canvas 600 units high whose width follows 
 | Member | |
 |---|---|
 | `text(value, x, y, size = 2, color = WHITE, anchor = TOP_LEFT, align = AUTO)` | a `Hud.Text`; `value` is a `String` or a `() -> String` evaluated every frame; `size` is the height of a font pixel (a letter is 7 high) |
-| `panel(x, y, width, height, color, anchor = TOP_LEFT)` | a `Hud.Panel` |
+| `panel(x, y, width, height, color, anchor = TOP_LEFT, opacity = 1)` | a `Hud.Panel`; below 1 the scene shows through |
 | `remove(element)`, `clear()` | |
 | `showFps` | a frame counter in the top right corner |
 | `mouseHint`, `hintPanelColor`, `hintTextColor` | the line shown while the mouse is free (null: none) |
 | `Hud.textWidth(text, size)` | width in canvas units |
 
-Elements (`Hud.Element`) have `x`, `y`, `anchor`, `visible`; a `Text` also `value`, `size`, `color`, `align` (`AUTO`, `LEFT`, `CENTER`, `RIGHT`); a `Panel` `width`, `height`, `color`. The font has capitals, small letters, digits, punctuation and French accents. The HUD is rebuilt only when what it shows changes.
+Elements (`Hud.Element`) have `x`, `y`, `anchor`, `visible`, `opacity` (0 to 1, for see-through panels and fades); a `Text` also `value`, `size`, `color`, `align` (`AUTO`, `LEFT`, `CENTER`, `RIGHT`); a `Panel` `width`, `height`, `color`. The font has capitals, small letters, digits, punctuation and French accents. The HUD is rebuilt only when what it shows changes.
 
 ### `Lighting`
 
@@ -181,6 +182,7 @@ Set while building the scene: the values are compiled into the shader when the s
 | `skyAmbient`, `groundAmbient` | light from above and from below |
 | `zenith`, `skyMiddle`, `horizon` | the sky's gradient (the horizon colour is also the haze) |
 | `fogStart`, `fogEnd` | the haze begins and hides everything beyond (45 m, 150 m) |
+| `shadows`, `shadowRange` | cast shadows (true), drawn within this many metres of what the camera looks at (24) |
 
 ### `Color`, `Mesh`, `MeshBuilder`, `vec`
 

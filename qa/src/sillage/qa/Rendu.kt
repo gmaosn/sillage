@@ -63,11 +63,16 @@ fun Qa.rendu() {
         "${pct(part)} de pixels différents, écart moyen ${f3(moyen)}" to (part == 0.0 && moyen == 0.0)
     }
 
-    controle("pas de fuite (12 moteurs de rendu ouverts et fermés)", "mémoire résidente +≤ 40 Mo, descripteurs stables") {
+    // La mémoire résidente oscille de ±25 Mo d'un moteur à l'autre (tas, pilote) : on compare la médiane de quatre
+    // mesures au début (après deux pour s'installer) à celle des quatre dernières. Une fuite d'un moteur de rendu,
+    // quelques Mo à chaque fois, monte de plus de 40 Mo en dix moteurs.
+    controle("pas de fuite (16 moteurs de rendu ouverts et fermés)", "mémoire résidente +≤ 40 Mo (médianes), descripteurs stables") {
         val rss = ArrayList<Long>(); val fds = ArrayList<Int>()
-        repeat(12) { rendreIle(null, 2, taille = "320x200"); System.gc(); Thread.sleep(50); rss.add(statut("VmRSS:")); fds.add(descripteurs()) }
-        val croissance = (rss.last() - rss[2]) / 1024.0
-        "mémoire ${rss[2] / 1024} → ${rss.last() / 1024} Mo (${"%+.1f".format(croissance)}), descripteurs ${fds[2]} → ${fds.last()}" to
+        repeat(16) { rendreIle(null, 2, taille = "320x200"); System.gc(); Thread.sleep(50); rss.add(statut("VmRSS:")); fds.add(descripteurs()) }
+        fun median(xs: List<Long>) = xs.sorted().let { (it[1] + it[2]) / 2 }
+        val debut = median(rss.subList(2, 6)); val fin = median(rss.subList(12, 16))
+        val croissance = (fin - debut) / 1024.0
+        "mémoire ${debut / 1024} → ${fin / 1024} Mo (${"%+.1f".format(croissance)}), descripteurs ${fds[2]} → ${fds.last()}" to
             (croissance <= 40 && fds.last() <= fds[2])
     }
 

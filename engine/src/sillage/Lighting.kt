@@ -24,6 +24,13 @@ class Lighting {
     /** The haze starts at [fogStart] metres and hides everything beyond [fogEnd]. */
     var fogStart: Float = 45f
     var fogEnd: Float = 150f
+    /**
+     * Things cast shadows on each other: drawn from the sun into a map that covers a square of
+     * 2 × [shadowRange] metres around what the camera looks at, fading out at its border. Each node can
+     * opt out with [Node.castsShadow].
+     */
+    var shadows: Boolean = true
+    var shadowRange: Float = 24f
 
     /** The values as the shader takes them (specialisation constants 0–20). */
     internal fun constants(): FloatArray {
@@ -60,12 +67,12 @@ class Lighting {
 }
 
 /** A soft round shadow of radius 1: opacity (in the red channel) 1 at the centre, 0 at the rim. */
-internal fun shadowDisc(sides: Int = 32): Mesh {
+internal fun shadowDisc(opacity: Float = 1f, sides: Int = 32): Mesh {
     val v = FloatArray(sides * 27); var k = 0
     fun vertex(x: Float, z: Float, a: Float) { v[k++] = x; v[k++] = 0f; v[k++] = z; k += 3; v[k++] = a; v[k++] = 0f; v[k++] = 0f }
     for (i in 0 until sides) {
         val a = i * 2f * PI.toFloat() / sides; val b = (i + 1) * 2f * PI.toFloat() / sides
-        vertex(0f, 0f, 1f); vertex(cos(b), sin(b), 0f); vertex(cos(a), sin(a), 0f)
+        vertex(0f, 0f, opacity); vertex(cos(b), sin(b), 0f); vertex(cos(a), sin(a), 0f)
     }
     return Mesh(v)
 }

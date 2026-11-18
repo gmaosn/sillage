@@ -56,6 +56,8 @@ class Camera internal constructor(private val scene: Scene) {
         private set
     /** Unit vector of where the camera looks. */
     var forward = Vec3(0f, 0f, -1f)
+    /** The point the view is about (the target, or ahead of the eyes in first person): the cast shadows are drawn around it. */
+    internal var focus = Vec3.ZERO
         private set
 
     private var azimuth = 0f
@@ -93,12 +95,16 @@ class Camera internal constructor(private val scene: Scene) {
         mouseCalm += dt
         val t = target
         when {
-            mode == CameraMode.FIXED || t == null -> { position = fixedEye; forward = (fixedTarget - fixedEye).normalized(); return Mat4.lookAt(fixedEye, fixedTarget, Vec3.UP) }
+            mode == CameraMode.FIXED || t == null -> {
+                position = fixedEye; forward = (fixedTarget - fixedEye).normalized(); focus = fixedTarget
+                return Mat4.lookAt(fixedEye, fixedTarget, Vec3.UP)
+            }
             mode == CameraMode.FIRST_PERSON -> {
                 val eye = t.position.plus(0f, eyeHeight ?: ((t as? Player)?.character?.height?.minus(.15f) ?: 1.6f), 0f)
                 val p = pitch * PI.toFloat() / 180f
                 forward = Vec3(-sin(azimuth) * cos(p), sin(p), -cos(azimuth) * cos(p))
                 position = eye
+                focus = eye + Vec3(forward.x, 0f, forward.z).normalized() * (scene.lighting.shadowRange * .4f)
                 return Mat4.lookAt(eye, eye + forward, Vec3.UP)
             }
         }
@@ -125,6 +131,7 @@ class Camera internal constructor(private val scene: Scene) {
         // Cut in at once when something is in the way, smooth only the way back.
         position = if (position.distanceTo(aim) > free) desired else position.lerp(desired, 1 - exp(-12f * dt))
         forward = (aim - position).normalized()
+        focus = aim
         return Mat4.lookAt(position, aim, Vec3.UP)
     }
 

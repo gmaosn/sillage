@@ -148,8 +148,8 @@ internal class Runtime(private val title: String, private val args: Array<String
                 fpsFrames++; fpsTime += dt
                 if (fpsTime >= .5f) { fps = (fpsFrames / fpsTime).roundToInt(); fpsTime = 0f; fpsFrames = 0; scene.fps = fps }
                 val capture = if (frame == frames - 1 || route?.done == true) screenshot else null
-                r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: false), capture, eye, scene.time,
-                    scene.hiddenNode)
+                r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: true), capture, eye, scene.time,
+                    scene.hiddenNode, lookAt?.let { Vec3(it[3], it[4], it[5]) } ?: scene.camera.focus)
                 frameTimes.add((System.nanoTime() - frameStart) / 1e6)
                 if (r.gpuMs > 0.0) gpuTimes.add(r.gpuMs)
                 if (frame == 0) firstFrame = java.lang.management.ManagementFactory.getRuntimeMXBean().uptime
@@ -162,7 +162,8 @@ internal class Runtime(private val title: String, private val args: Array<String
                     fresh.input.source = scene.input.source
                     fresh.audio = audio
                     r.oublier()
-                    if (fresh.lighting.constants().contentEquals(scene.lighting.constants()).not()) {
+                    if (!fresh.lighting.constants().contentEquals(scene.lighting.constants()) || fresh.lighting.shadows != scene.lighting.shadows ||
+                        fresh.lighting.shadowRange != scene.lighting.shadowRange) {
                         r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting); renderer = r; r.ouvrir()
                     }
                     scene = fresh

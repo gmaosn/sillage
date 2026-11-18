@@ -224,6 +224,24 @@ internal val VkSubmitInfo = t("VkSubmitInfo", VK_STRUCTURE_TYPE_SUBMIT_INFO,
     "waitSemaphoreCount" to U32, "pWaitSemaphores" to Ptr, "pWaitDstStageMask" to Ptr, "commandBufferCount" to U32,
     "pCommandBuffers" to Ptr, "signalSemaphoreCount" to U32, "pSignalSemaphores" to Ptr)
 
+internal val VkSamplerCreateInfo = t("VkSamplerCreateInfo", VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+    "flags" to U32, "magFilter" to U32, "minFilter" to U32, "mipmapMode" to U32, "addressModeU" to U32, "addressModeV" to U32,
+    "addressModeW" to U32, "mipLodBias" to F32, "anisotropyEnable" to U32, "maxAnisotropy" to F32, "compareEnable" to U32,
+    "compareOp" to U32, "minLod" to F32, "maxLod" to F32, "borderColor" to U32, "unnormalizedCoordinates" to U32)
+internal val VkDescriptorSetLayoutBinding = s("VkDescriptorSetLayoutBinding",
+    "binding" to U32, "descriptorType" to U32, "descriptorCount" to U32, "stageFlags" to U32, "pImmutableSamplers" to Ptr)
+internal val VkDescriptorSetLayoutCreateInfo = t("VkDescriptorSetLayoutCreateInfo", VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+    "flags" to U32, "bindingCount" to U32, "pBindings" to Ptr)
+internal val VkDescriptorPoolSize = s("VkDescriptorPoolSize", "type" to U32, "descriptorCount" to U32)
+internal val VkDescriptorPoolCreateInfo = t("VkDescriptorPoolCreateInfo", VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+    "flags" to U32, "maxSets" to U32, "poolSizeCount" to U32, "pPoolSizes" to Ptr)
+internal val VkDescriptorSetAllocateInfo = t("VkDescriptorSetAllocateInfo", VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+    "descriptorPool" to U64, "descriptorSetCount" to U32, "pSetLayouts" to Ptr)
+internal val VkDescriptorImageInfo = s("VkDescriptorImageInfo", "sampler" to U64, "imageView" to U64, "imageLayout" to U32)
+internal val VkWriteDescriptorSet = t("VkWriteDescriptorSet", VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    "dstSet" to U64, "dstBinding" to U32, "dstArrayElement" to U32, "descriptorCount" to U32, "descriptorType" to U32,
+    "pImageInfo" to Ptr, "pBufferInfo" to Ptr, "pTexelBufferView" to Ptr)
+
 /** Every struct above, for the layout tests. */
 internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D, VkRect2D, VkComponentMapping,
     VkImageSubresourceRange, VkImageSubresourceLayers, VkApplicationInfo, VkInstanceCreateInfo, VkLayerProperties,
@@ -241,4 +259,6 @@ internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D
     VkPipelineColorBlendStateCreateInfo, VkPushConstantRange, VkPipelineLayoutCreateInfo, VkGraphicsPipelineCreateInfo,
     VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkSwapchainCreateInfoKHR, VkPresentInfoKHR, VkCommandBufferBeginInfo,
     VkClearValue, VkClearDepthStencilValue, VkRenderPassBeginInfo, VkImageMemoryBarrier, VkMemoryBarrier,
-    VkBufferImageCopy, VkImageBlit, VkSubmitInfo)
+    VkBufferImageCopy, VkImageBlit, VkSubmitInfo, VkSamplerCreateInfo, VkDescriptorSetLayoutBinding,
+    VkDescriptorSetLayoutCreateInfo, VkDescriptorPoolSize, VkDescriptorPoolCreateInfo, VkDescriptorSetAllocateInfo,
+    VkDescriptorImageInfo, VkWriteDescriptorSet)

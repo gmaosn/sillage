@@ -69,6 +69,7 @@ class Scene {
     private class Shadow(val disc: Node, val of: Node, val radius: Float)
     private val shadows = ArrayList<Shadow>()
     private val shadowMesh by lazy { shadowDisc() }
+    private val lightShadowMesh by lazy { shadowDisc(.7f) }
     private val models = HashMap<String, Model>()
     private val flat = HashMap<String, Mesh>()
     private val updates = ArrayList<Scene.(Float) -> Unit>()
@@ -158,9 +159,21 @@ class Scene {
         return node
     }
 
-    /** A flat sea or lake at height [level], [size] metres across. It is not solid: what falls in sinks. */
-    fun water(level: Number = 0, color: Color = Color.WATER, size: Number = 300): Node =
-        add(Node(this, Mesh.plane(size.toFloat(), size.toFloat(), color)), vec(0, level, 0))
+    /**
+     * A sea or lake at height [level], [size] metres across. It is not solid: what falls in sinks. Along
+     * its shores (wherever something solid rises out of it) the water turns to a lagoon of [shallows]
+     * colour reaching [reach] metres out, with foam against the beach and surf rolling in; wave crests
+     * drift on the open water. The shores are found when the scene is built, so add the land first or not.
+     */
+    fun water(level: Number = 0, color: Color = Color.WATER, size: Number = 300, shallows: Color? = null, reach: Number = 6): Node {
+        val node = Node(this, Mesh.EMPTY)
+        node.water = WaterLook(color, shallows ?: color.mix(Color.hex(0xB8F2E6), .6f), reach.toFloat())
+        node.castsShadow = false
+        pendingWater.add(Triple(node, level.toFloat(), size.toFloat()))
+        return add(node, Vec3.ZERO)
+    }
+    // Water is shaped by the shores around it: its mesh is made once the scene is built, before the first frame.
+    private val pendingWater = ArrayList<Triple<Node, Float, Float>>()
 
     /**
      * A player: walks, runs and jumps with the keyboard (WASD, arrows, space, shift to walk), the camera
@@ -428,8 +441,12 @@ class Scene {
         sounds.update(dt)
     }
 
+    // With cast shadows, only players keep a round shadow, a light one straight below them: it shows where a
+    // jump will land. Without, every moving thing has one.
     private fun placeShadows() {
         for (s in shadows) {
+            if (lighting.shadows && s.of !is Player) { s.disc.visible = false; continue }
+            s.disc.mesh = if (lighting.shadows) lightShadowMesh else shadowMesh
             val p = s.of.position
             // The first thing under it (ground, the top of a crate…), except itself and characters.
             val under = physics.raycast(p.plus(0f, .25f, 0f), Vec3(0f, -1f, 0f), 30f,
@@ -446,6 +463,10 @@ class Scene {
     /** What the renderer draws this frame (the sky follows the eye; a first-person player is not drawn). */
     internal fun drawList(eye: Vec3): List<Node> {
         if (sky.mesh.triangleCount == 0) sky.mesh = lighting.skyDome()
+        if (pendingWater.isNotEmpty()) {
+            for ((node, level, size) in pendingWater) node.mesh = waterMesh(physics, level, size, node.water!!.reach)
+            pendingWater.clear()
+        }
         sky.position = eye
         return all
     }

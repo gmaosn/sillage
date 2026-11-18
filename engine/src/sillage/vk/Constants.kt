@@ -163,3 +163,22 @@ internal const val VK_FENCE_CREATE_SIGNALED_BIT = 0x1
 internal const val VK_VERTEX_INPUT_RATE_INSTANCE = 1
 internal const val VK_FORMAT_R32G32B32A32_SFLOAT = 109
 internal const val VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT = 0x200
+
+// Shadow map: a depth image sampled by the toon shader through a comparison sampler.
+internal const val VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO = 31
+internal const val VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO = 32
+internal const val VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO = 33
+internal const val VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO = 34
+internal const val VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET = 35
+internal const val VK_FORMAT_D16_UNORM = 124
+internal const val VK_IMAGE_USAGE_SAMPLED_BIT = 0x4
+internal const val VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5
+internal const val VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT = 0x1
+internal const val VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT = 0x1000
+internal const val VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x80
+internal const val VK_ACCESS_SHADER_READ_BIT = 0x20
+internal const val VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1
+internal const val VK_FILTER_LINEAR = 1
+internal const val VK_SAMPLER_MIPMAP_MODE_NEAREST = 0
+internal const val VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE = 2
+internal const val VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE = 4

@@ -37,6 +37,8 @@ class Mesh(val vertices: FloatArray) {
     init { require(vertices.size % 27 == 0) { "A mesh is made of whole triangles (27 floats each)" } }
 
     val triangleCount: Int get() = vertices.size / 27
+    /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
+    internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
 
     /** Smallest box holding the mesh: min and max corners. */
     val bounds: Pair<Vec3, Vec3> by lazy {

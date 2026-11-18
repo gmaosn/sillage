@@ -60,7 +60,7 @@ Inside `game { }` you are in a `Scene`. Each builder adds a `Node`, placed with 
 | `sphere(radius, color)`, `capsule(radius, height, color)`, `cylinder(radius, height, color)`, `cone(radius, height, color)` | centred primitives |
 | `plane(width, depth, color)` | a flat rectangle (not solid) |
 | `ground(size, color, surface)` | a flat solid floor, its edge lost in the fog by default |
-| `water(level, color)` | a flat sea or lake (not solid) |
+| `water(level, color, size, shallows, reach)` | a sea or lake (not solid): a light lagoon along its shores, foam against the beaches, surf rolling in, wave crests drifting on the open water |
 | `model("models/house.glb", at, scale)` | a glTF binary model, from a file or from the resources |
 | `mesh(mesh)` | a mesh you built with `Mesh` or `MeshBuilder` |
 
@@ -168,7 +168,7 @@ val banner = hud.text("YOU WIN", 0, 0, 4, Color.YELLOW, Hud.Anchor.CENTER)
 banner.visible = false
 ```
 
-The interface is rebuilt only when what it shows changes. `hud.showFps` adds a frame counter; `hud.mouseHint` is the line shown while the mouse is free (`null` hides it).
+Every element has an `opacity` (1 by default): `hud.panel(…, opacity = .7)` lets the game show through a panel, and changing a text's opacity frame by frame fades it in or out. The interface is rebuilt only when what it shows changes. `hud.showFps` adds a frame counter; `hud.mouseHint` is the line shown while the mouse is free (`null` hides it).
 
 ## Sound
 
@@ -206,6 +206,10 @@ lighting.fogStart = 30f; lighting.fogEnd = 90f
 
 The sun, ambient light, sky gradient and fog are compiled into the shader when the scene starts, so set them in the scene's setup (a scene reached with `goTo` can have its own).
 
+Everything casts a shadow from the sun on what is below it, within `lighting.shadowRange` metres (24) of what the camera looks at; the shadows fade out beyond. `lighting.shadows = false` turns them off. A node that should not cast one (a cloud high in the sky, a decal) sets `castsShadow = false`; it still receives the others. With cast shadows, players also keep a light round shadow straight under them, which shows where a jump will land; without them, every moving thing gets a round shadow (`node.shadow()` adds one).
+
+Water finds its shores by itself: wherever solid ground rises gently out of it, `water()` lays a lagoon of the `shallows` colour reaching `reach` metres out, a lacy line of foam that swells against the beach and a line of surf rolling in. Raised things standing in the water, such as a pier's deck, leave the water under them open. The shores are looked for once the scene is built, so the order of the calls does not matter.
+
 ## Models
 
 Models are glTF binary files (`.glb`): meshes with flat colours (`baseColorFactor`), a node hierarchy and node animations (translation, rotation, scale; linear and step). Textures and skins are refused with a clear message: the toon look relies on colours, and characters are made of rigid parts animated as a hierarchy. `node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part.
@@ -233,6 +237,7 @@ What the engine does by itself:
 - **Physics on several threads.** Large scenes use a pool of up to 8 threads, one per process: broad phase, contacts and the solver (by graph colouring: contacts that share no moving body are solved together). The result is the same bit for bit with or without threads, whatever their number; `physics.parallel = false` keeps everything on the game's thread. Small scenes always run on one.
 - **One draw call per mesh.** Every copy of a mesh is drawn in one call, with its model matrices in an instance buffer. Primitives of the same size and colour share their mesh, so a thousand `box(.5)` cost one draw; for your own meshes, build one `Mesh` and give it to many nodes (`mesh(crate, at = …)`). To change one node's look, give it another mesh rather than editing a shared one.
 - **Two frames in flight.** The CPU prepares the next frame while the GPU draws the last one.
+- **Shadows in one extra pass.** The shadow map is drawn from the sun with the same instance data, in a depth-only pass; on the demo island it costs about 0.2 ms of CPU per frame.
 - **Queries through a grid.** Rays, sphere sweeps and contact queries (the player, shadows, the camera) only look at the bodies near them.
 - **No garbage in the hot loops.** Collision tests, rays and sweeps work on plain numbers and create no objects; the physics step, the mixer and the frame recording reuse their buffers. The garbage collector has little to do while the game runs.
 

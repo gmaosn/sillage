@@ -23,6 +23,8 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Uniform size factor. Set it before [dynamic] or [solid]: the collision shape is sized then. */
     var scale: Float = 1f
     var visible: Boolean = true
+    /** Whether it casts a shadow on what is below it (see [Lighting.shadows]); it receives shadows either way. */
+    var castsShadow: Boolean = true
     /** Free label for the game (a role, a score…); the engine never reads it. */
     var tag: Any? = null
 
@@ -42,6 +44,7 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     internal var shape: Shape? = null            // the collision shape of a primitive
     internal var bodyOffset: Vec3 = Vec3.ZERO     // from the node's origin to its body's centre, in node space
     internal var isShadow = false                // a blob shadow, drawn blended after the opaque nodes
+    internal var water: WaterLook? = null        // a water surface, drawn by the water shader
     internal var removed = false
     internal val behaviours = ArrayList<Node.(Float) -> Unit>()
 

@@ -1,6 +1,5 @@
 package sillage
 
-import sillage.math.Vec3
 
 /**
  * What is drawn over the scene: texts and panels on a canvas 600 units high (its width follows the
@@ -13,8 +12,11 @@ class Hud internal constructor() {
     /** How a text sits on its anchor point; [AUTO] follows the anchor (left for the left side…). */
     enum class Align { AUTO, LEFT, CENTER, RIGHT }
 
-    /** Something on the HUD; hide it with [visible] or take it away with [Hud.remove]. */
-    sealed class Element(var x: Float, var y: Float, var anchor: Anchor) { var visible = true }
+    /**
+     * Something on the HUD; hide it with [visible] or take it away with [Hud.remove]. [opacity] lets the
+     * scene show through (1: solid, 0: invisible), for panels that do not hide the game or a text that fades.
+     */
+    sealed class Element(var x: Float, var y: Float, var anchor: Anchor) { var visible = true; var opacity = 1f }
     /** A line of text; [size] is the height of a pixel of the font (a letter is 7 of them high). */
     class Text internal constructor(var value: () -> String, x: Float, y: Float, var size: Float, var color: Color, anchor: Anchor, var align: Align) : Element(x, y, anchor)
     class Panel internal constructor(x: Float, y: Float, var width: Float, var height: Float, var color: Color, anchor: Anchor) : Element(x, y, anchor)
@@ -35,8 +37,9 @@ class Hud internal constructor() {
     fun text(value: () -> String, x: Number, y: Number, size: Number = 2, color: Color = Color.WHITE, anchor: Anchor = Anchor.TOP_LEFT, align: Align = Align.AUTO): Text =
         Text(value, x.toFloat(), y.toFloat(), size.toFloat(), color, anchor, align).also { elements.add(it) }
 
-    fun panel(x: Number, y: Number, width: Number, height: Number, color: Color = Color.hex(0x153D48), anchor: Anchor = Anchor.TOP_LEFT): Panel =
-        Panel(x.toFloat(), y.toFloat(), width.toFloat(), height.toFloat(), color, anchor).also { elements.add(it) }
+    fun panel(x: Number, y: Number, width: Number, height: Number, color: Color = Color.hex(0x153D48), anchor: Anchor = Anchor.TOP_LEFT,
+              opacity: Number = 1): Panel =
+        Panel(x.toFloat(), y.toFloat(), width.toFloat(), height.toFloat(), color, anchor).also { it.opacity = opacity.toFloat(); elements.add(it) }
 
     fun remove(element: Element) { elements.remove(element) }
     fun clear() = elements.clear()
@@ -45,7 +48,7 @@ class Hud internal constructor() {
     // What the last mesh showed, to see without allocating whether anything changed.
     private var shownAspect = 0f; private var shownFps = 0; private var shownCaptured = false; private var shownHint: String? = null
     private var shownElements = 0
-    private var shownNumbers = FloatArray(0)        // per element: x, y, visible, anchor, size or width, height, align
+    private var shownNumbers = FloatArray(0)        // per element: x, y, visible, anchor, size or width, height, align, opacity
     private var shownThings = arrayOfNulls<Any>(0)  // per element: text, colour
 
     /** The HUD as an unlit mesh in clip space, rebuilt only when what it shows changed. */
@@ -54,9 +57,9 @@ class Hud internal constructor() {
         val shownFpsNow = if (showFps) fps else -1
         var changed = last == null || aspect != shownAspect || shownFpsNow != shownFps || mouseCaptured != shownCaptured ||
             mouseHint != shownHint || n != shownElements
-        if (shownNumbers.size < 7 * n) { shownNumbers = FloatArray(14 * n); shownThings = arrayOfNulls(4 * n); changed = true }
+        if (shownNumbers.size < 8 * n) { shownNumbers = FloatArray(16 * n); shownThings = arrayOfNulls(4 * n); changed = true }
         for (i in 0 until n) {
-            val e = elements[i]; val f = 7 * i; val o = 2 * i
+            val e = elements[i]; val f = 8 * i; val o = 2 * i
             val text = if (e is Text && e.visible) e.value() else null
             val a = e.x; val b = e.y; val c = if (e.visible) 1f else 0f; val d = e.anchor.ordinal.toFloat()
             val g = when (e) { is Text -> e.size; is Panel -> e.width }
@@ -64,10 +67,11 @@ class Hud internal constructor() {
             val k = when (e) { is Text -> e.align.ordinal.toFloat(); is Panel -> 0f }
             val color = when (e) { is Text -> e.color; is Panel -> e.color }
             val nums = shownNumbers
+            val op = e.opacity
             if (nums[f] != a || nums[f + 1] != b || nums[f + 2] != c || nums[f + 3] != d || nums[f + 4] != g || nums[f + 5] != h || nums[f + 6] != k ||
-                shownThings[o] != text || shownThings[o + 1] != color) {
+                nums[f + 7] != op || shownThings[o] != text || shownThings[o + 1] != color) {
                 changed = true
-                nums[f] = a; nums[f + 1] = b; nums[f + 2] = c; nums[f + 3] = d; nums[f + 4] = g; nums[f + 5] = h; nums[f + 6] = k
+                nums[f] = a; nums[f + 1] = b; nums[f + 2] = c; nums[f + 3] = d; nums[f + 4] = g; nums[f + 5] = h; nums[f + 6] = k; nums[f + 7] = op
                 shownThings[o] = text; shownThings[o + 1] = color
             }
         }
@@ -79,10 +83,21 @@ class Hud internal constructor() {
 
     private fun build(aspect: Float, fps: Int, mouseCaptured: Boolean, texts: List<String?>): Mesh {
         val w = 600f * aspect; val h = 600f
-        val g = MeshBuilder()
+        // Two triangles per rectangle, in clip space. The normal carries the transparency (1 − opacity) in x:
+        // the HUD's shader blends with it, and a zero normal elsewhere means unlit.
+        var v = FloatArray(54 * 64); var k = 0
+        fun vertex(px: Float, py: Float, c: Color, clear: Float) {
+            if (k + 9 > v.size) v = v.copyOf(v.size * 2)
+            v[k] = px / (w / 2) - 1f; v[k + 1] = py / (h / 2) - 1f; v[k + 2] = 0f
+            v[k + 3] = clear; v[k + 4] = 0f; v[k + 5] = 0f; v[k + 6] = c.r; v[k + 7] = c.g; v[k + 8] = c.b
+            k += 9
+        }
+        var opacity = 1f
         fun rect(x: Float, y: Float, rw: Float, rh: Float, c: Color) {
-            fun p(px: Float, py: Float) = Vec3(px / (w / 2) - 1f, py / (h / 2) - 1f, 0f)
-            g.quad(p(x, y), p(x + rw, y), p(x + rw, y + rh), p(x, y + rh), c)
+            if (rw <= 0f || rh <= 0f || opacity <= 0f) return
+            val clear = 1f - opacity.coerceIn(0f, 1f)
+            vertex(x, y, c, clear); vertex(x + rw, y, c, clear); vertex(x + rw, y + rh, c, clear)
+            vertex(x, y, c, clear); vertex(x + rw, y + rh, c, clear); vertex(x, y + rh, c, clear)
         }
         fun place(e: Element, ew: Float, eh: Float): Pair<Float, Float> {
             val ax = when (e.anchor) { Anchor.TOP_LEFT, Anchor.LEFT, Anchor.BOTTOM_LEFT -> e.x
@@ -97,13 +112,23 @@ class Hud internal constructor() {
             var i = 0
             for (ch in t) {
                 val glyph = Font.glyph(ch)
-                if (glyph != null) for ((row, line) in glyph.withIndex()) for ((col, pixel) in line.withIndex())
-                    if (pixel == '1') rect(x + (i * 6 + col) * size, y + row * size, size, size, c)
+                // One rectangle per run of lit pixels in a row of the glyph.
+                if (glyph != null) for ((row, line) in glyph.withIndex()) {
+                    var col = 0
+                    while (col < line.length) {
+                        if (line[col] != '1') { col++; continue }
+                        var end = col
+                        while (end < line.length && line[end] == '1') end++
+                        rect(x + (i * 6 + col) * size, y + row * size, (end - col) * size, size, c)
+                        col = end
+                    }
+                }
                 i++
             }
         }
         for ((index, e) in elements.withIndex()) {
             if (!e.visible) continue
+            opacity = e.opacity
             when (e) {
                 is Panel -> { val (x, y) = place(e, e.width, e.height); rect(x, y, e.width, e.height, e.color) }
                 is Text -> {
@@ -118,16 +143,17 @@ class Hud internal constructor() {
                 }
             }
         }
+        opacity = 1f
         if (showFps) { val t = "$fps FPS"; text(t, w - textWidth(t, 1.25f) - 24f, 24f, 1.25f, hintTextColor) }
         val hint = mouseHint
         if (!mouseCaptured && hint != null) {
             val tw = textWidth(hint, 1.5f)
+            opacity = .85f
             rect(w / 2 - tw / 2 - 14f, h - 122f, tw + 28f, 26f, hintPanelColor)
+            opacity = 1f
             text(hint, w / 2 - tw / 2, h - 114f, 1.5f, hintTextColor)
         }
-        val mesh = g.build()
-        for (i in mesh.vertices.indices step 9) { mesh.vertices[i + 3] = 0f; mesh.vertices[i + 4] = 0f; mesh.vertices[i + 5] = 0f }
-        return mesh
+        return Mesh(v.copyOf(k))
     }
 
     companion object {

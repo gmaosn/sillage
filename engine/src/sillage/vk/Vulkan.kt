@@ -64,6 +64,8 @@ internal object Sig {
     @JvmField val V_PJII = h(null, P, J, I, I)
     @JvmField val V_PIJI = h(null, P, I, J, I)
     @JvmField val I_PJIIJPJI = h(I, P, J, I, I, J, P, J, I)
+    @JvmField val V_PIPIP = h(null, P, I, P, I, P)
+    @JvmField val V_PIJIIPIP = h(null, P, I, J, I, I, P, I, P)
 }
 
 private val NULL: MemorySegment = MemorySegment.NULL
@@ -247,6 +249,15 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     private val pCmdResetQueryPool = proc("vkCmdResetQueryPool")
     private val pCmdWriteTimestamp = proc("vkCmdWriteTimestamp")
     private val pGetQueryPoolResults = proc("vkGetQueryPoolResults")
+    private val pCreateSampler = proc("vkCreateSampler")
+    private val pDestroySampler = proc("vkDestroySampler")
+    private val pCreateDescriptorSetLayout = proc("vkCreateDescriptorSetLayout")
+    private val pDestroyDescriptorSetLayout = proc("vkDestroyDescriptorSetLayout")
+    private val pCreateDescriptorPool = proc("vkCreateDescriptorPool")
+    private val pDestroyDescriptorPool = proc("vkDestroyDescriptorPool")
+    private val pAllocateDescriptorSets = proc("vkAllocateDescriptorSets")
+    private val pUpdateDescriptorSets = proc("vkUpdateDescriptorSets")
+    private val pCmdBindDescriptorSets = proc("vkCmdBindDescriptorSets")
     private val pCreateSwapchainKHR = optional("vkCreateSwapchainKHR")
     private val pDestroySwapchainKHR = optional("vkDestroySwapchainKHR")
     private val pGetSwapchainImagesKHR = optional("vkGetSwapchainImagesKHR")
@@ -335,6 +346,18 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     fun resetFences(count: Int, fences: MemorySegment) = (Sig.I_PIP.invokeExact(pResetFences, handle, count, fences) as Int).vkCheck("vkResetFences")
     fun createQueryPool(info: MemorySegment, out: MemorySegment) = create(pCreateQueryPool, "vkCreateQueryPool", info, out)
     fun destroyQueryPool(h: Long) = destroy(pDestroyQueryPool, h)
+    fun createSampler(info: MemorySegment, out: MemorySegment) = create(pCreateSampler, "vkCreateSampler", info, out)
+    fun destroySampler(h: Long) = destroy(pDestroySampler, h)
+    fun createDescriptorSetLayout(info: MemorySegment, out: MemorySegment) = create(pCreateDescriptorSetLayout, "vkCreateDescriptorSetLayout", info, out)
+    fun destroyDescriptorSetLayout(h: Long) = destroy(pDestroyDescriptorSetLayout, h)
+    fun createDescriptorPool(info: MemorySegment, out: MemorySegment) = create(pCreateDescriptorPool, "vkCreateDescriptorPool", info, out)
+    fun destroyDescriptorPool(h: Long) = destroy(pDestroyDescriptorPool, h)
+    fun allocateDescriptorSets(info: MemorySegment, out: MemorySegment) =
+        (Sig.I_PPP.invokeExact(pAllocateDescriptorSets, handle, info, out) as Int).vkCheck("vkAllocateDescriptorSets")
+    fun updateDescriptorSets(writeCount: Int, writes: MemorySegment) {
+        Sig.V_PIPIP.invokeExact(pUpdateDescriptorSets, handle, writeCount, writes, 0, NULL) }
+    fun cmdBindDescriptorSets(cmd: MemorySegment, bindPoint: Int, layout: Long, firstSet: Int, count: Int, sets: MemorySegment) {
+        Sig.V_PIJIIPIP.invokeExact(pCmdBindDescriptorSets, cmd, bindPoint, layout, firstSet, count, sets, 0, NULL) }
     fun cmdResetQueryPool(cmd: MemorySegment, pool: Long, first: Int, count: Int) { Sig.V_PJII.invokeExact(pCmdResetQueryPool, cmd, pool, first, count) }
     fun cmdWriteTimestamp(cmd: MemorySegment, stage: Int, pool: Long, query: Int) { Sig.V_PIJI.invokeExact(pCmdWriteTimestamp, cmd, stage, pool, query) }
     /** Returns the raw VkResult: VK_NOT_READY when the queries have not all finished. */

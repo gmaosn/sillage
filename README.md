@@ -2,6 +2,8 @@
 
 A 3D game engine written in Kotlin and nothing else. It is 3D from the first line, has its own physics engine, and is meant to be pleasant to use.
 
+![The demo island: a lagoon around a little island with a house, a lighthouse, palms, a pier and a boat](docs/images/ile.png)
+
 ```kotlin
 import sillage.*
 
@@ -19,7 +21,7 @@ That is a whole game: a window, a sky, a sun, a lawn, a crate and a ball that ob
 
 ## What is inside
 
-- **Rendering**: Vulkan, called directly through the JDK's foreign function API. A soft toon look (two-tone light, rim light, haze, sky dome), 4× anti-aliasing, instanced drawing, two frames in flight, GPU timing. Runs in a window or off screen.
+- **Rendering**: Vulkan, called directly through the JDK's foreign function API. A soft toon look (two-tone light, rim light, haze, sky dome) with shadows cast by the sun, water that finds its shores (lagoons, foam, surf), 4× anti-aliasing, instanced drawing, two frames in flight, GPU timing. Runs in a window or off screen.
 - **Windows**: its own Wayland client, with X11 as a fallback. Relative mouse, pointer lock, sharp output on high-DPI screens. Keys are read by position, so WASD works as ZQSD on an AZERTY keyboard.
 - **Physics**: rigid bodies (boxes, spheres, capsules) on static triangle meshes, after Box2D v3's soft-step solver. Stable stacks, friction patches, mixed masses, rolling resistance, surfaces per material, sleep, rays and sphere sweeps, trigger zones. Up to 8 threads, with the same result to the bit whatever their number. Collision tests allocate nothing.
 - **A character controller**: walks, runs, climbs steps, handles slopes, rides platforms, pushes crates according to their mass. Third or first person, switchable.
@@ -47,6 +49,11 @@ The project builds with the Kotlin Toolchain through the `./kotlin` script at it
 
 Tab captures and frees the mouse, Escape quits. In the playground, B drops 400 crates. On the island, find the six shells.
 
+| | |
+|---|---|
+| ![The beach, the pier and the boat, with their shadows on the lagoon](docs/images/plage.png) | ![The sailor on the grass, a beach ball and crates](docs/images/marin.png) |
+| ![The house under the palms](docs/images/maison.png) | ![The playground: crates, balls, a ramp and stars](docs/images/playground.png) |
+
 A game is a module whose `module.yaml` depends on `//engine`. The [tutorial](docs/TUTORIAL.md) makes one from scratch.
 
 ## Documentation
@@ -71,4 +78,4 @@ A game is a module whose `module.yaml` depends on `//engine`. The [tutorial](doc
 
 ## Status
 
-Sillage runs on Linux today. The window layer is ready for other systems, which are not written yet. Not there yet: textures and skinned meshes (characters are rigid parts animated as a hierarchy), joints, continuous collision for very fast projectiles, cast shadows (soft blob shadows stand in), compressed audio (WAV only). The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.
+Sillage runs on Linux today. The window layer is ready for other systems, which are not written yet. Not there yet: textures and skinned meshes (characters are rigid parts animated as a hierarchy), joints, continuous collision for very fast projectiles, outlines, compressed audio (WAV only). The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.

@@ -35,6 +35,10 @@ internal interface SurfaceSource {
  * or without any display server.
  */
 private const val FRAMES = 2
+/** Side of the shadow map in texels. */
+internal const val SHADOW_TEXELS = 2048
+/** Push constants: view × projection, eye and time, the shadow map's centre and half side, the water's two colours. */
+private const val PUSH_BYTES = 128
 private val IDENTITY_ROWS = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f)
 
 internal class VulkanRenderer(private val target: SurfaceSource? = null, private val validation: Boolean = false,
@@ -69,6 +73,18 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var layout=0L
     private var pipeline=0L
     private var pipelineOmbre=0L
+    private var pipelineWater=0L
+    private var pipelineHud=0L
+    // Cast shadows: a depth map seen from the sun, drawn first each frame, then sampled by the toon shader.
+    private val shadowSize=if(lighting.shadows) SHADOW_TEXELS else 1
+    private var shadowMap: Image?=null
+    private var shadowPass=0L
+    private var shadowFramebuffer=0L
+    private var shadowPipeline=0L
+    private var sampler=0L
+    private var setLayout=0L
+    private var descriptorPool=0L
+    private var descriptorSet=0L
     private class Frame(val command: MemorySegment, val fence: Long, val acquired: Long) {
         var hud: Buffer?=null; var hudSent: Mesh?=null
         var instances: Buffer?=null; var mapped: MemorySegment=MemorySegment.NULL
@@ -93,11 +109,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var depth: Image?=null
     private val meshes=IdentityHashMap<Mesh,Buffer>()
     /** Copies of one mesh to draw this frame: their model rows (12 floats each), reused from frame to frame. */
-    private class Batch(val mesh: Mesh) { var count=0; var rows=FloatArray(12*8) }
-    private val batches=IdentityHashMap<Mesh,Batch>()
-    private val shadowBatches=IdentityHashMap<Mesh,Batch>()
+    private class Batch(val mesh: Mesh) { var count=0; var rows=FloatArray(12*8); var start=0L; var water: WaterLook?=null }
+    private val batches=IdentityHashMap<Mesh,Batch>()            // copies that cast a shadow
+    private val quietBatches=IdentityHashMap<Mesh,Batch>()       // copies that do not (the sky, decals…)
+    private val shadowBatches=IdentityHashMap<Mesh,Batch>()      // blob shadows
+    private val waterBatches=IdentityHashMap<Mesh,Batch>()
     private val opaque=ArrayList<Batch>()
+    private val quiet=ArrayList<Batch>()
     private val shadows=ArrayList<Batch>()
+    private val waters=ArrayList<Batch>()
     private var ferme=false
     var nomGpu=""
         private set
@@ -128,6 +148,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
             }
             createRenderPass()
+            createShadowResources()
             createPipeline()
             if(surface != 0L) recreateSwapchain() else createTargets()
             println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " msaa=" + echantillons + " validation=" + validation)
@@ -241,10 +262,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         finally { dev.unmapMemory(b.memory) }
     }
 
-    private fun image(format: Int, usage: Int, aspect: Int, samples: Int = 1): Image = stack.frame { s ->
+    private fun image(format: Int, usage: Int, aspect: Int, samples: Int = 1, width: Int = largeur, height: Int = hauteur): Image = stack.frame { s ->
         val p=s.allocate(JAVA_LONG)
         dev.createImage(s.struct(VkImageCreateInfo, "imageType" to VK_IMAGE_TYPE_2D, "format" to format,
-            "extent.width" to largeur, "extent.height" to hauteur, "extent.depth" to 1, "mipLevels" to 1, "arrayLayers" to 1,
+            "extent.width" to width, "extent.height" to height, "extent.depth" to 1, "mipLevels" to 1, "arrayLayers" to 1,
             "samples" to samples, "tiling" to VK_IMAGE_TILING_OPTIMAL, "usage" to usage,
             "sharingMode" to VK_SHARING_MODE_EXCLUSIVE, "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED),p)
         val img=p.get(JAVA_LONG,0)
@@ -297,6 +318,64 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         renderPass=p.get(JAVA_LONG,0)
     }
 
+    /**
+     * The shadow map and what samples it: a depth image, a render pass that clears and fills it then leaves
+     * it ready for sampling, a comparison sampler (filtered when the GPU can) and the descriptor set that
+     * hands it to the toon shader.
+     */
+    private fun createShadowResources() = stack.frame { s ->
+        val fp=s.struct(VkFormatProperties); vk.getPhysicalDeviceFormatProperties(physical,VK_FORMAT_D16_UNORM,fp)
+        val features=fp.u32(VkFormatProperties,"optimalTilingFeatures")
+        require(features and VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT != 0) { "D16 depth cannot be sampled" }
+        val linear=features and VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT != 0
+        val map=image(VK_FORMAT_D16_UNORM,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT or VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,
+            1,shadowSize,shadowSize)
+        shadowMap=map
+        val a=s.struct(VkAttachmentDescription, "format" to VK_FORMAT_D16_UNORM, "samples" to VK_SAMPLE_COUNT_1_BIT,
+            "loadOp" to VK_ATTACHMENT_LOAD_OP_CLEAR, "storeOp" to VK_ATTACHMENT_STORE_OP_STORE,
+            "stencilLoadOp" to VK_ATTACHMENT_LOAD_OP_DONT_CARE, "stencilStoreOp" to VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED, "finalLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        val dr=s.struct(VkAttachmentReference, "attachment" to 0, "layout" to VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        val sub=s.struct(VkSubpassDescription, "pipelineBindPoint" to VK_PIPELINE_BIND_POINT_GRAPHICS, "pDepthStencilAttachment" to dr)
+        val deps=s.structs(VkSubpassDependency,2)
+        // The last frame's reads of the map end before this frame writes it; this frame's writes end before its reads.
+        deps.at(VkSubpassDependency,0).put(VkSubpassDependency, "srcSubpass" to VK_SUBPASS_EXTERNAL, "dstSubpass" to 0,
+            "srcStageMask" to VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            "dstStageMask" to (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT or VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT),
+            "srcAccessMask" to VK_ACCESS_SHADER_READ_BIT, "dstAccessMask" to VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+        deps.at(VkSubpassDependency,1).put(VkSubpassDependency, "srcSubpass" to 0, "dstSubpass" to VK_SUBPASS_EXTERNAL,
+            "srcStageMask" to VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, "dstStageMask" to VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            "srcAccessMask" to VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, "dstAccessMask" to VK_ACCESS_SHADER_READ_BIT)
+        val p=s.allocate(JAVA_LONG)
+        dev.createRenderPass(s.struct(VkRenderPassCreateInfo, "attachmentCount" to 1, "pAttachments" to a,
+            "subpassCount" to 1, "pSubpasses" to sub, "dependencyCount" to 2, "pDependencies" to deps),p)
+        shadowPass=p.get(JAVA_LONG,0)
+        dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to shadowPass, "attachmentCount" to 1,
+            "pAttachments" to s.longs(map.view), "width" to shadowSize, "height" to shadowSize, "layers" to 1),p)
+        shadowFramebuffer=p.get(JAVA_LONG,0)
+        val filter=if(linear) VK_FILTER_LINEAR else VK_FILTER_NEAREST
+        dev.createSampler(s.struct(VkSamplerCreateInfo, "magFilter" to filter, "minFilter" to filter,
+            "mipmapMode" to VK_SAMPLER_MIPMAP_MODE_NEAREST, "addressModeU" to VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            "addressModeV" to VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, "addressModeW" to VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            "maxAnisotropy" to 1f, "compareEnable" to true, "compareOp" to VK_COMPARE_OP_LESS_OR_EQUAL,
+            "borderColor" to VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE),p)
+        sampler=p.get(JAVA_LONG,0)
+        val binding=s.struct(VkDescriptorSetLayoutBinding, "binding" to 0, "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            "descriptorCount" to 1, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT)
+        dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 1, "pBindings" to binding),p)
+        setLayout=p.get(JAVA_LONG,0)
+        val size=s.struct(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 1)
+        dev.createDescriptorPool(s.struct(VkDescriptorPoolCreateInfo, "maxSets" to 1, "poolSizeCount" to 1, "pPoolSizes" to size),p)
+        descriptorPool=p.get(JAVA_LONG,0)
+        dev.allocateDescriptorSets(s.struct(VkDescriptorSetAllocateInfo, "descriptorPool" to descriptorPool,
+            "descriptorSetCount" to 1, "pSetLayouts" to s.longs(setLayout)),p)
+        descriptorSet=p.get(JAVA_LONG,0)
+        val info=s.struct(VkDescriptorImageInfo, "sampler" to sampler, "imageView" to map.view,
+            "imageLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        dev.updateDescriptorSets(1,s.struct(VkWriteDescriptorSet, "dstSet" to descriptorSet, "dstBinding" to 0,
+            "descriptorCount" to 1, "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "pImageInfo" to info))
+    }
+
     /** Images de rendu et framebuffer à la taille courante ; refaits quand la fenêtre change de taille. */
     private fun createTargets() = stack.frame { s ->
         if(framebuffer!=0L) { dev.destroyFramebuffer(framebuffer); framebuffer=0L }
@@ -321,17 +400,19 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
 
     private fun createPipeline() = stack.frame { s ->
         val vert=shader("/shaders/toon.vert.spv"); val frag=shader("/shaders/toon.frag.spv"); val fragOmbre=shader("/shaders/ombre.frag.spv")
+        val vertShadow=shader("/shaders/shadow.vert.spv"); val fragWater=shader("/shaders/water.frag.spv"); val fragHud=shader("/shaders/hud.frag.spv")
         try {
             val stages=s.structs(VkPipelineShaderStageCreateInfo,2)
-            stages.at(VkPipelineShaderStageCreateInfo,0).put(VkPipelineShaderStageCreateInfo,
-                "stage" to VK_SHADER_STAGE_VERTEX_BIT, "module" to vert, "pName" to s.allocateFrom("main"))
-            // Light and haze of the scene: specialisation constants 0–19 of toon.frag (floats).
-            val values=lighting.constants()
+            // Light and haze of the scene: specialisation constants 0–20 (floats), for both stages (the vertex
+            // shaders place points in the sun's view).
+            val values=lighting.constants() + shadowSize.toFloat()
             val data=s.allocate(JAVA_FLOAT,values.size.toLong())
             for((i,v) in values.withIndex()) data.setAtIndex(JAVA_FLOAT,i.toLong(),v)
             val entries=s.structs(VkSpecializationMapEntry,values.size)
             for(i in values.indices) entries.at(VkSpecializationMapEntry,i).put(VkSpecializationMapEntry, "constantID" to i, "offset" to i*4, "size" to 4L)
             val special=s.struct(VkSpecializationInfo, "mapEntryCount" to values.size, "pMapEntries" to entries, "dataSize" to values.size*4L, "pData" to data)
+            stages.at(VkPipelineShaderStageCreateInfo,0).put(VkPipelineShaderStageCreateInfo,
+                "stage" to VK_SHADER_STAGE_VERTEX_BIT, "module" to vert, "pName" to s.allocateFrom("main"), "pSpecializationInfo" to special)
             stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo,
                 "stage" to VK_SHADER_STAGE_FRAGMENT_BIT, "module" to frag, "pName" to s.allocateFrom("main"), "pSpecializationInfo" to special)
             // Binding 0: the mesh (position, normal, colour); binding 1: one model matrix per copy, as three rows.
@@ -358,15 +439,19 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val ca=s.struct(VkPipelineColorBlendAttachmentState, "colorWriteMask" to
                 (VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or VK_COLOR_COMPONENT_A_BIT))
             val cb=s.struct(VkPipelineColorBlendStateCreateInfo, "attachmentCount" to 1, "pAttachments" to ca)
-            val push=s.struct(VkPushConstantRange, "stageFlags" to (VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT), "offset" to 0, "size" to 80)
+            val push=s.struct(VkPushConstantRange, "stageFlags" to (VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT), "offset" to 0, "size" to PUSH_BYTES)
             val p=s.allocate(JAVA_LONG)
-            dev.createPipelineLayout(s.struct(VkPipelineLayoutCreateInfo, "pushConstantRangeCount" to 1, "pPushConstantRanges" to push),p)
+            dev.createPipelineLayout(s.struct(VkPipelineLayoutCreateInfo, "setLayoutCount" to 1, "pSetLayouts" to s.longs(setLayout),
+                "pushConstantRangeCount" to 1, "pPushConstantRanges" to push),p)
             layout=p.get(JAVA_LONG,0)
             val ci=s.struct(VkGraphicsPipelineCreateInfo, "stageCount" to 2, "pStages" to stages, "pVertexInputState" to vi,
                 "pInputAssemblyState" to ia, "pViewportState" to vs, "pRasterizationState" to rs, "pMultisampleState" to ms,
                 "pDepthStencilState" to ds, "pColorBlendState" to cb, "pDynamicState" to dyn, "layout" to layout, "renderPass" to renderPass,
                 "subpass" to 0, "basePipelineIndex" to -1)
             dev.createGraphicsPipelines(1,ci,p); pipeline=p.get(JAVA_LONG,0)
+            // Water: the same input, its own colours.
+            stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo, "module" to fragWater)
+            dev.createGraphicsPipelines(1,ci,p); pipelineWater=p.get(JAVA_LONG,0)
             // Ombres : même entrée, autre fragment, mélange par transparence, profondeur lue mais pas écrite.
             stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo, "module" to fragOmbre)
             ds.put(VkPipelineDepthStencilStateCreateInfo, "depthWriteEnable" to false)
@@ -375,7 +460,36 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 "colorBlendOp" to VK_BLEND_OP_ADD, "srcAlphaBlendFactor" to VK_BLEND_FACTOR_ZERO, "dstAlphaBlendFactor" to VK_BLEND_FACTOR_ONE,
                 "alphaBlendOp" to VK_BLEND_OP_ADD)
             dev.createGraphicsPipelines(1,ci,p); pipelineOmbre=p.get(JAVA_LONG,0)
-        } finally { dev.destroyShaderModule(vert); dev.destroyShaderModule(frag); dev.destroyShaderModule(fragOmbre) }
+            // The interface: blended by its opacity, over everything.
+            stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo, "module" to fragHud)
+            ds.put(VkPipelineDepthStencilStateCreateInfo, "depthTestEnable" to false)
+            dev.createGraphicsPipelines(1,ci,p); pipelineHud=p.get(JAVA_LONG,0)
+            // The shadow map: depth only, from the sun, the mesh's position and the instance rows; a slope-scaled
+            // bias keeps lit faces from shadowing themselves.
+            stages.at(VkPipelineShaderStageCreateInfo,0).put(VkPipelineShaderStageCreateInfo, "module" to vertShadow)
+            val shadowAttrs=s.structs(VkVertexInputAttributeDescription,4)
+            shadowAttrs.at(VkVertexInputAttributeDescription,0).put(VkVertexInputAttributeDescription,
+                "binding" to 0, "location" to 0, "format" to VK_FORMAT_R32G32B32_SFLOAT, "offset" to 0)
+            for(i in 0..2) shadowAttrs.at(VkVertexInputAttributeDescription,1+i).put(VkVertexInputAttributeDescription,
+                "binding" to 1, "location" to 3+i, "format" to VK_FORMAT_R32G32B32A32_SFLOAT, "offset" to i*16)
+            val shadowInput=s.struct(VkPipelineVertexInputStateCreateInfo, "vertexBindingDescriptionCount" to 2, "pVertexBindingDescriptions" to bindings,
+                "vertexAttributeDescriptionCount" to 4, "pVertexAttributeDescriptions" to shadowAttrs)
+            val shadowRaster=s.struct(VkPipelineRasterizationStateCreateInfo, "polygonMode" to VK_POLYGON_MODE_FILL, "cullMode" to VK_CULL_MODE_NONE,
+                "frontFace" to VK_FRONT_FACE_COUNTER_CLOCKWISE, "depthBiasEnable" to true, "depthBiasConstantFactor" to 1.5f,
+                "depthBiasSlopeFactor" to 2f, "lineWidth" to 1f)
+            val shadowMs=s.struct(VkPipelineMultisampleStateCreateInfo, "rasterizationSamples" to VK_SAMPLE_COUNT_1_BIT)
+            val shadowDs=s.struct(VkPipelineDepthStencilStateCreateInfo, "depthTestEnable" to true, "depthWriteEnable" to true,
+                "depthCompareOp" to VK_COMPARE_OP_LESS_OR_EQUAL)
+            val noColour=s.struct(VkPipelineColorBlendStateCreateInfo, "attachmentCount" to 0)
+            val sci=s.struct(VkGraphicsPipelineCreateInfo, "stageCount" to 1, "pStages" to stages, "pVertexInputState" to shadowInput,
+                "pInputAssemblyState" to ia, "pViewportState" to vs, "pRasterizationState" to shadowRaster, "pMultisampleState" to shadowMs,
+                "pDepthStencilState" to shadowDs, "pColorBlendState" to noColour, "pDynamicState" to dyn, "layout" to layout,
+                "renderPass" to shadowPass, "subpass" to 0, "basePipelineIndex" to -1)
+            dev.createGraphicsPipelines(1,sci,p); shadowPipeline=p.get(JAVA_LONG,0)
+        } finally {
+            dev.destroyShaderModule(vert); dev.destroyShaderModule(frag); dev.destroyShaderModule(fragOmbre); dev.destroyShaderModule(vertShadow)
+            dev.destroyShaderModule(fragWater); dev.destroyShaderModule(fragHud)
+        }
     }
 
     fun recreateSwapchain(): Boolean {
@@ -432,7 +546,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     fun oublier() {
         dev.deviceWaitIdle()
         meshes.values.forEach { destroy(it) }; meshes.clear()
-        batches.clear(); shadowBatches.clear()
+        batches.clear(); quietBatches.clear(); shadowBatches.clear(); waterBatches.clear()
         for(f in frames) f.hudSent=null
     }
 
@@ -472,12 +586,52 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         b.count++
     }
 
+    /** Sorts this frame's copies into batches, one per mesh (new meshes go to the GPU once). Apart from [dessiner], so the JIT compiles it on its own. */
+    private fun gather(objets: List<Node>, hidden: Node?) {
+        fun prepare(m: Mesh) {
+            if(m.vertices.isEmpty() || meshes.containsKey(m)) return
+            val b=buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+            upload(b,m.vertices); meshes[m]=b
+        }
+        for(b in opaque) b.count=0
+        for(b in quiet) b.count=0
+        for(b in shadows) b.count=0
+        for(b in waters) b.count=0
+        opaque.clear(); quiet.clear(); shadows.clear(); waters.clear()
+        for(k in objets.indices) {
+            val o=objets[k]
+            if(!o.visible || o===hidden) continue
+            val mesh=o.mesh
+            prepare(mesh)
+            if(o.isShadow) { add(shadowBatches,shadows,mesh,o,null); continue }
+            val look=o.water
+            if(look!=null) { add(waterBatches,waters,mesh,o,null); waterBatches[mesh]?.water=look; continue }
+            val casts=o.castsShadow
+            if(casts && !mesh.unlit) add(batches,opaque,mesh,o,null) else add(quietBatches,quiet,mesh,o,null)
+            val parts=o.parts
+            for(j in parts.indices) { val p=parts[j]; prepare(p.mesh); add(if(casts) batches else quietBatches,if(casts) opaque else quiet,p.mesh,o,p.pose) }
+        }
+    }
+
+    /**
+     * The shadow map's centre: [focus] moved to the nearest corner of a map texel, so that the shadows' edges
+     * stay still while the camera moves (the basis is the one of light.glsl).
+     */
+    private fun snapped(focus: Vec3, texel: Float): Vec3 {
+        val l=lighting.sunDirection.normalized()
+        val ref=if(kotlin.math.abs(l.y)>.99f) Vec3.Z else Vec3.Y
+        val right=(ref cross l).normalized(); val up=l cross right
+        val u=focus dot right; val v=focus dot up
+        return focus + right*(kotlin.math.round(u/texel)*texel-u) + up*(kotlin.math.round(v/texel)*texel-v)
+    }
+
     /**
      * Draws a frame of [objets] (without [hidden], the first-person player). [camera]: projection × view;
-     * [oeil], the camera position, and [temps] (s) go to the shader for the rim light and the haze.
+     * [oeil], the camera position, and [temps] (s) go to the shader for the rim light and the haze. The cast
+     * shadows cover a square around [focus] (none when it is null or the scene's lighting has no shadows).
      */
     fun dessiner(objets: List<Node>, camera: Mat4, hud: Mesh, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f,
-                 hidden: Node? = null) = stack.frame { s ->
+                 hidden: Node? = null, focus: Vec3? = null) = stack.frame { s ->
         val f=frames[frameIndex]
         // This frame's resources are free again once the GPU is done with them, two frames ago.
         val fenceRef=s.longs(f.fence)
@@ -498,30 +652,25 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             check(result==VK_SUCCESS || result==VK_SUBOPTIMAL_KHR) { "vkAcquireNextImageKHR: " + result }
             index=out.get(JAVA_INT,0)
         }
-        // New meshes go to the GPU once; then every copy of a mesh joins its batch.
-        fun prepare(m: Mesh) {
-            if(m.vertices.isEmpty() || meshes.containsKey(m)) return
-            val b=buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
-            upload(b,m.vertices); meshes[m]=b
-        }
-        for(b in opaque) b.count=0
-        for(b in shadows) b.count=0
-        opaque.clear(); shadows.clear()
-        for(o in objets) {
-            if(!o.visible || o===hidden) continue
-            if(o.isShadow) { prepare(o.mesh); add(shadowBatches,shadows,o.mesh,o,null); continue }
-            prepare(o.mesh); add(batches,opaque,o.mesh,o,null)
-            for(p in o.parts) { prepare(p.mesh); add(batches,opaque,p.mesh,o,p.pose) }
-        }
+        gather(objets,hidden)
         if(hud!==f.hudSent) { upload(f.hud!!,hud.vertices); f.hudSent=hud }
         // Instance rows of every batch, side by side, then the HUD's identity.
         var total=12
         for(b in opaque) total+=12*b.count
+        for(b in quiet) total+=12*b.count
         for(b in shadows) total+=12*b.count
+        for(b in waters) total+=12*b.count
         if(total*4L>f.instances!!.size) growInstances(f,Integer.highestOneBit(total)*2)
         val mapped=f.mapped
         var at=0L
-        fun put(b: Batch): Long { val start=at; MemorySegment.copy(b.rows,0,mapped,JAVA_FLOAT,at,12*b.count); at+=48L*b.count; return start }
+        fun put(b: Batch) { b.start=at; MemorySegment.copy(b.rows,0,mapped,JAVA_FLOAT,at,12*b.count); at+=48L*b.count }
+        for(b in opaque) put(b)
+        for(b in quiet) put(b)
+        for(b in shadows) put(b)
+        for(b in waters) put(b)
+        // The sun's square: the map's centre (snapped to its texels) and half side, or 0 for no shadows.
+        val range=if(lighting.shadows && focus!=null) lighting.shadowRange else 0f
+        val centre=if(range>0f) snapped(focus!!,2f*range/shadowSize) else Vec3.ZERO
         val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
         val command=f.command
         try {
@@ -531,25 +680,21 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.cmdResetQueryPool(command,queries,2*frameIndex,2)
                 dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,2*frameIndex)
             }
-            val clear=s.structs(VkClearValue,2)
-            clear.at(VkClearValue,0).put(VkClearValue, "float32[0]" to .42f, "float32[1]" to .73f, "float32[2]" to .82f, "float32[3]" to 1f)
-            clear.at(VkClearValue,1).put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0)
-            val ri=s.struct(VkRenderPassBeginInfo, "renderPass" to renderPass, "framebuffer" to framebuffer,
-                "renderArea.extent.width" to largeur, "renderArea.extent.height" to hauteur, "clearValueCount" to 2, "pClearValues" to clear)
-            dev.cmdBeginRenderPass(command,ri,VK_SUBPASS_CONTENTS_INLINE)
-            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
-            dev.cmdSetViewport(command,s.struct(VkViewport, "width" to largeur.toFloat(), "height" to hauteur.toFloat(), "maxDepth" to 1f))
-            dev.cmdSetScissor(command,s.struct(VkRect2D, "extent.width" to largeur, "extent.height" to hauteur))
-            // 80 bytes: view × projection (16), eye and time (4).
-            val constants=s.allocate(JAVA_FLOAT,20)
-            fun pushConstants(vp: Mat4) {
+            val constants=s.allocate(JAVA_FLOAT,32)
+            fun pushConstants(vp: Mat4, water: WaterLook?=null) {
                 // Column by column, as GLSL reads a mat4 (Mat4 names its coefficients column first).
                 constants.setAtIndex(JAVA_FLOAT,0,vp.m00); constants.setAtIndex(JAVA_FLOAT,1,vp.m01); constants.setAtIndex(JAVA_FLOAT,2,vp.m02); constants.setAtIndex(JAVA_FLOAT,3,vp.m03)
                 constants.setAtIndex(JAVA_FLOAT,4,vp.m10); constants.setAtIndex(JAVA_FLOAT,5,vp.m11); constants.setAtIndex(JAVA_FLOAT,6,vp.m12); constants.setAtIndex(JAVA_FLOAT,7,vp.m13)
                 constants.setAtIndex(JAVA_FLOAT,8,vp.m20); constants.setAtIndex(JAVA_FLOAT,9,vp.m21); constants.setAtIndex(JAVA_FLOAT,10,vp.m22); constants.setAtIndex(JAVA_FLOAT,11,vp.m23)
                 constants.setAtIndex(JAVA_FLOAT,12,vp.m30); constants.setAtIndex(JAVA_FLOAT,13,vp.m31); constants.setAtIndex(JAVA_FLOAT,14,vp.m32); constants.setAtIndex(JAVA_FLOAT,15,vp.m33)
                 constants.setAtIndex(JAVA_FLOAT,16,oeil.x); constants.setAtIndex(JAVA_FLOAT,17,oeil.y); constants.setAtIndex(JAVA_FLOAT,18,oeil.z); constants.setAtIndex(JAVA_FLOAT,19,temps)
-                dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT,0,80,constants)
+                constants.setAtIndex(JAVA_FLOAT,20,centre.x); constants.setAtIndex(JAVA_FLOAT,21,centre.y); constants.setAtIndex(JAVA_FLOAT,22,centre.z); constants.setAtIndex(JAVA_FLOAT,23,range)
+                if(water!=null) {
+                    constants.setAtIndex(JAVA_FLOAT,24,water.deep.r); constants.setAtIndex(JAVA_FLOAT,25,water.deep.g); constants.setAtIndex(JAVA_FLOAT,26,water.deep.b)
+                    constants.setAtIndex(JAVA_FLOAT,28,water.shallow.r); constants.setAtIndex(JAVA_FLOAT,29,water.shallow.g); constants.setAtIndex(JAVA_FLOAT,30,water.shallow.b)
+                    constants.setAtIndex(JAVA_FLOAT,31,water.reach)
+                }
+                dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT,0,PUSH_BYTES,constants)
             }
             val handles=s.allocate(JAVA_LONG,2); val offsets=s.allocate(JAVA_LONG,2)
             handles.setAtIndex(JAVA_LONG,1,f.instances!!.buffer)
@@ -558,11 +703,40 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.cmdBindVertexBuffers(command,0,2,handles,offsets)
                 dev.cmdDraw(command,vertexCount,count,0,0)
             }
-            pushConstants(camera)
-            for(b in opaque) { val start=put(b); draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,start) }
-            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
-            for(b in shadows) { val start=put(b); draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,start) }
+            // The shadow map first (only cleared when there are no shadows: the toon shader then never reads it).
+            val clearDepth=s.struct(VkClearValue).also { it.put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0) }
+            dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to shadowFramebuffer,
+                "renderArea.extent.width" to shadowSize, "renderArea.extent.height" to shadowSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
+                VK_SUBPASS_CONTENTS_INLINE)
+            if(range>0f) {
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipeline)
+                dev.cmdSetViewport(command,s.struct(VkViewport, "width" to shadowSize.toFloat(), "height" to shadowSize.toFloat(), "maxDepth" to 1f))
+                dev.cmdSetScissor(command,s.struct(VkRect2D, "extent.width" to shadowSize, "extent.height" to shadowSize))
+                pushConstants(camera)
+                for(b in opaque) draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,b.start)
+            }
+            dev.cmdEndRenderPass(command)
+            val clear=s.structs(VkClearValue,2)
+            clear.at(VkClearValue,0).put(VkClearValue, "float32[0]" to .42f, "float32[1]" to .73f, "float32[2]" to .82f, "float32[3]" to 1f)
+            clear.at(VkClearValue,1).put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0)
+            val ri=s.struct(VkRenderPassBeginInfo, "renderPass" to renderPass, "framebuffer" to framebuffer,
+                "renderArea.extent.width" to largeur, "renderArea.extent.height" to hauteur, "clearValueCount" to 2, "pClearValues" to clear)
+            dev.cmdBeginRenderPass(command,ri,VK_SUBPASS_CONTENTS_INLINE)
             dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
+            dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,s.longs(descriptorSet))
+            dev.cmdSetViewport(command,s.struct(VkViewport, "width" to largeur.toFloat(), "height" to hauteur.toFloat(), "maxDepth" to 1f))
+            dev.cmdSetScissor(command,s.struct(VkRect2D, "extent.width" to largeur, "extent.height" to hauteur))
+            pushConstants(camera)
+            for(b in opaque) draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,b.start)
+            for(b in quiet) draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,b.start)
+            if(waters.isNotEmpty()) {
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineWater)
+                for(b in waters) { pushConstants(camera,b.water); draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,b.start) }
+                pushConstants(camera)
+            }
+            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
+            for(b in shadows) draw(meshes[b.mesh]!!,b.count,b.mesh.vertices.size/9,b.start)
+            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineHud)
             if(hud.vertices.isNotEmpty()) {
                 val start=at
                 for(k in 0 until 12) mapped.setAtIndex(JAVA_FLOAT,at/4+k,IDENTITY_ROWS[k])
@@ -636,8 +810,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
                 frames.clear()
                 if(queries!=0L) dev.destroyQueryPool(queries)
-                dev.destroyPipeline(pipeline); dev.destroyPipeline(pipelineOmbre)
+                dev.destroyPipeline(pipeline); dev.destroyPipeline(pipelineOmbre); dev.destroyPipeline(shadowPipeline); dev.destroyPipeline(pipelineWater); dev.destroyPipeline(pipelineHud)
                 dev.destroyPipelineLayout(layout)
+                dev.destroyDescriptorPool(descriptorPool); dev.destroyDescriptorSetLayout(setLayout); dev.destroySampler(sampler)
+                dev.destroyFramebuffer(shadowFramebuffer); dev.destroyRenderPass(shadowPass)
+                shadowMap?.let { destroy(it) }; shadowMap=null
                 dev.destroyFramebuffer(framebuffer)
                 dev.destroyRenderPass(renderPass)
                 color?.let { destroy(it) }; msaa?.let { destroy(it) }; depth?.let { destroy(it) }; color=null; msaa=null; depth=null

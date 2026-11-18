@@ -68,13 +68,13 @@ To see your player as a character, give `player` a glTF model with clips named `
 ## 3. Things to push, things to climb
 
 ```kotlin
-for (i in 0 until 4) box(1, at = vec(-3 + 2 * i, .5, 2)).dynamic().shadow()
-sphere(.4, Color.RED, at = vec(4, .4, 5)).dynamic(bounce = .6, damping = .3).shadow()
+for (i in 0 until 4) box(1, at = vec(-3 + 2 * i, .5, 2)).dynamic()
+sphere(.4, Color.RED, at = vec(4, .4, 5)).dynamic(bounce = .6, damping = .3)
 box(2, 1, 2, Color.STONE, at = vec(-6, .5, -3)).solid()
 box(2, 2, 2, Color.STONE, at = vec(-6, 1, -5)).solid()
 ```
 
-A shape is just drawn until you say how it takes part in the physics. `dynamic()` makes a rigid body: the crates fall, slide and tip over, and the player pushes them (a heavy one barely moves). The ball bounces (`bounce`) and slows down in the air like a beach ball (`damping`). `solid()` makes still obstacles: the two stone blocks form a staircase whose steps are a metre high, too high to walk up (the player climbs 35 cm at most), so jump. `shadow()` puts a soft round shadow under a moving thing.
+A shape is just drawn until you say how it takes part in the physics. `dynamic()` makes a rigid body: the crates fall, slide and tip over, and the player pushes them (a heavy one barely moves). The ball bounces (`bounce`) and slows down in the air like a beach ball (`damping`). `solid()` makes still obstacles: the two stone blocks form a staircase whose steps are a metre high, too high to walk up (the player climbs 35 cm at most), so jump. Everything casts its shadow from the sun on what is below: nothing to ask for.
 
 Builders take any numbers (`1`, `.5`, a `Float` variable) and are centred on `at`, which is why the crates sit at half their height.
 
@@ -156,8 +156,8 @@ fun main(args: Array<String>) {
         camera.switchKey = Key.V
 
         // 3. Things to push, things to climb
-        for (i in 0 until 4) box(1, at = vec(-3 + 2 * i, .5, 2)).dynamic().shadow()
-        sphere(.4, Color.RED, at = vec(4, .4, 5)).dynamic(bounce = .6, damping = .3).shadow()
+        for (i in 0 until 4) box(1, at = vec(-3 + 2 * i, .5, 2)).dynamic()
+        sphere(.4, Color.RED, at = vec(4, .4, 5)).dynamic(bounce = .6, damping = .3)
         box(2, 1, 2, Color.STONE, at = vec(-6, .5, -3)).solid()
         box(2, 2, 2, Color.STONE, at = vec(-6, 1, -5)).solid()
 
