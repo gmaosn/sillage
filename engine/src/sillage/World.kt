@@ -76,6 +76,7 @@ class Monde {
     var temps = 0f
     private val modeles = HashMap<String,Modele>()
     private val aplatis = HashMap<String,Maillage>()
+    private val modeleDe = HashMap<Objet,Modele>()
     private var tempsEnLAir = 0f
     private var celebration = 0f
     private var atterrissage = 0f
@@ -90,7 +91,7 @@ class Monde {
         val o = if (m.clips.isEmpty()) Objet(aplatis.getOrPut(glb) { m.aplatir().also {
                 require(it.sommets.isNotEmpty()) { "GLB sans triangles : $glb" } } })
             else Objet(Maillage(FloatArray(0))).also { it.parties = m.parties(); it.animateur = Animateur(m, it.parties) }
-        o.position=Vec3(x,y,z); o.echelle=taille; objets.add(o)
+        o.position=Vec3(x,y,z); o.echelle=taille; objets.add(o); modeleDe[o]=m
         return o
     }
     /**
@@ -103,6 +104,29 @@ class Monde {
         val palette = m.materiaux.map { nom -> surfaces[nom] ?: Material.named(nom) } + Material.DEFAULT
         corps.addMesh(TriangleMesh(positions, IntArray(ids.size) { k -> if (ids[k] >= 0) ids[k] else palette.size - 1 }, palette))
     }
+    /**
+     * Rend solides, tels qu'ils sont dessinés, les triangles de [objet] faits des [materiaux] nommés
+     * (un toit, des rochers…) : on s'y cogne, on y grimpe s'ils ne sont pas trop raides. Les triangles
+     * ne tiennent que par leur face visible : le modèle doit avoir ses faces tournées vers l'extérieur.
+     * Pour un objet immobile (la pose de repos d'un modèle animé).
+     */
+    fun solide(objet: Objet, vararg materiaux: String): Objet {
+        val m = requireNotNull(modeleDe[objet]) { "solide : cet objet ne vient pas d'un modèle GLB" }
+        val ids = materiaux.map { nom -> m.materiaux.indexOf(nom).also {
+            require(it >= 0) { "Matériau « $nom » absent du modèle (matériaux : ${m.materiaux.joinToString()})" } } }
+        val (positions, mats) = m.surfaces()
+        val placement = objet.matrice()
+        val v = ArrayList<Float>(); val palette = ArrayList<Int>()
+        for (t in mats.indices) {
+            val k = ids.indexOf(mats[t]); if (k < 0) continue
+            for (s in 0..2) { val p = placement.transformPoint(Vec3(positions[9*t+3*s], positions[9*t+3*s+1], positions[9*t+3*s+2])); v.add(p.x); v.add(p.y); v.add(p.z) }
+            palette.add(k)
+        }
+        require(palette.isNotEmpty()) { "solide : aucun triangle en ${materiaux.joinToString()}" }
+        corps.addMesh(TriangleMesh(v.toFloatArray(), palette.toIntArray(), materiaux.map { Material.named(it) }))
+        return objet
+    }
+
     /** Boîte de collision. [camera] = faux pour un objet fin (tronc, tonneau) que la caméra peut longer sans se rapprocher. */
     fun obstacle(x: Float, y: Float, z: Float, largeur: Float, hauteur: Float, profondeur: Float, camera: Boolean = true) {
         val b=corps.add(Box(largeur/2,hauteur/2,profondeur/2),Vec3(x,y+hauteur/2,z),type=BodyType.STATIC)

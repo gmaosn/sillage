@@ -9,7 +9,9 @@ import sillage.physics.Capsule
 fun main(args: Array<String>) = jeu("Sillage",args) {
     ocean()
     terrain("models/terrain.glb")
-    modele("models/village.glb")
+    val village=modele("models/village.glb")
+    // Le toit est solide tel qu'il est dessiné : depuis les tonneaux, on peut sauter dessus et y grimper.
+    solide(village,"toit")
     // Modèles animés : les clips viennent des fichiers GLB.
     modele("models/palmiers.glb").animer("vent")
     val port=modele("models/port.glb").animer("vie")
@@ -19,7 +21,9 @@ fun main(args: Array<String>) = jeu("Sillage",args) {
     corpsSurNoeud(port,"bateau",Capsule(.07f,1.75f),Vec3(0f,1.85f,.2f))
     modele("models/ciel.glb").animer("vol")
     // Volumes simples séparés du décor : modifier ces valeurs pour aménager l'île.
-    obstacle(-3f,1.45f,-2f,2.7f,2.8f,2.4f)                  // maison
+    // Maison jusqu'au bord du toit : l'avant-toit est à 1,65 m, le marin (1,8 m) ne passe pas dessous.
+    obstacle(-3f,1.45f,-2f,3.4f,1.65f,3.0f)                 // maison
+    obstacle(-2f,3.2f,-2.6f,.5f,1.5f,.5f)                   // cheminée
     obstacle(4f,2.7f,-3f,1.4f,4.5f,1.4f)                    // phare
     for((x,z) in listOf(-5f to -1f,-6f to 3f,6f to 1f,1f to -5f,-3f to -4f))
         obstacle(x,1.45f,z,.40f,3f,.40f,camera=false)       // palmiers

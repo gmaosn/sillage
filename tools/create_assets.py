@@ -293,8 +293,9 @@ for i in range(16):  # mêmes tirages qu'avant : les rochers ne bougent pas
 v.box(-3, 1.45, -2, 2.7, 1.7, 2.4, 'creme')
 v.box(-3, 1.40, -2, 2.8, .12, 2.5, 'pierre')                                 # soubassement
 p = [(-4.7, 3.1, -3.5), (-1.3, 3.1, -3.5), (-4.7, 3.1, -.5), (-1.3, 3.1, -.5), (-3, 4.2, -3.5), (-3, 4.2, -.5)]
-v.tri(p[0], p[1], p[4], 'toit'); v.tri(p[2], p[5], p[3], 'toit')
-v.quad(p[0], p[4], p[5], p[2], 'toit'); v.quad(p[1], p[3], p[5], p[4], 'toit')
+# Faces tournées vers l'extérieur : le toit sert aussi de volume de collision (triangles à une face).
+v.face([p[0], p[1], p[4]], 'toit', (0, 0, -1)); v.face([p[2], p[3], p[5]], 'toit', (0, 0, 1))
+v.face([p[0], p[4], p[5], p[2]], 'toit', (-1.1, 1.7, 0)); v.face([p[1], p[3], p[5], p[4]], 'toit', (1.1, 1.7, 0))
 v.tube((-3, 4.22, -3.55), (-3, 4.22, -.45), .07, .07, 'bois', 6)              # faîtage
 v.box(-3, 3.12, -2, 2.72, .08, 2.42, 'bois')                                # sablière sous le toit
 v.box(-2.0, 3.2, -2.6, .42, 1.4, .42, 'pierre'); v.box(-2.0, 4.6, -2.6, .5, .1, .5, 'pierre')  # cheminée

@@ -36,7 +36,7 @@ class Material(val friction: Float = .6f, val rollingResistance: Float = 0f, val
             "grass", "lawn", "herbe", "gazon", "pelouse" -> GRASS
             "sand", "sable" -> SAND
             "wood", "bois", "planche" -> WOOD
-            "stone", "rock", "pierre", "roche", "rocher", "galet" -> STONE
+            "stone", "rock", "pierre", "roche", "rocher", "galet", "roof", "tile", "slate", "toit", "tuile", "ardoise" -> STONE
             "ice", "glace" -> ICE
             else -> DEFAULT
         }
