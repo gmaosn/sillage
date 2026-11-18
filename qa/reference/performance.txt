@@ -1,6 +1,8 @@
 # Base de vitesse de cette machine, écrite par le contrôle qualité (ms).
-physique.pile1000=6.4660
-physique.pyramide=0.0164
-ile.miseajour=0.1763
-rendu.1280.moyenne=2.4868
-rendu.2560.moyenne=3.7866
+physique.pile1000=7.2797
+physique.pile1000.alloc=618.5859
+physique.pyramide=0.4815
+ile.miseajour=0.1415
+ile.miseajour.alloc=66.2637
+rendu.1280.moyenne=2.7380
+rendu.2560.moyenne=3.1362

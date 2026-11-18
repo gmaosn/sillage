@@ -175,4 +175,19 @@ class CharacterTest {
         assertTrue(bas > -.02f, "passé sous le sol : $bas")
         assertTrue(bond <= .7f, "bond de $bond m en une image")
     }
+
+    /** Soixante blocs au hasard autour du marin à son apparition : il en sort, jamais par le dessous du sol. */
+    @Test fun apparaitreDansDesBlocsAuHasard() {
+        val rnd = java.util.Random(7)
+        fun f(a: Float, b: Float) = a + rnd.nextFloat() * (b - a)
+        repeat(60) { essai ->
+            val w = world()
+            val h = f(.5f, 3f)
+            w.add(Box(f(.4f, 2f), h / 2, f(.4f, 2f)), Vec3(0f, h / 2, 0f), sillage.math.Quat.rotationY(f(0f, 3f)), type = BodyType.STATIC)
+            val c = Character(w, Vec3(f(-.3f, .3f), .02f, f(-.3f, .3f)))
+            var bas = 0f
+            repeat(180) { w.step(dt); c.update(Vec3.ZERO, 0f, dt); bas = minOf(bas, c.position.y) }
+            assertTrue(bas > -.02f, "essai $essai : passé sous le sol ($bas)")
+        }
+    }
 }

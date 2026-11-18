@@ -127,18 +127,19 @@ fun Qa.collisions() {
         "$n rayons : écart max ${mm(pire)}, $manques touchés d'un seul côté" to (pire <= .001f && manques == 0)
     }
 
-    info("balayage de sphère contre boîtes : coins pris carrés") {
-        // Le moteur grossit la boîte du rayon (coins vifs) au lieu de l'arrondir : il touche un peu tôt près des coins.
-        var pire = 0f; var n = 0
-        val w = PhysicsWorld(gravity = Vec3.ZERO); val q = rnd.rotation(); val b = Box(.5f, .3f, .4f)
-        w.add(b, Vec3.ZERO, q, type = BodyType.STATIC); val s = Solide(b, Vec3.ZERO, q)
-        repeat(cas(500, 2000)) {
-            val r = rnd.f(.05f, .4f); val o = rnd.dir() * rnd.f(2f, 3f); val d = (rnd.dir() * .6f - o.normalized()).normalized()
-            val ref = marcheRayon(o, d, 8f, r) { s.distance(it) }; val moteur = w.raycast(o, d, 8f, radius = r)?.distance
-            n++
-            if (ref != null && moteur != null) pire = max(pire, ref - moteur) else if (moteur != null) pire = max(pire, r * (sqrt(3f) - 1f))
+    controle("balayage de sphère contre boîtes = référence (coins arrondis)", "écart ≤ 1 mm") {
+        var pire = 0f; var n = 0; var manques = 0
+        repeat(cas(3, 8)) {
+            val w = PhysicsWorld(gravity = Vec3.ZERO); val q = rnd.rotation(); val b = Box(rnd.f(.1f, .8f), rnd.f(.1f, .8f), rnd.f(.1f, .8f))
+            w.add(b, Vec3.ZERO, q, type = BodyType.STATIC); val s = Solide(b, Vec3.ZERO, q)
+            repeat(cas(300, 1000)) {
+                val r = rnd.f(.05f, .4f); val o = rnd.dir() * rnd.f(2f, 3f); val d = (rnd.dir() * .6f - o.normalized()).normalized()
+                val ref = marcheRayon(o, d, 8f, r) { s.distance(it) }; val moteur = w.raycast(o, d, 8f, radius = r)?.distance
+                n++
+                if ((ref == null) != (moteur == null)) manques++ else if (ref != null && moteur != null) pire = max(pire, abs(ref - moteur))
+            }
         }
-        "$n balayages : touche jusqu'à ${cm(pire)} trop tôt près des coins (au plus r·(√3 − 1))"
+        "$n balayages : écart max ${mm(pire)}, $manques touchés d'un seul côté" to (pire <= .001f && manques == 0)
     }
 
     // Contacts entre formes : la référence est la distance signée échantillonnée sur les surfaces.

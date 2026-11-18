@@ -29,8 +29,8 @@ class Trigger internal constructor(val world: PhysicsWorld, val shape: Shape, va
         val touches = world.triggerScratch
         world.touching(shape, pose, 0f, -1, touches, meshes = false)
         for (k in 0 until touches.size) {
-            val b = touches.bodies[k]
-            if (b >= 0 && touches.separations[k] < 0f && b !in now && filter(Body(world, b))) now.add(b)
+            val b = touches.body[k]
+            if (b >= 0 && touches.sep[k] < 0f && b !in now && filter(Body(world, b))) now.add(b)
         }
         for (b in now) if (ids.add(b)) onEnter?.let { f -> entered.add { f(Body(world, b)) } }
         val it = ids.iterator()

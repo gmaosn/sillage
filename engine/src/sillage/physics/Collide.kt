@@ -219,13 +219,20 @@ private fun segmentBoxParam(a: Vec3, b: Vec3, box: Box): Float {
 }
 
 /** Range of t ∈ [lo, hi] where a + (b − a)·t satisfies dot(x, n) ≤ d, or null when empty. */
+/** Part [lo, hi] of segment a→b on the inner side of plane (n, d), written to a shared scratch array (or null). */
+private val rangeScratch = FloatArray(2)
 private fun clipRange(a: Vec3, b: Vec3, n: Vec3, d: Float, lo: Float, hi: Float): FloatArray? {
     val da = (a dot n) - d; val db = (b dot n) - d
-    if (da <= 0f && db <= 0f) return floatArrayOf(lo, hi)
     if (da > 0f && db > 0f) return null
-    val t = da / (da - db)
-    return if (da > 0f) (if (t > hi) null else floatArrayOf(maxOf(lo, t), hi)) else (if (t < lo) null else floatArrayOf(lo, minOf(hi, t)))
+    var l = lo; var h = hi
+    if (da > 0f || db > 0f) {
+        val t = da / (da - db)
+        if (da > 0f) { if (t > hi) return null; l = maxOf(lo, t) } else { if (t < lo) return null; h = minOf(hi, t) }
+    }
+    rangeScratch[0] = l; rangeScratch[1] = h
+    return rangeScratch
 }
+private fun fullRange(): FloatArray { rangeScratch[0] = 0f; rangeScratch[1] = 1f; return rangeScratch }
 
 /**
  * Capsule against box, after Box2D's capsule–polygon: the reference face is found from the closest
@@ -245,7 +252,7 @@ private fun capsuleBox(c: Capsule, pc: Pose, box: Box, pb: Pose, margin: Float, 
         else -> { sphereBox(m, c.radius, box, pb, margin, out, 9, true); return }   // arête ou coin : un seul point
     }
     val f = pb.axis(k) * sgn                                   // face normal, out of the box towards the capsule
-    var range: FloatArray? = floatArrayOf(0f, 1f)
+    var range: FloatArray? = fullRange()
     for (side in listOf((k + 1) % 3, (k + 2) % 3)) {
         val ax = pb.axis(side); val h = box.half(side)
         range = range?.let { clipRange(e0, e1, ax, (pb.p dot ax) + h, it[0], it[1]) }
@@ -352,21 +359,35 @@ private fun boxBox(a: Box, pa: Pose, b: Box, pb: Pose, margin: Float, out: Conta
 
 /** Closest point on triangle abc to p (Ericson 5.1.5). */
 internal fun closestOnTriangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3): Vec3 {
-    val ab = b - a; val ac = c - a; val ap = p - a
-    val d1 = ab dot ap; val d2 = ac dot ap
-    if (d1 <= 0f && d2 <= 0f) return a
-    val bp = p - b; val d3 = ab dot bp; val d4 = ac dot bp
-    if (d3 >= 0f && d4 <= d3) return b
+    closestInto(p.x, p.y, p.z, a, b, c)
+    return Vec3(closest[0], closest[1], closest[2])
+}
+
+/** Closest point of triangle (a, b, c) to (px, py, pz), written to [closest] (Ericson 5.1.5): no allocation. */
+private val closest = FloatArray(3)
+private fun closestInto(px: Float, py: Float, pz: Float, a: Vec3, b: Vec3, c: Vec3) {
+    val abx = b.x - a.x; val aby = b.y - a.y; val abz = b.z - a.z
+    val acx = c.x - a.x; val acy = c.y - a.y; val acz = c.z - a.z
+    val apx = px - a.x; val apy = py - a.y; val apz = pz - a.z
+    val d1 = abx * apx + aby * apy + abz * apz; val d2 = acx * apx + acy * apy + acz * apz
+    if (d1 <= 0f && d2 <= 0f) { closest[0] = a.x; closest[1] = a.y; closest[2] = a.z; return }
+    val bpx = px - b.x; val bpy = py - b.y; val bpz = pz - b.z
+    val d3 = abx * bpx + aby * bpy + abz * bpz; val d4 = acx * bpx + acy * bpy + acz * bpz
+    if (d3 >= 0f && d4 <= d3) { closest[0] = b.x; closest[1] = b.y; closest[2] = b.z; return }
     val vc = d1 * d4 - d3 * d2
-    if (vc <= 0f && d1 >= 0f && d3 <= 0f) return a + ab * (d1 / (d1 - d3))
-    val cp = p - c; val d5 = ab dot cp; val d6 = ac dot cp
-    if (d6 >= 0f && d5 <= d6) return c
+    if (vc <= 0f && d1 >= 0f && d3 <= 0f) { val v = d1 / (d1 - d3); closest[0] = a.x + abx * v; closest[1] = a.y + aby * v; closest[2] = a.z + abz * v; return }
+    val cpx = px - c.x; val cpy = py - c.y; val cpz = pz - c.z
+    val d5 = abx * cpx + aby * cpy + abz * cpz; val d6 = acx * cpx + acy * cpy + acz * cpz
+    if (d6 >= 0f && d5 <= d6) { closest[0] = c.x; closest[1] = c.y; closest[2] = c.z; return }
     val vb = d5 * d2 - d1 * d6
-    if (vb <= 0f && d2 >= 0f && d6 <= 0f) return a + ac * (d2 / (d2 - d6))
+    if (vb <= 0f && d2 >= 0f && d6 <= 0f) { val w = d2 / (d2 - d6); closest[0] = a.x + acx * w; closest[1] = a.y + acy * w; closest[2] = a.z + acz * w; return }
     val va = d3 * d6 - d5 * d4
-    if (va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f) return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
-    val denom = 1f / (va + vb + vc)
-    return a + ab * (vb * denom) + ac * (vc * denom)
+    if (va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f) {
+        val w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        closest[0] = b.x + (c.x - b.x) * w; closest[1] = b.y + (c.y - b.y) * w; closest[2] = b.z + (c.z - b.z) * w; return
+    }
+    val denom = 1f / (va + vb + vc); val v = vb * denom; val w = vc * denom
+    closest[0] = a.x + abx * v + acx * w; closest[1] = a.y + aby * v + acy * w; closest[2] = a.z + abz * v + acz * w
 }
 
 /** One triangle of a static mesh; [edges] holds the active-edge bits (a→b, b→c, c→a). */
@@ -409,10 +430,19 @@ private fun triangleSphere(t: Tri, c: Vec3, r: Float, margin: Float, out: Contac
     out.add(q + n * (s * .5f), n, s, feature)
 }
 
-private fun triangleDistance(t: Tri, p: Vec3): Float {
-    val q = closestOnTriangle(p, t.a, t.b, t.c)
-    val h = (p - t.a) dot t.n
-    return if (h < 0f && (p - t.n * h - q).lengthSquared() < 1e-6f) h else (p - q).length()
+private fun triangleDistance(t: Tri, p: Vec3): Float = triangleDistance(t, p.x, p.y, p.z)
+
+/** Signed distance to a one-sided triangle (negative right under it), without allocation. */
+private fun triangleDistance(t: Tri, x: Float, y: Float, z: Float): Float {
+    closestInto(x, y, z, t.a, t.b, t.c)
+    val qx = closest[0]; val qy = closest[1]; val qz = closest[2]
+    val h = (x - t.a.x) * t.n.x + (y - t.a.y) * t.n.y + (z - t.a.z) * t.n.z
+    if (h < 0f) {
+        val ux = x - t.n.x * h - qx; val uy = y - t.n.y * h - qy; val uz = z - t.n.z * h - qz
+        if (ux * ux + uy * uy + uz * uz < 1e-6f) return h
+    }
+    val dx = x - qx; val dy = y - qy; val dz = z - qz
+    return sqrt(dx * dx + dy * dy + dz * dz)
 }
 
 /** Capsule on a triangle: the segment clipped by the triangle's sides gives up to two face points; otherwise one point at the closest approach. */
@@ -420,7 +450,7 @@ private fun triangleCapsule(t: Tri, cap: Capsule, pc: Pose, margin: Float, out: 
     val e0 = segStart(cap, pc); val e1 = segEnd(cap, pc)
     val h0 = (e0 - t.a) dot t.n; val h1 = (e1 - t.a) dot t.n
     if (minOf(h0, h1) > cap.radius + margin || maxOf(h0, h1) < -2f * cap.radius) return
-    var range: FloatArray? = floatArrayOf(0f, 1f)
+    var range: FloatArray? = fullRange()
     val v = arrayOf(t.a, t.b, t.c)
     for (j in 0..2) {
         val side = ((v[(j + 1) % 3] - v[j]) cross t.n).normalized()
@@ -437,12 +467,12 @@ private fun triangleCapsule(t: Tri, cap: Capsule, pc: Pose, margin: Float, out: 
         }
     }
     if (out.count == start) {
-        val u = minimise { triangleDistance(t, e0 + (e1 - e0) * it) }
+        val u = minimise { triangleDistance(t, e0.x + (e1.x - e0.x) * it, e0.y + (e1.y - e0.y) * it, e0.z + (e1.z - e0.z) * it) }
         triangleSphere(t, e0 + (e1 - e0) * u, cap.radius, margin, out, 2)
     } else if (minOf(h0, h1) < cap.radius * .5f) {
         // Deep: the axis can pierce the plane just outside the triangle while the capsule still covers it.
         // The part of the axis above the triangle then understates the overlap; the closest point does not.
-        val u = minimise { triangleDistance(t, e0 + (e1 - e0) * it) }
+        val u = minimise { triangleDistance(t, e0.x + (e1.x - e0.x) * it, e0.y + (e1.y - e0.y) * it, e0.z + (e1.z - e0.z) * it) }
         val c = e0 + (e1 - e0) * u
         if (triangleDistance(t, c) - cap.radius < deepest - .01f) triangleSphere(t, c, cap.radius, margin, out, 2)
     }

@@ -1,5 +1,7 @@
 package sillage.physics
 
+import sillage.math.Vec3
+
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -44,6 +46,14 @@ class TriangleMesh(triangles: FloatArray, materialIds: IntArray? = null, palette
      * normal of their own, so bodies slide across a triangulated floor without catching on seams.
      */
     internal val edges: IntArray
+
+    /** The triangles as collision objects, built once (not once per body and step). */
+    internal val tris: Array<Tri> by lazy {
+        Array(count) { t ->
+            Tri(Vec3(v[9 * t], v[9 * t + 1], v[9 * t + 2]), Vec3(v[9 * t + 3], v[9 * t + 4], v[9 * t + 5]),
+                Vec3(v[9 * t + 6], v[9 * t + 7], v[9 * t + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), edges[t])
+        }
+    }
 
     private val bounds: FloatArray      // per node: minX, minY, minZ, maxX, maxY, maxZ
     private val left: IntArray          // child index, or -1 for a leaf

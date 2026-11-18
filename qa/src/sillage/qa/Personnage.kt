@@ -99,7 +99,14 @@ fun Qa.personnage() {
             }
             dejaAuSol = c.onGround
             immobileEnLAir = if (!c.onGround && abs(p.y - avant.y) < 1e-4f) immobileEnLAir + DT else 0f
-            if (immobileEnLAir > 1f) { coinces++; immobileEnLAir = 0f }
+            if (immobileEnLAir > 1f) {
+                coinces++; immobileEnLAir = 0f
+                if (System.getenv("QA_DETAIL") != null) {
+                    println("DETAIL suspendu : parcours $numero image $it en $p, cap $cap, sol ${c.groundBody?.shape} ${c.groundMaterial?.name}")
+                    for (o in w.overlaps(Capsule(c.radius, (c.height - 2 * c.radius) / 2), p.plus(0f, c.height / 2, 0f), margin = .06f, exclude = c.body))
+                        println("DETAIL   ${o.body?.type} ${o.body?.shape?.let { it::class.simpleName }} vitesse=${o.body?.velocity} n=${o.normal} s=${o.separation}")
+                }
+            }
         }
     }
     controle("parcours au hasard : pas d'enfoncement", "≤ 3 cm") { "$parcoursN parcours, $images images : ${mm(pire)} au plus" to (pire <= .03f) }

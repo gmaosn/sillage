@@ -49,11 +49,12 @@ fun Qa.performance() {
             val a = octetsAlloues(); val t = System.nanoTime(); w.step(DT); temps.add((System.nanoTime() - t) / 1e6); alloue += octetsAlloues() - a
         }
         mesure("physique.pile1000", "pas physique, pile de ${w.bodyCount - 1} corps", "ms", mediane(temps), " (p99 ${f2(p99(temps))})")
-        info("allocations par pas physique (pile)") { "${alloue / 150 / 1024} Kio par pas (objectif de l'étape 7 : zéro)" }
+        mesure("physique.pile1000.alloc", "allocations par pas physique (pile)", "Kio", alloue / 150 / 1024.0, " (objectif de l'étape 7 : zéro)")
     }
 
     run {
-        val w = PhysicsWorld(); w.add(Box(30f, .5f, 30f), Vec3(0f, -.5f, 0f), type = BodyType.STATIC)
+        // Sans sommeil : on mesure 55 caisses vraiment éveillées (sinon la mesure dépend de quand elles s'endorment).
+        val w = PhysicsWorld(); w.timeToSleep = Float.MAX_VALUE; w.add(Box(30f, .5f, 30f), Vec3(0f, -.5f, 0f), type = BodyType.STATIC)
         for (rang in 0 until 10) for (i in 0 until 10 - rang) w.add(Box(.5f, .5f, .5f), Vec3(i * 1.0f - (9 - rang) * .5f, .5f + rang * 1.0f, 0f))
         val temps = ArrayList<Double>()
         repeat(20) { w.step(DT) }
@@ -71,7 +72,7 @@ fun Qa.performance() {
             if (i >= 300) { temps.add((System.nanoTime() - t) / 1e6); alloue += octetsAlloues() - a }
         }
         mesure("ile.miseajour", "mise à jour d'une image de l'île (physique, héros, caméra)", "ms", mediane(temps), " (p99 ${f2(p99(temps))})")
-        info("allocations par image de l'île") { "${alloue / 1200 / 1024} Kio par image" }
+        mesure("ile.miseajour.alloc", "allocations par image de l'île", "Kio", alloue / 1200 / 1024.0)
     }
 
     for ((cle, taille) in listOf("rendu.1280" to "1280x800", "rendu.2560" to "2560x1600")) {

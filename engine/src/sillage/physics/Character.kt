@@ -95,56 +95,69 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
             fall = 0f
         } else { fall += gravity.y * h; vy = fall }
         val intended = Vec3(vx * h, 0f, vz * h)
-        var p = position + Vec3(vx, vy, vz) * h
         var blockedByWall = false
-        // Push out of everything, at most four rounds. The pushes share a budget: what this substep's
-        // motion can have pushed in, plus MAX_PUSH. Deep inside a wall (spawned or teleported there), the
-        // character thus comes out gradually, instead of being thrown metres in one go — through a floor.
-        var budget = (p - position).length() + MAX_PUSH
-        fun spend(v: Vec3): Vec3 {
-            val l = v.length()
-            if (l <= budget) { budget -= l; return v }
-            val r = if (l > 0f) v * (budget / l) else v
-            budget = 0f; return r
-        }
-        for (round in 0 until 4) {
-            gather(p)
-            var moved = false
-            for (k in 0 until touches.size) {
-                val s = touches.separations[k]
-                val b = touches.bodies[k]
-                val dynamic = b >= 0 && world.types[b] == BodyType.DYNAMIC
-                if (s >= (if (dynamic) .005f else 0f)) continue
-                val n = touches.normals[k]
-                // Leave a hair of space against movable bodies: otherwise the kinematic capsule, which
-                // follows the character, would overlap them and the solver would shove them away.
-                val skin = if (dynamic) .005f else 0f
-                if (n.y >= cosSlope) {
-                    // Walkable: rise straight up, the slope does not drag the character down.
-                    p += spend(Vec3(0f, (-s + skin) / n.y, 0f))
-                    if (fall < 0f) fall = 0f
-                } else {
-                    if (dynamic && round == 0) push(Body(world, b), n, touches.points[k], walk, h)
-                    else if (!dynamic && n.y > -.3f) blockedByWall = true
-                    // Standing, a push from above does not drive the character into the ground: only its
-                    // sideways part is kept.
-                    var push = n * (-s + skin)
-                    if (wasOnGround && push.y < 0f) push = Vec3(push.x, 0f, push.z)
-                    p += spend(push)
-                    if (n.y < -.3f && fall > 0f) fall = 0f       // ceiling
-                }
-                moved = true
+        // Push out of everything, at most four rounds. The pushes share a budget: what this move can have
+        // pushed in, plus MAX_PUSH. Deep inside a wall (spawned or teleported there), the character thus
+        // comes out gradually, instead of being thrown metres in one go — through a floor.
+        fun resolve(start: Vec3, pushBodies: Boolean): Vec3 {
+            var q = start
+            var budget = (q - position).length() + MAX_PUSH
+            fun spend(v: Vec3): Vec3 {
+                val l = v.length()
+                if (l <= budget) { budget -= l; return v }
+                val r = if (l > 0f) v * (budget / l) else v
+                budget = 0f; return r
             }
-            if (!moved) break
+            for (round in 0 until 4) {
+                gather(q)
+                var moved = false
+                // Touching walkable ground (or standing): a push from above never drives the character into
+                // it — deep in a block, its shortest way out may be down, through the floor.
+                var grounded = wasOnGround
+                for (k in 0 until touches.size) if (touches.ny[k] >= cosSlope && touches.sep[k] <= .02f) grounded = true
+                for (k in 0 until touches.size) {
+                    val s = touches.sep[k]
+                    val b = touches.body[k]
+                    val dynamic = b >= 0 && world.types[b] == BodyType.DYNAMIC
+                    if (s >= (if (dynamic) .005f else 0f)) continue
+                    val n = touches.normal(k)
+                    // Leave a hair of space against movable bodies: otherwise the kinematic capsule, which
+                    // follows the character, would overlap them and the solver would shove them away.
+                    val skin = if (dynamic) .005f else 0f
+                    if (n.y >= cosSlope) {
+                        // Walkable: rise straight up, the slope does not drag the character down.
+                        q += spend(Vec3(0f, (-s + skin) / n.y, 0f))
+                        if (fall < 0f) fall = 0f
+                    } else {
+                        if (dynamic && round == 0 && pushBodies) push(Body(world, b), n, touches.point(k), walk, h)
+                        else if (!dynamic && n.y > -.3f) blockedByWall = true
+                        var push = n * (-s + skin)
+                        if (grounded && push.y < 0f) push = Vec3(push.x, 0f, push.z)
+                        q += spend(push)
+                        if (n.y < -.3f && fall > 0f) fall = 0f       // ceiling
+                    }
+                    moved = true
+                }
+                if (!moved) break
+            }
+            return q
         }
+        var p = resolve(position + Vec3(vx, vy, vz) * h, true)
         // A gap narrower than the capsule: the pushes out of each side undo each other and leave it
-        // squeezed. Then the move is refused — the character stays where it was, and if it was falling
-        // in, it stands on the rims.
+        // squeezed. Then the sideways move is refused; the fall goes on (along a corner of two walls),
+        // through the same pushes; if even that squeezes, the character stands on the rims.
         var onRims = false
         val squeeze = embedded(p)
-        if (squeeze > .005f && embedded(position) < squeeze - .001f) {
-            if (p.y < position.y - 1e-5f) { onRims = true; fall = 0f }
-            p = position
+        if (squeeze > .005f) {
+            val before = embedded(position)
+            if (before < squeeze - .001f) {
+                val down = if (vy < 0f && before <= .005f) resolve(position.plus(0f, vy * h, 0f), false) else null
+                if (down != null && embedded(down) <= max(before, .002f)) p = down
+                else {
+                    if (p.y < position.y - 1e-5f) { onRims = true; fall = 0f }
+                    p = position
+                }
+            }
         }
         // Low step: up, forward, down.
         if (wasOnGround && blockedByWall && intended.lengthSquared() > 1e-10f) {
@@ -162,9 +175,9 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         gather(p, .04f)
         var gn = Vec3.ZERO; var ground = -2; var material: Material? = null; var groundPoint = p
         for (k in 0 until touches.size) {
-            val n = touches.normals[k]
-            if (n.y < cosSlope || touches.separations[k] > .04f) continue
-            gn += n; ground = touches.bodies[k]; material = touches.materials[k]; groundPoint = touches.points[k]
+            val n = touches.normal(k)
+            if (n.y < cosSlope || touches.sep[k] > .04f) continue
+            gn += n; ground = touches.body[k]; material = touches.material[k]; groundPoint = touches.point(k)
         }
         onGround = (ground != -2 && fall <= .01f) || onRims
         if (onRims && ground == -2) gn = Vec3.UP
@@ -213,16 +226,16 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         gather(feet, 0f)
         var worst = 0f
         for (k in 0 until touches.size) {
-            val b = touches.bodies[k]
+            val b = touches.body[k]
             if (b >= 0 && world.types[b] == BodyType.DYNAMIC) continue
-            worst = max(worst, -touches.separations[k])
+            worst = max(worst, -touches.sep[k])
         }
         return worst
     }
 
     private fun penetrating(feet: Vec3): Boolean {
         gather(feet, 0f)
-        for (k in 0 until touches.size) if (touches.separations[k] < -.003f) return true
+        for (k in 0 until touches.size) if (touches.sep[k] < -.003f) return true
         return false
     }
 

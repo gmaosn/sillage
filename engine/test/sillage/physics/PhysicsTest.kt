@@ -208,6 +208,27 @@ class PhysicsTest {
         assertTrue(vmax < 4.4f * 1.15f, "le ballon part plus vite que le héros : $vmax m/s")
         assertTrue(after < 3f, "le ballon ne ralentit pas : $after m/s")
     }
+
+    @Test fun retirerUnCorps() {
+        val w = PhysicsWorld(); w.add(Box(10f, .5f, 10f), Vec3(0f, -.5f, 0f), type = BodyType.STATIC)
+        val dessous = w.add(Box(.5f, .5f, .5f), Vec3(0f, .5f, 0f))
+        val dessus = w.add(Box(.5f, .5f, .5f), Vec3(0f, 1.5f, 0f))
+        repeat(60) { w.step(1f / 60f) }
+        assertEquals(1.5f, dessus.position.y, .01f)
+        w.remove(dessous)
+        assertTrue(dessous.isRemoved); assertEquals(2, w.liveBodyCount)
+        // Le rayon ne le voit plus, la caisse du dessus tombe à sa place.
+        assertNull(w.raycast(Vec3(-5f, .5f, 0f), Vec3(1f, 0f, 0f), 10f), "un rayon à sa hauteur passe")
+        repeat(90) { w.step(1f / 60f) }
+        assertEquals(.5f, dessus.position.y, .01f)
+        // Sa place sert au corps suivant, qui part de zéro.
+        val nouveau = w.add(Sphere(.3f), Vec3(3f, 2f, 0f))
+        assertEquals(dessous.id, nouveau.id); assertFalse(nouveau.isRemoved)
+        assertEquals(Vec3.ZERO, nouveau.velocity)
+        repeat(90) { w.step(1f / 60f) }
+        assertEquals(.3f, nouveau.position.y, .01f)
+        assertEquals(.5f, dessus.position.y, .01f)
+    }
 }
 
 private const val BALLON_AIR = .8f

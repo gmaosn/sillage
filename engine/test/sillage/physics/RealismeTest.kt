@@ -161,13 +161,36 @@ class RealismeTest {
     }
 
     @Test fun rapportsDeMasses() {
-        val (s10, d10) = heavyOnLight(10f, 4)
-        println("REALISME 10 kg posés sur 1 kg (4 sous-pas) : enfoncement ${"%.1f".format(s10 * 1000)} mm, dérive ${"%.1f".format(d10 * 1000)} mm")
-        assertTrue(s10 < .005f && d10 < .01f)
-        // Au-delà de 1:10, la souplesse des contacts se voit : il faut plus de sous-pas pour ne pas dériver.
-        val (s100, d100) = heavyOnLight(100f, 8)
-        println("REALISME 100 kg posés sur 1 kg (8 sous-pas) : enfoncement ${"%.1f".format(s100 * 1000)} mm, dérive ${"%.1f".format(d100 * 1000)} mm")
-        assertTrue(s100 < .04f && d100 < .01f)
+        for (ratio in listOf(10f, 100f, 1000f)) {
+            val (s, d) = heavyOnLight(ratio, 4)
+            println("REALISME ${ratio.toInt()} kg posés sur 1 kg (4 sous-pas) : enfoncement ${"%.1f".format(s * 1000)} mm, dérive ${"%.1f".format(d * 1000)} mm")
+            assertTrue(s < .003f && d < .005f, "1:${ratio.toInt()} : enfoncement $s, dérive $d")
+        }
+    }
+
+    /**
+     * Une caisse de 100 kg sur une planche de 1 kg, sur un sol glissant (μ sol–planche √(0,5·0,2) = 0,32,
+     * prise 0,32·101 kg·g = 313 N ; caisse–planche 0,5·100 kg·g = 490 N). Poussée de 250 N : rien ne bouge.
+     * Poussée de 400 N : la planche tient la caisse, mais le sol ne tient pas l'ensemble, qui glisse.
+     */
+    @Test fun uneCaisseLourdeSurUnePlancheLegere() {
+        fun pousser(force: Float): Pair<Float, Float> {
+            val w = PhysicsWorld(); ground(w, .2f)
+            val planche = w.add(Box(.6f, .05f, .6f), Vec3(0f, .05f, 0f), mass = 1f, friction = .5f)
+            val caisse = w.add(Box(.4f, .4f, .4f), Vec3(0f, .5f, 0f), mass = 100f, friction = .5f)
+            repeat(60) { w.step(dt) }
+            val p0 = planche.position; val c0 = caisse.position
+            repeat(60) { w.applyForce(caisse, Vec3(force, 0f, 0f)); w.step(dt) }
+            return (planche.position.x - p0.x) to (caisse.position.x - c0.x)
+        }
+        val (p250, c250) = pousser(250f); val (p400, c400) = pousser(400f)
+        // À 400 N, l'ensemble (101 kg) accélère de (400 − 313)/101 = 0,86 m/s² : 0,43 m en 1 s, ensemble.
+        println("REALISME caisse de 100 kg sur planche de 1 kg : 250 N → planche ${"%.1f".format(p250 * 1000)} mm, caisse ${"%.1f".format(c250 * 1000)} mm ; " +
+            "400 N → planche ${"%.0f".format(p400 * 1000)} mm, caisse ${"%.0f".format(c400 * 1000)} mm (théorie 430 mm ensemble)")
+        // Limite connue : au début de la poussée, le solveur (Gauss–Seidel, une passe par sous-pas) met
+        // quelques pas à monter le frottement d'un lourd sur un léger ; l'ensemble glisse de quelques cm.
+        assertTrue(abs(p250) < .05f && abs(c250) < .06f, "à 250 N presque rien ne doit bouger")
+        assertTrue(p400 > .25f && p400 < .6f && abs(c400 - p400) < .15f, "à 400 N tout glisse ensemble")
     }
 
     // ------------------------------------------------------------------ surfaces

@@ -16,7 +16,7 @@ internal fun PhysicsWorld.poseOf(i: Int): Pose = poseOf(Vec3(px[i], py[i], pz[i]
 
 /**
  * Casts a ray from [origin] along [direction] up to [maxDistance]. With [radius] > 0 it sweeps a sphere
- * instead (against boxes, the box grown by the radius). [filter] skips bodies; [meshes] = false ignores
+ * instead (exactly: against a box, the box grown by the radius with rounded edges and corners). [filter] skips bodies; [meshes] = false ignores
  * static meshes, whose triangles are one-sided (seen from the front). Starting inside gives distance 0.
  */
 fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radius: Float = 0f,
@@ -24,39 +24,41 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
     val d = direction.normalized()
     var best = maxDistance; var hit: RayHit? = null
     for (i in 0 until count) {
+        if (removed[i]) continue
         val shape = shapes[i]!!
-        val c = Vec3(px[i], py[i], pz[i])
-        // Quick rejection by the bounding sphere.
+        // Quick rejection by the bounding sphere, on scalars (no vector for the bodies far from the ray).
         val reach = shape.boundingRadius + radius
-        val m = (c - origin) dot d
+        val cx = px[i] - origin.x; val cy = py[i] - origin.y; val cz = pz[i] - origin.z
+        val m = cx * d.x + cy * d.y + cz * d.z
         if (m < -reach || m > best + reach) continue
-        if ((c - origin - d * m).lengthSquared() > reach * reach) continue
+        val ex = cx - d.x * m; val ey = cy - d.y * m; val ez = cz - d.z * m
+        if (ex * ex + ey * ey + ez * ez > reach * reach) continue
         if (filter != null && !filter(Body(this, i))) continue
+        val c = Vec3(px[i], py[i], pz[i])
         val pose = poseOf(i)
         val r = when (shape) {
             is Sphere -> raySphere(origin, d, c, shape.radius + radius)
             is Capsule -> rayCapsule(origin, d, pose.p - pose.ay * shape.halfHeight, pose.p + pose.ay * shape.halfHeight, shape.radius + radius)
-            is Box -> rayBox(origin, d, pose, shape.halfX + radius, shape.halfY + radius, shape.halfZ + radius)
+            is Box -> if (radius > 0f) sweepBox(origin, d, pose, shape, radius) else rayBox(origin, d, pose, shape.halfX, shape.halfY, shape.halfZ)
         } ?: continue
         if (r.first < best) { best = r.first; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, Body(this, i), null) }
     }
     if (meshes && radius > 0f) {
-        val stack = IntList(); val found = IntList()
+        val stack = queryStack; val found = queryFound
         val e = origin + d * best
         for (mesh in this.meshes) {
             found.clear()
             mesh.query(min(origin.x, e.x) - radius, min(origin.y, e.y) - radius, min(origin.z, e.z) - radius,
                 max(origin.x, e.x) + radius, max(origin.y, e.y) + radius, max(origin.z, e.z) + radius, found, stack)
-            val v = mesh.v; val n = mesh.n
+            val tris = mesh.tris
             for (f in 0 until found.size) {
-                val t = found[f]; val o = 9 * t
-                val r = sweepTriangle(origin, d, radius, Vec3(v[o], v[o + 1], v[o + 2]), Vec3(v[o + 3], v[o + 4], v[o + 5]),
-                    Vec3(v[o + 6], v[o + 7], v[o + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), best) ?: continue
+                val t = found[f]; val tr = tris[t]
+                val r = sweepTriangle(origin, d, radius, tr.a, tr.b, tr.c, tr.n, best) ?: continue
                 if (r.first <= best) { best = r.first; hit = RayHit(r.first, origin + d * r.first - r.second * radius, r.second, null, mesh.palette[mesh.material[t]]) }
             }
         }
     } else if (meshes) {
-        val stack = IntList()
+        val stack = queryStack
         for (mesh in this.meshes) {
             val t = mesh.raycast(origin.x, origin.y, origin.z, d.x, d.y, d.z, best, stack)
             if (t >= 0f && t <= best) {
@@ -138,6 +140,34 @@ private fun rayCapsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: Float): Pair<Float
     return best
 }
 
+/**
+ * A sphere of radius [r] swept against a box: the box grown by r, with rounded edges and corners (the
+ * Minkowski sum). The grown box tells where a face is hit; off the faces, the twelve edges as capsules.
+ */
+private fun sweepBox(o: Vec3, d: Vec3, pose: Pose, b: Box, r: Float): Pair<Float, Vec3>? {
+    val h = floatArrayOf(b.halfX, b.halfY, b.halfZ)
+    val lo = pose.toLocal(o)
+    // Starting inside the rounded box: distance from the box below the radius.
+    val qx = max(abs(lo.x) - h[0], 0f); val qy = max(abs(lo.y) - h[1], 0f); val qz = max(abs(lo.z) - h[2], 0f)
+    if (qx * qx + qy * qy + qz * qz <= r * r) return 0f to -d
+    val grown = rayBox(o, d, pose, h[0] + r, h[1] + r, h[2] + r) ?: return null
+    val p = pose.toLocal(o + d * grown.first)
+    var outside = 0
+    for (k in 0..2) if (abs(p[k]) > h[k] + 1e-5f) outside++
+    if (outside <= 1 && grown.first > 0f) return grown            // on a face (only the hit axis is beyond the box)
+    var best: Pair<Float, Vec3>? = null
+    for (axis in 0..2) {
+        val u = (axis + 1) % 3; val v = (axis + 2) % 3
+        for (su in floatArrayOf(-1f, 1f)) for (sv in floatArrayOf(-1f, 1f)) {
+            val e0 = FloatArray(3); val e1 = FloatArray(3)
+            e0[axis] = -h[axis]; e1[axis] = h[axis]; e0[u] = su * h[u]; e1[u] = su * h[u]; e0[v] = sv * h[v]; e1[v] = sv * h[v]
+            val hit = rayCapsule(o, d, pose.toWorld(Vec3(e0[0], e0[1], e0[2])), pose.toWorld(Vec3(e1[0], e1[1], e1[2])), r) ?: continue
+            if (best == null || hit.first < best.first) best = hit
+        }
+    }
+    return best
+}
+
 private fun rayBox(o: Vec3, d: Vec3, pose: Pose, hx: Float, hy: Float, hz: Float): Pair<Float, Vec3>? {
     val lo = pose.toLocal(o)
     val ld = Vec3(d dot pose.ax, d dot pose.ay, d dot pose.az)
@@ -169,39 +199,51 @@ class Overlap(val body: Body?, val material: Material?, val point: Vec3, val nor
 fun PhysicsWorld.overlaps(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, margin: Float = 0f, exclude: Body? = null): List<Overlap> {
     val t = Touches()
     touching(shape, poseOf(position, rotation.normalized()), margin, exclude?.id ?: -1, t)
-    return List(t.size) { k -> Overlap(if (t.bodies[k] >= 0) Body(this, t.bodies[k]) else null, t.materials[k], t.points[k], t.normals[k], t.separations[k]) }
+    return List(t.size) { k -> Overlap(if (t.body[k] >= 0) Body(this, t.body[k]) else null, t.material[k], t.point(k), t.normal(k), t.sep[k]) }
 }
 
 /** Contacts of [shape] placed at [pose] with the world, normals pointing from the obstacle to the shape. */
 internal class Touches {
-    val points = ArrayList<Vec3>(); val normals = ArrayList<Vec3>(); val separations = ArrayList<Float>()
+    var size = 0; private set
+    private var cap = 16
+    var x = FloatArray(cap); var y = FloatArray(cap); var z = FloatArray(cap)
+    var nx = FloatArray(cap); var ny = FloatArray(cap); var nz = FloatArray(cap)
+    var sep = FloatArray(cap)
     /** Body touched, −1 for a static mesh. */
-    val bodies = ArrayList<Int>(); val materials = ArrayList<Material?>()
-    val size get() = points.size
-    fun clear() { points.clear(); normals.clear(); separations.clear(); bodies.clear(); materials.clear() }
+    var body = IntArray(cap); var material = arrayOfNulls<Material>(cap)
+    fun clear() { size = 0 }
+    fun point(k: Int) = Vec3(x[k], y[k], z[k])
+    fun normal(k: Int) = Vec3(nx[k], ny[k], nz[k])
+    fun add(src: ContactPoints, b: Int, m: Material?) {
+        for (k in 0 until src.count) {
+            if (size == cap) {
+                cap *= 2
+                x = x.copyOf(cap); y = y.copyOf(cap); z = z.copyOf(cap); nx = nx.copyOf(cap); ny = ny.copyOf(cap); nz = nz.copyOf(cap)
+                sep = sep.copyOf(cap); body = body.copyOf(cap); material = material.copyOf(cap)
+            }
+            x[size] = src.x[k]; y[size] = src.y[k]; z[size] = src.z[k]
+            nx[size] = src.nx[k]; ny[size] = src.ny[k]; nz[size] = src.nz[k]
+            sep[size] = src.sep[k]; body[size] = b; material[size] = m
+            size++
+        }
+    }
 }
 
 internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, exclude: Int, out: Touches, meshes: Boolean = true) {
     out.clear()
-    val scratch = ContactPoints()
+    val scratch = queryScratch
     val reach = shape.boundingRadius + margin
-    fun take(body: Int, material: Material?) {
-        for (k in 0 until scratch.count) {
-            out.points.add(Vec3(scratch.x[k], scratch.y[k], scratch.z[k])); out.normals.add(Vec3(scratch.nx[k], scratch.ny[k], scratch.nz[k]))
-            out.separations.add(scratch.sep[k]); out.bodies.add(body); out.materials.add(material)
-        }
-    }
     for (i in 0 until count) {
-        if (i == exclude) continue
+        if (i == exclude || removed[i]) continue
         val r = shapes[i]!!.boundingRadius + reach
         val dx = px[i] - pose.p.x; val dy = py[i] - pose.p.y; val dz = pz[i] - pose.p.z
         if (dx * dx + dy * dy + dz * dz > r * r) continue
         scratch.clear()
         collide(shapes[i]!!, poseOf(i), shape, pose, margin, scratch)
-        take(i, null)
+        out.add(scratch, i, null)
     }
     if (!meshes) return
-    val found = IntList(); val stack = IntList()
+    val found = queryFound; val stack = queryStack
     for (mesh in this.meshes) {
         found.clear()
         mesh.query(pose.p.x - reach, pose.p.y - reach, pose.p.z - reach, pose.p.x + reach, pose.p.y + reach, pose.p.z + reach, found, stack)
@@ -210,11 +252,9 @@ internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, excl
             // Triangles are one-sided: a shape whose centre is behind one (inside a closed mesh such as a
             // pier, under a floor) does not touch it, or it would be thrown out through the far side.
             if ((pose.p.x - v[9 * t]) * n[3 * t] + (pose.p.y - v[9 * t + 1]) * n[3 * t + 1] + (pose.p.z - v[9 * t + 2]) * n[3 * t + 2] < 0f) continue
-            val tri = Tri(Vec3(v[9 * t], v[9 * t + 1], v[9 * t + 2]), Vec3(v[9 * t + 3], v[9 * t + 4], v[9 * t + 5]),
-                Vec3(v[9 * t + 6], v[9 * t + 7], v[9 * t + 8]), Vec3(n[3 * t], n[3 * t + 1], n[3 * t + 2]), mesh.edges[t])
             scratch.clear()
-            collideTriangle(tri, shape, pose, margin, scratch)
-            take(-1, mesh.palette[mesh.material[t]])
+            collideTriangle(mesh.tris[t], shape, pose, margin, scratch)
+            out.add(scratch, -1, mesh.palette[mesh.material[t]])
         }
     }
 }

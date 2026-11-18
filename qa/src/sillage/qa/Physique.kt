@@ -8,6 +8,7 @@ import sillage.physics.Box
 import sillage.physics.PhysicsWorld
 import sillage.physics.Sphere
 import sillage.physics.TriangleMesh
+import sillage.physics.raycast
 import java.util.Random
 import kotlin.math.*
 
@@ -118,32 +119,21 @@ fun Qa.physique() {
     }
 
     // Tas au repos dans une fosse (une boule qui roule sur un sol sans fin ne s'arrête pas : c'est juste).
-    var pireEnfoncement = 0f; var pireExtreme = 0f; var rapportExtreme = 0f; var dormants = 0; var total = 0; var agitation = 0f; var tas = 0
+    var pireEnfoncement = 0f; var dormants = 0; var total = 0; var agitation = 0f; var tas = 0
     repeat(cas(2, 6)) {
         val w = PhysicsWorld(); w.solBoite()
         for ((x, z) in listOf(4f to 0f, -4f to 0f, 0f to 4f, 0f to -4f))
             w.add(Box(if (x == 0f) 4.5f else .5f, 1.5f, if (z == 0f) 4.5f else .5f), Vec3(x, 1.5f, z), type = BodyType.STATIC)
         val bs = ajouterCorps(w, rnd, cas(50, 80), 3f, .5f, 10f)
         repeat(900) { w.step(DT) }
-        // Rapport de masses d'un contact : la paire elle-même, et ce qui écrase chacun des deux (son plus lourd voisin).
-        val cs = w.contacts()
-        val voisin = HashMap<Int, Float>()
-        for (c in cs) { val a = c.a ?: continue; if (a.type != BodyType.DYNAMIC) continue
-            voisin.merge(a.id, c.b.mass, ::max); voisin.merge(c.b.id, a.mass, ::max) }
-        fun ecrase(b: sillage.physics.Body) = (voisin[b.id] ?: b.mass) / b.mass
-        for (c in cs) {
-            val rapport = max(ecrase(c.b), c.a?.let { a -> if (a.type == BodyType.DYNAMIC) max(ecrase(a), max(a.mass, c.b.mass) / min(a.mass, c.b.mass)) else 1f } ?: 1f)
-            if (rapport <= 10f) pireEnfoncement = max(pireEnfoncement, -c.separation)
-            else if (-c.separation > pireExtreme) { pireExtreme = -c.separation; rapportExtreme = rapport }
-        }
+        for (c in w.contacts()) pireEnfoncement = max(pireEnfoncement, -c.separation)
         dormants += bs.count { it.isSleeping }; total += bs.size
         if (System.getenv("QA_DETAIL") != null) for (b in bs.filter { !it.isSleeping }.sortedByDescending { it.velocity.length() + it.angularVelocity.length() }.take(4))
             println("DETAIL éveillé ${b.shape::class.simpleName} v=${b.velocity.length()} w=${b.angularVelocity.length()} p=${b.position}")
         agitation = max(agitation, bs.filter { !it.isSleeping }.maxOfOrNull { it.velocity.length() } ?: 0f)
         tas++
     }
-    controle("enfoncement au repos (tas au hasard dans une fosse, 15 s)", "≤ 1 cm entre masses comparables (≤ 1:10)") { "$tas tas, $total corps : ${mm(pireEnfoncement)} au plus" to (pireEnfoncement <= .01f) }
-    info("enfoncement au repos, masses très différentes (> 1:10)") { "${mm(pireExtreme)} au plus (rapport 1:${"%.0f".format(rapportExtreme)}) — limite des contacts souples, voir aussi 1:100" }
+    controle("enfoncement au repos (tas au hasard dans une fosse, 15 s)", "≤ 1 cm, toutes masses (densités de 100 à 3000)") { "$tas tas, $total corps : ${mm(pireEnfoncement)} au plus" to (pireEnfoncement <= .01f) }
     controle("sommeil des tas au repos (15 s)", "≥ 95 % endormis") { "${dormants}/$total endormis (${pct(dormants.toDouble() / total)})" to (dormants >= .95 * total) }
     controle("agitation des corps éveillés au repos", "≤ 5 cm/s") { "vitesse max ${cm(agitation)}/s" to (agitation <= .05f) }
 
@@ -172,15 +162,55 @@ fun Qa.physique() {
         "${a.size} valeurs, $diff différentes" to (diff == 0)
     }
 
-    info("rapport de masses 1:100 (caisse de 100 kg sur 1 kg)") {
-        fun essai(sous: Int): Float {
-            val w = PhysicsWorld(); w.substeps = sous; w.solBoite()
-            w.add(Box(.5f, .5f, .5f), Vec3(0f, .5f, 0f), mass = 1f)
-            val haut = w.add(Box(.5f, .5f, .5f), Vec3(0f, 1.5f, 0f), mass = 100f)
+    controle("rapports de masses : un lourd posé sur un léger", "1:10, 1:100, 1:1000 : enfoncement ≤ 3 mm, dérive ≤ 5 mm") {
+        val lignes = ArrayList<String>(); var ok = true
+        for (r in listOf(10f, 100f, 1000f)) {
+            val w = PhysicsWorld(); w.solBoite()
+            w.add(Box(.25f, .25f, .25f), Vec3(0f, .25f, 0f), mass = 1f)
+            val haut = w.add(Box(.5f, .5f, .5f), Vec3(0f, 1.01f, 0f), mass = r)
             repeat(300) { w.step(DT) }
-            return 1.5f - haut.position.y
+            val e = 1f - haut.position.y; val d = sqrt(haut.position.x * haut.position.x + haut.position.z * haut.position.z)
+            lignes.add("1:${r.toInt()} ${mm(e)}/${mm(d)}"); if (e > .003f || d > .005f || !haut.isSleeping) ok = false
         }
-        "enfoncement ${mm(essai(4))} à 4 sous-pas, ${mm(essai(8))} à 8"
+        lignes.joinToString(", ") to ok
+    }
+
+    controle("un lourd sur un léger, sur un sol glissant", "250 N : < 5 cm ; 400 N : l'ensemble glisse") {
+        fun pousser(force: Float): Pair<Float, Float> {
+            val w = PhysicsWorld(); w.add(Box(30f, .5f, 30f), Vec3(0f, -.5f, 0f), type = BodyType.STATIC, friction = .2f)
+            val planche = w.add(Box(.6f, .05f, .6f), Vec3(0f, .05f, 0f), mass = 1f, friction = .5f)
+            val caisse = w.add(Box(.4f, .4f, .4f), Vec3(0f, .5f, 0f), mass = 100f, friction = .5f)
+            repeat(60) { w.step(DT) }
+            val p0 = planche.position.x; val c0 = caisse.position.x
+            repeat(60) { w.applyForce(caisse, Vec3(force, 0f, 0f)); w.step(DT) }
+            return (planche.position.x - p0) to (caisse.position.x - c0)
+        }
+        val (p250, c250) = pousser(250f); val (p400, c400) = pousser(400f)
+        "250 N : planche ${mm(p250)}, caisse ${mm(c250)} ; 400 N : planche ${mm(p400)}, caisse ${mm(c400)} (théorie 430 mm ensemble)" to
+            (abs(p250) < .05f && abs(c250) < .06f && p400 > .25f && p400 < .6f && abs(c400 - p400) < .15f)
+    }
+
+    controle("retirer des corps d'un tas", "voisins réveillés, plus de contact ni de rayon, places réutilisées") {
+        val w = PhysicsWorld(); w.solBoite()
+        val bs = ajouterCorps(w, rnd, 60, 2f, .5f, 8f)
+        repeat(600) { w.step(DT) }
+        val retires = bs.shuffled(rnd).take(20)
+        for (b in retires) w.remove(b)
+        var touches = 0; var nonFinis = 0
+        repeat(300) {
+            w.step(DT)
+            touches += w.contacts().count { c -> c.b.isRemoved || c.a?.isRemoved == true }
+        }
+        val restants = bs.filter { !it.isRemoved }
+        nonFinis = restants.count { !it.fini() }
+        val rayons = retires.count { b -> w.raycast(b.position.plus(0f, 5f, 0f), Vec3(0f, -1f, 0f), 5f)?.body == b }
+        val nouveaux = (0 until 20).map { w.add(Box(.2f, .2f, .2f), Vec3(rnd.f(-2f, 2f), 6f + .5f * it, rnd.f(-2f, 2f))) }
+        val reutilisees = nouveaux.count { n -> retires.any { it.id == n.id } }
+        repeat(600) { w.step(DT) }
+        // Le tas, réveillé par les retraits et les nouvelles caisses, doit se reposer.
+        val dorment = restants.count { it.isSleeping }
+        "20 retirés : $touches contacts après, $rayons rayons qui les touchent, $reutilisees/20 places reprises, $nonFinis non finis, ${dorment}/${restants.size} du tas rendormis 10 s après" to
+            (touches == 0 && rayons == 0 && reutilisees == 20 && nonFinis == 0 && dorment >= restants.size * 9 / 10)
     }
 
     controle("chute libre (1 s) contre ½gt²", "écart ≤ 0,5 %") {
