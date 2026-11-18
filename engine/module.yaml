@@ -7,9 +7,3 @@ settings:
     test:
       freeJvmArgs:
         - --enable-native-access=ALL-UNNAMED
-
-dependencies:
-  - org.lwjgl:lwjgl:3.3.6
-  - org.lwjgl:lwjgl-glfw:3.3.6
-  - org.lwjgl:lwjgl:3.3.6:natives-linux: runtime-only
-  - org.lwjgl:lwjgl-glfw:3.3.6:natives-linux: runtime-only

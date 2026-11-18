@@ -2,35 +2,11 @@ package sillage
 
 import sillage.math.Mat4
 import sillage.math.Vec3
-import org.lwjgl.glfw.GLFW.*
-import org.lwjgl.glfw.GLFWErrorCallback
-import org.lwjgl.glfw.GLFWNativeWayland
-import org.lwjgl.glfw.GLFWNativeX11
-import org.lwjgl.glfw.Callbacks.glfwFreeCallbacks
-import sillage.vk.*
-import java.lang.foreign.ValueLayout.JAVA_LONG
+import sillage.platform.Key
+import sillage.platform.Window
+import sillage.platform.openWindow
 import java.nio.file.Path
 import kotlin.math.*
-
-/** Fenêtre GLFW provisoire (remplacée à l'étape 2) : ne fournit que les poignées natives Wayland ou X11. */
-private class GlfwSurface(private val window: Long) : SurfaceSource {
-    private val wayland = glfwGetPlatform() == GLFW_PLATFORM_WAYLAND
-    override val instanceExtensions = listOf(VK_KHR_SURFACE_EXTENSION_NAME,
-        if (wayland) VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME else VK_KHR_XLIB_SURFACE_EXTENSION_NAME)
-    override fun createSurface(vk: VkInstanceApi, stack: NativeStack): Long = stack.frame { s ->
-        val out = s.allocate(JAVA_LONG)
-        if (wayland) vk.createWaylandSurfaceKHR(s.struct(VkWaylandSurfaceCreateInfoKHR,
-            "display" to GLFWNativeWayland.glfwGetWaylandDisplay(), "surface" to GLFWNativeWayland.glfwGetWaylandWindow(window)), out)
-        else vk.createXlibSurfaceKHR(s.struct(VkXlibSurfaceCreateInfoKHR,
-            "dpy" to GLFWNativeX11.glfwGetX11Display(), "window" to GLFWNativeX11.glfwGetX11Window(window)), out)
-        out.get(JAVA_LONG, 0)
-    }
-    override fun framebufferSize(): IntArray {
-        val w = IntArray(1); val h = IntArray(1)
-        glfwGetFramebufferSize(window, w, h)
-        return intArrayOf(w[0], h[0])
-    }
-}
 
 internal class Game(private val titre: String,private val monde: Monde,private val args: Array<String>) {
     fun run() {
@@ -50,36 +26,13 @@ internal class Game(private val titre: String,private val monde: Monde,private v
         val screenshot=option("--capture")?.let { Path.of(it) }
         // Caméra fixe pour les captures : œil puis cible. Les déplacements restent relatifs à la caméra de jeu.
         val lookAt=option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size==6) { "--look-at attend 6 nombres" } }
-        var window=0L
-        var glfw=false
-        var callback: GLFWErrorCallback?=null
+        var window: Window?=null
         var renderer: VulkanRenderer?=null
         try {
-            if(!headless) {
-                callback=GLFWErrorCallback.createPrint(System.err).set()
-                check(glfwInit()) { "Pas de session graphique. Utiliser --headless pour le rendu Vulkan hors écran." }
-                glfw=true
-                glfwWindowHint(GLFW_CLIENT_API,GLFW_NO_API)
-                window=glfwCreateWindow(1280,800,titre+" - Les Alizés",0L,0L)
-                check(window!=0L) { "Création de fenêtre impossible" }
-            }
-            val r=VulkanRenderer(if(window!=0L) GlfwSurface(window) else null,"--validation" in args)
+            if(!headless) window=openWindow(titre+" - Les Alizés",1280,800)
+            val r=VulkanRenderer(window,"--validation" in args)
             renderer=r; r.ouvrir()
-            var captured=!headless
-            var focused=true
-            var mx=0.0; var my=0.0; var firstMouse=true
-            var resized=false
-            if(!headless) {
-                glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_DISABLED)
-                if(glfwRawMouseMotionSupported()) glfwSetInputMode(window,GLFW_RAW_MOUSE_MOTION,GLFW_TRUE)
-                glfwSetCursorPosCallback(window) { _,x,y ->
-                    if(captured && focused && !firstMouse) monde.camera.tourner((x-mx).toFloat(),(y-my).toFloat())
-                    mx=x; my=y; firstMouse=false
-                }
-                glfwSetScrollCallback(window) { _,_,dy -> if(focused) monde.camera.zoom(dy.toFloat()) }
-                glfwSetWindowFocusCallback(window) { _,focus -> focused=focus; firstMouse=true }
-                glfwSetFramebufferSizeCallback(window) { _,_,_ -> resized=true }
-            }
+            window?.mouseCaptured=true
             var last=System.nanoTime()
             var frame=0; var fps=60; var fpsFrames=0; var fpsTime=0f
             var oldJump=false; var oldTab=false; var oldReset=false
@@ -87,30 +40,34 @@ internal class Game(private val titre: String,private val monde: Monde,private v
             var lowest=highest
             var moved=false
             val initial=monde.joueur.position
-            while(frame<frames && (headless || !glfwWindowShouldClose(window))) {
-                if(!headless) {
-                    glfwPollEvents()
-                    if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS) break
-                    if(resized) { if(!r.recreateSwapchain()) { glfwWaitEventsTimeout(.05); continue }; resized=false }
-                    if(!focused && !smoke) { glfwWaitEventsTimeout(.05); last=System.nanoTime(); continue }
+            while(frame<frames && (window==null || !window.shouldClose)) {
+                if(window!=null) {
+                    window.poll()
+                    if(window.isDown(Key.ESCAPE)) break
+                    if(window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
+                    if(!window.focused && !smoke) { window.waitEvents(.05); last=System.nanoTime(); continue }
+                    val (dx,dy)=window.consumeMouseDelta().let { it[0] to it[1] }
+                    if(dx!=0f || dy!=0f) monde.camera.tourner(dx,dy)
+                    window.consumeScroll().let { if(it!=0f) monde.camera.zoom(it) }
                 }
                 val now=System.nanoTime()
                 val dt=if(smoke || headless) 1f/60f else ((now-last)/1e9).toFloat().coerceIn(0.0001f,.1f)
                 last=now
-                fun down(vararg keys: Int)=!headless && keys.any { glfwGetKey(window,it)==GLFW_PRESS }
-                val tab=down(GLFW_KEY_TAB)
-                if(tab && !oldTab) { captured=!captured; firstMouse=true; glfwSetInputMode(window,GLFW_CURSOR,if(captured) GLFW_CURSOR_DISABLED else GLFW_CURSOR_NORMAL) }
+                // Touches par position physique : ZQSD en AZERTY et WASD en QWERTY sont les mêmes touches.
+                fun down(vararg keys: Int)=window!=null && keys.any { window.isDown(it) }
+                val tab=down(Key.TAB)
+                if(tab && !oldTab) window!!.mouseCaptured=!window.mouseCaptured
                 oldTab=tab
-                val reset=down(GLFW_KEY_R)
+                val reset=down(Key.R)
                 if(reset && !oldReset) monde.reinitialiser()
                 oldReset=reset
-                var jump=down(GLFW_KEY_SPACE)
+                var jump=down(Key.SPACE)
                 val movement=if(smoke) {
                     jump=frame==40
                     if(frame in 20..110) monde.camera.mouvement(1f,0f) else Vec3.ZERO
                 } else monde.camera.mouvement(
-                    (if(down(GLFW_KEY_D,GLFW_KEY_RIGHT)) 1f else 0f)-(if(down(GLFW_KEY_A,GLFW_KEY_Q,GLFW_KEY_LEFT)) 1f else 0f),
-                    (if(down(GLFW_KEY_W,GLFW_KEY_Z,GLFW_KEY_UP)) 1f else 0f)-(if(down(GLFW_KEY_S,GLFW_KEY_DOWN)) 1f else 0f))
+                    (if(down(Key.D,Key.RIGHT)) 1f else 0f)-(if(down(Key.A,Key.LEFT)) 1f else 0f),
+                    (if(down(Key.W,Key.UP)) 1f else 0f)-(if(down(Key.S,Key.DOWN)) 1f else 0f))
                 monde.miseAJour(movement,jump && !oldJump,dt); oldJump=jump
                 if(monde.joueur.position.distanceTo(initial)>.1f) moved=true
                 highest=max(highest,monde.joueur.position.y); lowest=min(lowest,monde.joueur.position.y)
@@ -119,9 +76,9 @@ internal class Game(private val titre: String,private val monde: Monde,private v
                 fpsFrames++; fpsTime+=dt
                 if(fpsTime>=.5f) { fps=(fpsFrames/fpsTime).roundToInt(); fpsTime=0f; fpsFrames=0 }
                 val capture=if(frame==frames-1) screenshot else null
-                r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,captured),capture)
+                r.dessiner(monde.objets,projection*view,Hud.construire(monde,fps,window?.mouseCaptured ?: false),capture)
                 frame++
-                if(!headless && frame%30==0) glfwSetWindowTitle(window,titre+" | "+monde.recoltes+"/"+monde.coquillages.size+" coquillages | "+fps+" FPS")
+                if(window!=null && frame%30==0) window.title=titre+" | "+monde.recoltes+"/"+monde.coquillages.size+" coquillages | "+fps+" FPS"
             }
             if(smoke) {
                 check(frame==frames) { "Démo interrompue avant la fin du smoke test" }
@@ -133,9 +90,7 @@ internal class Game(private val titre: String,private val monde: Monde,private v
             println("SILLAGE_RUN_OK frames="+frame+" smoke="+smoke+" position="+monde.joueur.position+" sol="+monde.joueur.auSol)
         } finally {
             renderer?.close()
-            if(window!=0L) { glfwFreeCallbacks(window); glfwDestroyWindow(window) }
-            if(glfw) glfwTerminate()
-            callback?.free()
+            window?.close()
         }
     }
 }

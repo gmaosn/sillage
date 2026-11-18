@@ -133,7 +133,7 @@ internal class VkInstanceApi(val handle: MemorySegment) {
     private val pGetPhysicalDeviceSurfaceFormatsKHR = optional("vkGetPhysicalDeviceSurfaceFormatsKHR")
     private val pDestroySurfaceKHR = optional("vkDestroySurfaceKHR")
     private val pCreateWaylandSurfaceKHR = optional("vkCreateWaylandSurfaceKHR")
-    private val pCreateXlibSurfaceKHR = optional("vkCreateXlibSurfaceKHR")
+    private val pCreateXcbSurfaceKHR = optional("vkCreateXcbSurfaceKHR")
     private val pCreateDebugUtilsMessengerEXT = optional("vkCreateDebugUtilsMessengerEXT")
     private val pDestroyDebugUtilsMessengerEXT = optional("vkDestroyDebugUtilsMessengerEXT")
 
@@ -170,9 +170,9 @@ internal class VkInstanceApi(val handle: MemorySegment) {
     fun createWaylandSurfaceKHR(info: MemorySegment, out: MemorySegment) =
         (Sig.I_PPPP.invokeExact(need(pCreateWaylandSurfaceKHR, "vkCreateWaylandSurfaceKHR"), handle, info, NULL, out) as Int)
             .vkCheck("vkCreateWaylandSurfaceKHR")
-    fun createXlibSurfaceKHR(info: MemorySegment, out: MemorySegment) =
-        (Sig.I_PPPP.invokeExact(need(pCreateXlibSurfaceKHR, "vkCreateXlibSurfaceKHR"), handle, info, NULL, out) as Int)
-            .vkCheck("vkCreateXlibSurfaceKHR")
+    fun createXcbSurfaceKHR(info: MemorySegment, out: MemorySegment) =
+        (Sig.I_PPPP.invokeExact(need(pCreateXcbSurfaceKHR, "vkCreateXcbSurfaceKHR"), handle, info, NULL, out) as Int)
+            .vkCheck("vkCreateXcbSurfaceKHR")
     fun createDebugUtilsMessengerEXT(info: MemorySegment, out: MemorySegment) =
         (Sig.I_PPPP.invokeExact(need(pCreateDebugUtilsMessengerEXT, "vkCreateDebugUtilsMessengerEXT"), handle, info, NULL, out) as Int)
             .vkCheck("vkCreateDebugUtilsMessengerEXT")
