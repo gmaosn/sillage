@@ -1,0 +1,5 @@
+.tools/
+.kotlin/
+build/
+*.log
+.idea/
