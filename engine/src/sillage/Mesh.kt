@@ -34,7 +34,7 @@ data class Color(val r: Float, val g: Float, val b: Float) {
  * a model. A vertex with a zero normal is unlit (drawn in its plain colour, like the sky or the HUD).
  */
 /** Floats per vertex of [Mesh.effects]. */
-internal const val EFFECT_FLOATS = 8
+internal const val EFFECT_FLOATS = 12
 
 class Mesh(val vertices: FloatArray) {
     init { require(vertices.size % 27 == 0) { "A mesh is made of whole triangles (27 floats each)" } }
@@ -43,7 +43,8 @@ class Mesh(val vertices: FloatArray) {
     /**
      * Per vertex, [EFFECT_FLOATS] floats: its own light (r, g, b; all negative: only at night, see
      * [Lighting.night]), how far it sways in the wind (m), its texture (its [Texture.id], 0: none), the
-     * texture's tile (m), strength and mapping (0 sides, 1 faces). Null: none (most meshes).
+     * texture's tile (m), strength and mapping (0 sides, 1 faces, 2 texture coordinates), the texture
+     * coordinates u, v, the alpha below which it is cut out (0: opaque), one spare. Null: none (most meshes).
      */
     internal var effects: FloatArray? = null
         private set

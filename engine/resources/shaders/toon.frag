@@ -10,7 +10,8 @@ layout(location=3) in vec3 sun;
 layout(location=4) in vec3 glow;
 layout(location=5) in vec3 detailAt;
 layout(location=6) in vec3 detailNormal;
-layout(location=7) flat in vec3 detail;
+layout(location=7) flat in vec4 detail;
+layout(location=8) in vec2 uv;
 layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 layout(set = 0, binding = 0) uniform sampler2DShadow shadowMap;
 layout(location=0) out vec4 outColor;
@@ -20,9 +21,11 @@ layout(location=0) out vec4 outColor;
 
 void main() {
     float far = length(world - pc.eye.xyz);
+    vec4 surface = detailShade(detailAt, detailNormal, detail, uv);
+    if (surface.a < detail.w) discard;                     // cut out (leaves, fences: alpha masks)
     // No normal: things in their plain colours.
-    if (dot(normal, normal) < 1e-4) { outColor = vec4(color + glow, far); return; }
-    vec3 albedo = color * detailShade(detailAt, detailNormal, detail);
+    if (dot(normal, normal) < 1e-4) { outColor = vec4(color * surface.rgb + glow, far); return; }
+    vec3 albedo = color * surface.rgb;
     vec3 n = normalize(normal);
     vec3 v = normalize(pc.eye.xyz - world);
     float ndl = dot(n, fr.sunDir.xyz);

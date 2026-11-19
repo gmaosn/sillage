@@ -54,11 +54,44 @@ class GlbTest {
         assertEquals(1f, m.vertices[4], 1e-5f)
     }
 
-    @Test fun texturesRefusees() {
-        val e = assertFailsWith<IllegalArgumentException> {
-            Glb.read(triangle("""{"mesh":0}""", """{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}"""))
+    /** Un triangle texturé : image PNG dans le fichier, coordonnées de texture, découpe alpha. */
+    private fun texturedTriangle(uvs: Boolean = true): ByteArray {
+        val img = java.awt.image.BufferedImage(3, 2, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        for (y in 0 until 2) for (x in 0 until 3) img.setRGB(x, y, (if (x == 0) 0x40 else 0xFF) shl 24 or (x * 100 shl 16) or (y * 200 shl 8) or 50)
+        val png = java.io.ByteArrayOutputStream().also { javax.imageio.ImageIO.write(img, "png", it) }.toByteArray()
+        val positions = floats(0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f, 0f); val coords = floats(0f, 0f, 1f, 0f, 0f, 1f)
+        val attributes = if (uvs) """{"POSITION":0,"TEXCOORD_0":1}""" else """{"POSITION":0}"""
+        return glb("""{
+            "asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+            "meshes":[{"primitives":[{"attributes":$attributes,"material":0}]}],
+            "materials":[{"name":"enseigne","pbrMetallicRoughness":{"baseColorTexture":{"index":0},"baseColorFactor":[1,0.5,1,1]},"alphaMode":"MASK","alphaCutoff":0.3}],
+            "textures":[{"source":0}],"images":[{"bufferView":2,"mimeType":"image/png"}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}],
+            "bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":24},{"buffer":0,"byteOffset":60,"byteLength":${png.size}}],
+            "buffers":[{"byteLength":${60 + png.size}}]}""", positions + coords + png)
+    }
+
+    @Test fun texturesDImageLues() {
+        val model = Glb.readModel(texturedTriangle())
+        val tex = assertNotNull(model.textures[0])
+        assertEquals(Texture.Mapping.UV, tex.mapping); assertEquals(4, tex.size, "3 × 2 pixels portés au carré de 4")
+        val mesh = model.flatten(); val e = assertNotNull(mesh.effects)
+        for (k in 0..2) {
+            val o = k * EFFECT_FLOATS
+            assertEquals(tex.id.toFloat(), e[o + 4]); assertEquals(2f, e[o + 7], "pose par coordonnées"); assertEquals(.3f, e[o + 10], 1e-6f, "découpe")
         }
-        assertContains(e.message!!, "Textures")
+        // Le premier sommet a (u, v) = (0, 0), le deuxième (1, 0), le troisième (0, 1) — à l'ordre du triangle près.
+        val uv = (0..2).map { e[it * EFFECT_FLOATS + 8] to e[it * EFFECT_FLOATS + 9] }.toSet()
+        assertEquals(setOf(0f to 0f, 1f to 0f, 0f to 1f), uv)
+        assertEquals(.5f, mesh.vertices[7], 1e-6f, "le facteur de couleur reste la couleur du sommet")
+        // Les pixels : le coin gauche à demi transparent, couleurs gardées telles qu'écrites (sRGB).
+        val px = tex.pixels
+        assertEquals(0x40, px[3].toInt() and 255); assertEquals(50, px[2].toInt() and 255)
+    }
+
+    @Test fun textureSansCoordonneesRefusee() {
+        val e = assertFailsWith<IllegalArgumentException> { Glb.readModel(texturedTriangle(uvs = false)) }
+        assertContains(e.message!!, "TEXCOORD_0")
     }
 
     @Test fun squelettesRefuses() {

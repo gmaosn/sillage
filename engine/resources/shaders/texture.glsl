@@ -1,10 +1,15 @@
-// Sillage — detail textures (Texture): a pattern that shades a surface's colour, mid-grey leaving it as it
-// is. Laid on the object's own space either from the three axes, blended by the normal (no seams on round
-// shapes), or along each flat face, rows level and climbing the slope (roof tiles, planks).
+// Sillage — textures (Texture). Detail textures: a pattern that shades a surface's colour, mid-grey leaving
+// it as it is, laid on the object's own space either from the three axes, blended by the normal (no seams
+// on round shapes), or along each flat face, rows level and climbing the slope (roof tiles, planks).
+// Images painted on a model: read at its texture coordinates, sRGB turned into linear light, with alpha.
 layout(set = 0, binding = 2) uniform sampler2DArray detailMaps;
 
-vec3 detailShade(vec3 p, vec3 n, vec3 d) {
-    if (d.y <= 0.0) return vec3(1.0);
+vec3 linearFromSrgb(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+
+// rgb: what the surface's colour is multiplied by; a: its alpha (1 for detail textures).
+vec4 detailShade(vec3 p, vec3 n, vec4 d, vec2 uv) {
+    if (d.y <= 0.0) return vec4(1.0);
+    if (d.z > 1.5) { vec4 t = texture(detailMaps, vec3(uv, d.x)); return vec4(linearFromSrgb(t.rgb), t.a); }
     vec3 t;
     if (d.z > 0.5) {
         // Along the face: its true normal from the screen derivatives, then level and up-slope axes.
@@ -29,5 +34,5 @@ vec3 detailShade(vec3 p, vec3 n, vec3 d) {
         if (w.z > 0.02) t += textureGrad(detailMaps, vec3(p.xy, d.x), dx.xy, dy.xy).rgb * w.z;
         t /= max((w.x > 0.02 ? w.x : 0.0) + (w.y > 0.02 ? w.y : 0.0) + (w.z > 0.02 ? w.z : 0.0), 1e-5);
     }
-    return mix(vec3(1.0), t * 2.0, d.y);
+    return vec4(mix(vec3(1.0), t * 2.0, d.y), 1.0);
 }

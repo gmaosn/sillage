@@ -11,9 +11,10 @@ import java.nio.file.Path
 
 /**
  * glTF 2.0 binary (.glb) loader, in Kotlin. It reads the node hierarchy, the material or vertex
- * colours, the material names and the node animations (translation, rotation, scale; linear or step).
- * Textures, skins and cubic-spline curves are refused with a message that says so. A path is looked
- * up on disk first, then in the classpath resources.
+ * colours, the material names, the base colour textures (PNG or JPEG, in the file, in a data URI or
+ * beside it; alpha masks) and the node animations (translation, rotation, scale; linear or step). Skins
+ * and cubic-spline curves are refused with a message that says so. A path is looked up on disk first,
+ * then in the classpath resources.
  */
 object Glb {
     /** The model in its rest pose as one mesh (static scenery). */
@@ -21,7 +22,7 @@ object Glb {
         require(it.triangleCount > 0) { "GLB without triangles: $path" } }
 
     /** The model with its hierarchy and animations. */
-    fun loadModel(path: String): Model = readModel(bytes(path))
+    fun loadModel(path: String): Model = readModel(bytes(path)) { uri -> bytes(Path.of(path).resolveSibling(uri).toString()) }
 
     /** [load] from the bytes of a file. */
     fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }
@@ -30,8 +31,8 @@ object Glb {
         if (Files.exists(Path.of(path))) Files.readAllBytes(Path.of(path))
         else Glb::class.java.getResourceAsStream("/" + path)?.use { it.readAllBytes() } ?: error("GLB not found (file or resource): " + path)
 
-    /** [loadModel] from the bytes of a file. */
-    fun readModel(bytes: ByteArray): Model {
+    /** [loadModel] from the bytes of a file; [beside] gives the bytes of a file the GLB names (an image beside it). */
+    fun readModel(bytes: ByteArray, beside: (String) -> ByteArray = { throw IllegalArgumentException("GLB: image file « $it » unavailable") }): Model {
         require(bytes.size >= 20) { "Truncated GLB" }
         val file = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         require(file.int == 0x46546c67 && file.int == 2) { "A glTF 2.0 GLB file is required" }
@@ -80,7 +81,7 @@ object Glb {
         }
         fun values(index: Int, type: String): List<FloatArray> {
             val (a, offset) = accessor(index, type)
-            val components = when(type) { "SCALAR" -> 1; "VEC3" -> 3; "VEC4" -> 4; else -> error("Invalid accessor type " + type) }
+            val components = when(type) { "SCALAR" -> 1; "VEC2" -> 2; "VEC3" -> 3; "VEC4" -> 4; else -> error("Invalid accessor type " + type) }
             val componentType = a.int("componentType")
             val width = when(componentType) {5126 -> 4; 5121 -> 1; 5123 -> 2; else -> error("Unsupported component type")}
             val v = views.obj(a.int("bufferView")!!)
@@ -112,23 +113,59 @@ object Glb {
                 when(type) {5121 -> buffer.get(o).toInt() and 255; 5123 -> buffer.getShort(o).toInt() and 65535; else -> buffer.getInt(o)}
             }
         }
-        /** Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index. */
-        fun triangles(meshIndex: Int): FloatArray {
-            val out = ArrayList<Float>()
+        // Base colour textures: one Texture per image, shared by the materials and textures that use it.
+        val images = HashMap<Int, Texture>()
+        fun image(index: Int): Texture = images.getOrPut(index) {
+            val img = doc.arr("images").at(index, "image")
+            val data: ByteArray = when {
+                img.has("bufferView") -> {
+                    val v = views.at(img.int("bufferView"), "bufferView")
+                    val start = v.int("byteOffset") ?: 0; val len = requireNotNull(v.int("byteLength")) { "GLB: bufferView without byteLength" }
+                    require(start >= 0 && len >= 0 && start.toLong() + len <= buffer.limit()) { "GLB: image outside the buffer" }
+                    ByteArray(len).also { b -> for (i in 0 until len) b[i] = buffer.get(start + i) }
+                }
+                img.string("uri")?.startsWith("data:") == true -> {
+                    val uri = img.string("uri")!!
+                    require(";base64," in uri) { "GLB: data URI images must be base64" }
+                    java.util.Base64.getDecoder().decode(uri.substringAfter(";base64,"))
+                }
+                img.string("uri") != null -> beside(java.net.URLDecoder.decode(img.string("uri")!!, Charsets.UTF_8))
+                else -> throw IllegalArgumentException("GLB: image $index has no data")
+            }
+            Texture.image(img.string("name") ?: "image$index", sillage.io.Image.decode(data))
+        }
+        val materialsJson = doc.arr("materials") ?: Json.Arr(emptyList())
+        val textures = List(materialsJson.size) { m ->
+            val t = materialsJson.obj(m).obj("pbrMetallicRoughness")?.obj("baseColorTexture") ?: return@List null
+            require((t.int("texCoord") ?: 0) == 0) { "GLB: only the first set of texture coordinates (TEXCOORD_0) is read" }
+            val texture = doc.arr("textures").at(t.int("index"), "texture")
+            image(requireNotNull(texture.int("source")) { "GLB: texture without an image (source)" })
+        }
+        // Alpha: MASK cuts out what is below alphaCutoff; BLEND is drawn as MASK at 0.5 (no sorting of transparent things).
+        val cutoffs = FloatArray(materialsJson.size) { m ->
+            val mat = materialsJson.obj(m)
+            when (mat.string("alphaMode") ?: "OPAQUE") { "MASK" -> mat.float("alphaCutoff") ?: .5f; "BLEND" -> .5f; else -> 0f }
+        }
+
+        /** Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; and their texture coordinates (6 floats each). */
+        fun triangles(meshIndex: Int): Pair<FloatArray, FloatArray> {
+            val out = ArrayList<Float>(); val uvOut = ArrayList<Float>()
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
                 val p = primitive as Json.Obj
                 require((p.int("mode") ?: 4) == 4) { "Only triangles are supported" }
                 val attributes = requireNotNull(p.obj("attributes"))
                 val positions = values(requireNotNull(attributes.int("POSITION")), "VEC3")
+                val textured = p.int("material")?.let { it in textures.indices && textures[it] != null } == true
+                val uvs = attributes.int("TEXCOORD_0")?.let { values(it, "VEC2") }
+                require(!textured || uvs != null) { "GLB: a textured material needs texture coordinates (TEXCOORD_0)" }
+                require(uvs == null || uvs.size >= positions.size) { "GLB: fewer texture coordinates than vertices" }
                 val colors = attributes.int("COLOR_0")?.let { values(it, requireNotNull(accessors.at(it, "accessor").string("type")) { "GLB: colours without a type" }) }
                 ?.onEach { require(it.size >= 3) { "GLB: incomplete vertex colours" } }
                 var color = Color(0.8f,0.8f,0.8f)
                 p.int("material")?.let { materialIndex ->
                     val material = doc.arr("materials").at(materialIndex, "material")
                     val pbr = material.obj("pbrMetallicRoughness")
-                    require(pbr?.has("baseColorTexture") != true) {
-                        "Textures are not supported: use material colours (Base Color in Blender)" }
                     pbr?.arr("baseColorFactor")?.floats()?.taille(3, "baseColorFactor")?.let { color = Color(it[0],it[1],it[2]) }
                 }
                 val ids = p.int("indices")?.let { indices(it) } ?: IntArray(positions.size) { it }
@@ -143,9 +180,10 @@ object Glb {
                     for (v in intArrayOf(a, b, c)) for (j in 0..2) out.add(positions[v][j])
                     out.add(vc.r); out.add(vc.g); out.add(vc.b)
                     out.add((p.int("material") ?: -1).toFloat())
+                    for (v in intArrayOf(a, b, c)) { uvOut.add(uvs?.get(v)?.get(0) ?: 0f); uvOut.add(uvs?.get(v)?.get(1) ?: 0f) }
                 }
             }
-            return out.toFloatArray()
+            return out.toFloatArray() to uvOut.toFloatArray()
         }
 
         val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
@@ -156,7 +194,7 @@ object Glb {
             require(parents[c] < 0 && c != i) { "Cycle or shared node in the GLB hierarchy" }
             parents[c] = i
         }
-        val meshCache = HashMap<Int, FloatArray>()
+        val meshCache = HashMap<Int, Pair<FloatArray, FloatArray>>()
         val nodes = List(nodesJson.size) { i ->
             val node = nodesJson.obj(i)
             val matrix = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats().taille(16, "matrix")) }
@@ -168,7 +206,8 @@ object Glb {
                 rotation = node.arr("rotation")?.floats()?.taille(4, "rotation")?.let { Quat(it[0], it[1], it[2], it[3]).normalized() } ?: Quat.IDENTITY,
                 scale = node.arr("scale")?.floats()?.taille(3, "scale")?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE,
                 matrix = matrix,
-                triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) } } ?: FloatArray(0),
+                triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) }.first } ?: FloatArray(0),
+                uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).second } ?: FloatArray(0),
             )
         }
         val scenes = doc.arr("scenes")
@@ -202,6 +241,6 @@ object Glb {
             clips[nom] = Clip(nom, canaux)
         }
         val materialNames = doc.arr("materials")?.map { (it as Json.Obj).string("name") ?: "" } ?: emptyList()
-        return Model(nodes, racines, clips, materialNames)
+        return Model(nodes, racines, clips, materialNames, textures, cutoffs)
     }
 }

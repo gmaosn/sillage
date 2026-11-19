@@ -39,7 +39,7 @@ COLORS = {
     'fleur_tige': (.075, .32, .07), 'fleur_coeur': (.90, .62, .10), 'fleur_jaune': (.95, .75, .05),
     'fleur_rose': (.90, .30, .45), 'fleur_blanche': (.78, .78, .72), 'fleur_violette': (.45, .20, .70),
     'fleur_corail': (.83, .075, .025), 'enduit': (.87, .76, .49), 'tronc': (.29, .13, .045), 'coco': (.29, .13, .045),
-    'galet': (.42, .42, .40), 'braise': (1.0, .32, .06), 'cendre': (.10, .09, .085),
+    'galet': (.42, .42, .40), 'braise': (1.0, .32, .06), 'cendre': (.10, .09, .085), 'coque': (.64, .13, .045),
 }
 
 
@@ -678,7 +678,7 @@ sky.save('ciel.glb')
 
 port = Asset()
 boat = Mesh()
-boat.sphere(0, 0, 0, .85, .52, 1.8, 'toit', 12, 6)
+boat.sphere(0, 0, 0, .85, .52, 1.8, 'coque', 12, 6)          # coque peinte (pas de tuiles)
 boat.face([(math.cos(i * TAU / 16) * .78, .21, math.sin(i * TAU / 16) * 1.66) for i in range(16)], 'bois_clair', (0, 1, 0))
 for zz in (-.6, .5): boat.box(0, .21, zz, 1.3, .06, .25, 'bois')
 boat.cone(0, .05, .2, .05, .04, 3.6, 'bois', 8)
@@ -733,3 +733,112 @@ for i in range(rings):
         mat = 'blanc' if i == 0 or i == rings - 1 else segments[j * 6 // n]
         ball.quad(bp(i, j), bp(i + 1, j), bp(i + 1, j + 1), bp(i, j + 1), mat)
 single(ball, 'ballon.glb')
+
+
+# ---------------------------------------------------------------- enseigne (texture d'image)
+# Une planche peinte à l'entrée du ponton : son recto est une image PNG dans le GLB (texture de couleur,
+# coordonnées de texture, coins arrondis par découpe alpha), son verso du bois nu, sur deux poteaux.
+# Peinte ici sans bibliothèque : police 5 × 7, bruit pour le bois, PNG écrit avec zlib.
+import zlib
+
+FONT = {  # lignes de 5 bits, de haut en bas
+    'L': [16, 16, 16, 16, 16, 16, 31], 'E': [31, 16, 16, 30, 16, 16, 31], 'S': [15, 16, 16, 14, 1, 1, 30],
+    'A': [14, 17, 17, 31, 17, 17, 17], 'I': [14, 4, 4, 4, 4, 4, 14], 'Z': [31, 1, 2, 4, 8, 16, 31],
+    'P': [30, 17, 17, 30, 16, 16, 16], 'O': [14, 17, 17, 17, 17, 17, 14], 'N': [17, 25, 21, 19, 17, 17, 17],
+    'T': [31, 4, 4, 4, 4, 4, 4], 'É': [2, 4, 31, 16, 30, 16, 31], ' ': [0] * 7,
+}
+
+def png(width, height, pixel):
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width): rows.extend(pixel(x, y))
+    def chunk(kind, data): return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(bytes(rows), 9)) + chunk(b'IEND', b''))
+
+def wood(x, y, seed):
+    """Planches peintes, en sRGB : grain, joints, teinte de chaque planche."""
+    plank = y * 4 // 128
+    r = random.Random(seed * 1000 + plank).random()
+    grain = .5 + .5 * math.sin(x * .09 + math.sin(y * .37 + plank) * 2.2 + plank * 1.7)
+    k = .78 + .14 * r + .10 * grain ** 4
+    if y % 32 in (0, 31): k *= .55
+    return (min(255, int(150 * k)), min(255, int(98 * k)), min(255, int(55 * k)))
+
+def rounded(x, y, w, h, radius):
+    """Dans la planche aux coins arrondis (les coins hors de la planche sont transparents)."""
+    cx = min(max(x, radius), w - 1 - radius); cy = min(max(y, radius), h - 1 - radius)
+    return (x - cx) ** 2 + (y - cy) ** 2 <= radius * radius
+
+SIGN_W, SIGN_H = 256, 128
+def text_at(text, scale, cy):
+    width = len(text) * 6 * scale - scale
+    x0 = (SIGN_W - width) // 2
+    cells = set()
+    for i, ch in enumerate(text):
+        for row, bits in enumerate(FONT[ch]):
+            for col in range(5):
+                if bits & (16 >> col):
+                    for dy in range(scale):
+                        for dx in range(scale): cells.add((x0 + (i * 6 + col) * scale + dx, cy + row * scale + dy))
+    return cells
+TITLE = text_at('LES ALIZÉS', 4, 22); SUB = text_at('PONTON', 3, 76)
+SHADOW = {(x + 2, y + 2) for x, y in TITLE | SUB}
+
+def front(x, y):
+    if not rounded(x, y, SIGN_W, SIGN_H, 18): return (0, 0, 0, 0)
+    if not rounded(x - 8, y - 8, SIGN_W - 16, SIGN_H - 16, 12): return (226, 196, 120, 255)      # cadre peint
+    if (x, y) in TITLE: return (250, 236, 200, 255)
+    if (x, y) in SUB: return (120, 205, 220, 255)
+    if (x, y) in SHADOW: return (60, 34, 18, 255)
+    # Une vague peinte sous le texte.
+    wave = 104 + 5 * math.sin(x * .12)
+    if abs(y - wave) < 2.2 and 40 < x < SIGN_W - 40: return (80, 170, 205, 255)
+    return (*wood(x, y, 1), 255)
+
+def back(x, y):
+    if not rounded(x, y, SIGN_W, SIGN_H, 18): return (0, 0, 0, 0)
+    return (*wood(x, y, 2), 255)
+
+def save_sign():
+    w, h, d = 1.6, .8, .06                         # planche (m), son bas à 1 m, poteaux aux bouts
+    bottom = 1.0
+    binary = bytearray(); views = []; accessors = []
+    def view(data):
+        binary.extend(b'\0' * ((-len(binary)) % 4))
+        views.append({'buffer': 0, 'byteOffset': len(binary), 'byteLength': len(data)}); binary.extend(data); return len(views) - 1
+    def acc(rows, kind):
+        flat = [c for r in rows for c in r]
+        accessors.append({'bufferView': view(struct.pack(f'<{len(flat)}f', *flat)), 'componentType': 5126, 'count': len(rows), 'type': kind,
+                          'min': [min(r[i] for r in rows) for i in range(len(rows[0]))], 'max': [max(r[i] for r in rows) for i in range(len(rows[0]))]})
+        return len(accessors) - 1
+    # Recto vers +Z (u vers +X, v vers le bas), verso vers −Z (u vers −X).
+    x0, x1, y0, y1 = -w / 2, w / 2, bottom, bottom + h
+    front_pos = [(x0, y1, d / 2), (x0, y0, d / 2), (x1, y0, d / 2), (x0, y1, d / 2), (x1, y0, d / 2), (x1, y1, d / 2)]
+    front_uv = [(0, 0), (0, 1), (1, 1), (0, 0), (1, 1), (1, 0)]
+    back_pos = [(x1, y1, -d / 2), (x1, y0, -d / 2), (x0, y0, -d / 2), (x1, y1, -d / 2), (x0, y0, -d / 2), (x0, y1, -d / 2)]
+    posts = Mesh()
+    for px in (-w / 2 + .12, w / 2 - .12): posts.box(px, -.05, -d / 2 - .045, .09, bottom + h + .05, .09, 'bois')
+    posts.box(0, y1 + .02, -d / 2 - .045, w + .1, .06, .1, 'bois')            # chapeau
+    images = [png(SIGN_W, SIGN_H, front), png(SIGN_W, SIGN_H, back)]
+    image_views = [view(i) for i in images]
+    prims = [{'attributes': {'POSITION': acc(front_pos, 'VEC3'), 'TEXCOORD_0': acc(front_uv, 'VEC2')}, 'material': 0},
+             {'attributes': {'POSITION': acc(back_pos, 'VEC3'), 'TEXCOORD_0': acc(front_uv, 'VEC2')}, 'material': 1},
+             {'attributes': {'POSITION': acc([p for p in posts.groups['bois']], 'VEC3')}, 'material': 2}]
+    doc = {'asset': {'version': '2.0', 'generator': 'Sillage / create_assets.py'}, 'scene': 0, 'scenes': [{'nodes': [0]}],
+           'nodes': [{'name': 'enseigne', 'mesh': 0}], 'meshes': [{'name': 'enseigne', 'primitives': prims}],
+           'materials': [{'name': 'enseigne', 'pbrMetallicRoughness': {'baseColorTexture': {'index': 0}, 'metallicFactor': 0}, 'alphaMode': 'MASK', 'alphaCutoff': .5},
+                         {'name': 'enseigne_dos', 'pbrMetallicRoughness': {'baseColorTexture': {'index': 1}, 'metallicFactor': 0}, 'alphaMode': 'MASK', 'alphaCutoff': .5},
+                         {'name': 'bois', 'pbrMetallicRoughness': {'baseColorFactor': [*COLORS['bois'], 1], 'metallicFactor': 0}}],
+           'textures': [{'source': 0}, {'source': 1}],
+           'images': [{'name': 'enseigne', 'bufferView': image_views[0], 'mimeType': 'image/png'},
+                      {'name': 'enseigne_dos', 'bufferView': image_views[1], 'mimeType': 'image/png'}],
+           'buffers': [{'byteLength': len(binary)}], 'bufferViews': views, 'accessors': accessors}
+    text = json.dumps(doc, separators=(',', ':')).encode(); text += b' ' * ((-len(text)) % 4)
+    binary.extend(b'\0' * ((-len(binary)) % 4))
+    size = 12 + 8 + len(text) + 8 + len(binary)
+    glb = struct.pack('<III', 0x46546C67, 2, size) + struct.pack('<II', len(text), 0x4E4F534A) + text + struct.pack('<II', len(binary), 0x004E4942) + binary
+    (OUT / 'enseigne.glb').write_bytes(glb)
+    print(f'enseigne.glb: {len(glb)} octets, deux images {SIGN_W} × {SIGN_H}')
+save_sign()

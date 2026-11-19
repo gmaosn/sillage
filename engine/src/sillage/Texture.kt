@@ -26,9 +26,14 @@ class Texture private constructor(
     val tile: Float,
     val strength: Float,
     val mapping: Mapping,
-    paint: () -> FloatArray,
+    /** The pixels of the first level as RGBA bytes (painted in the background). */
+    rgba: () -> ByteArray,
 ) {
-    enum class Mapping { SIDES, FACES }
+    /**
+     * How a texture lies on a surface: [SIDES] and [FACES] for detail patterns (see above); [UV] for an
+     * image painted on a model (a GLB's base colour texture), by the model's own texture coordinates.
+     */
+    enum class Mapping { SIDES, FACES, UV }
 
     /** Its place among the textures the program has made (1, 2…); 0 means none in the vertex data. */
     internal val id: Int
@@ -39,7 +44,7 @@ class Texture private constructor(
         require(size >= 4 && size and (size - 1) == 0) { "A texture's size must be a power of two (4 or more), not $size" }
         require(tile > 0f) { "A texture's tile must be positive" }
         synchronized(registry) { registry.add(this); id = registry.size }
-        levels = CompletableFuture.supplyAsync { withLevels(paint(), size) }
+        levels = CompletableFuture.supplyAsync { withLevels(rgba(), size) }
     }
 
     /** The pixels and their smaller levels, once painted (waits for the painting). */
@@ -70,8 +75,62 @@ class Texture private constructor(
                     val c = pixel((x + .5f) / size, (y + .5f) / size); val i = 3 * (y * size + x)
                     out[i] = c.r * 2f; out[i + 1] = c.g * 2f; out[i + 2] = c.b * 2f
                 }
-                out
+                shadesToBytes(out)
             }
+
+        /**
+         * An image painted on a model ([Mapping.UV]): its pixels as they are (sRGB, with their alpha), brought
+         * to a power-of-two square of [MAX_IMAGE] pixels at most (the texture coordinates do not change).
+         */
+        fun image(name: String, image: sillage.io.Image): Texture {
+            var size = 4
+            while (size < maxOf(image.width, image.height) && size < MAX_IMAGE) size *= 2
+            return Texture(name, size, 1f, 1f, Mapping.UV) { resample(image, size) }
+        }
+
+        /** Largest side of an image texture: larger images are scaled down (the texture array holds every texture at one size). */
+        const val MAX_IMAGE = 1024
+
+        /** [image] scaled to [size] × [size]: by area averaging when it shrinks, bilinear when it grows. */
+        private fun resample(image: sillage.io.Image, size: Int): ByteArray {
+            val w = image.width; val h = image.height; val src = image.rgba
+            if (w == size && h == size) return src.copyOf()
+            val out = ByteArray(size * size * 4)
+            val sx = w.toFloat() / size; val sy = h.toFloat() / size
+            for (y in 0 until size) for (x in 0 until size) {
+                val o = 4 * (y * size + x)
+                if (sx >= 1f && sy >= 1f) {
+                    // The source pixels this one covers, averaged.
+                    val x0 = (x * sx).toInt(); val x1 = maxOf(x0 + 1, ((x + 1) * sx).toInt().coerceAtMost(w))
+                    val y0 = (y * sy).toInt(); val y1 = maxOf(y0 + 1, ((y + 1) * sy).toInt().coerceAtMost(h))
+                    for (c in 0..3) {
+                        var sum = 0
+                        for (yy in y0 until y1) for (xx in x0 until x1) sum += src[4 * (yy * w + xx) + c].toInt() and 255
+                        out[o + c] = ((sum + (x1 - x0) * (y1 - y0) / 2) / ((x1 - x0) * (y1 - y0))).toByte()
+                    }
+                } else {
+                    val fx = ((x + .5f) * sx - .5f).coerceIn(0f, w - 1f); val fy = ((y + .5f) * sy - .5f).coerceIn(0f, h - 1f)
+                    val ax = fx.toInt(); val ay = fy.toInt(); val bx = minOf(ax + 1, w - 1); val by = minOf(ay + 1, h - 1)
+                    val tx = fx - ax; val ty = fy - ay
+                    for (c in 0..3) {
+                        fun at(px: Int, py: Int) = (src[4 * (py * w + px) + c].toInt() and 255).toFloat()
+                        val top = at(ax, ay) + (at(bx, ay) - at(ax, ay)) * tx; val bottom = at(ax, by) + (at(bx, by) - at(ax, by)) * tx
+                        out[o + c] = Math.round(top + (bottom - top) * ty).coerceIn(0, 255).toByte()
+                    }
+                }
+            }
+            return out
+        }
+
+        /** Shades (3 floats per pixel, 0 to 2) to RGBA bytes, alpha opaque. */
+        internal fun shadesToBytes(m: FloatArray): ByteArray {
+            val out = ByteArray(m.size / 3 * 4)
+            for (i in 0 until m.size / 3) {
+                for (c in 0..2) out[4 * i + c] = (m[3 * i + c] * 127.5f + .5f).toInt().coerceIn(0, 255).toByte()
+                out[4 * i + 3] = -1
+            }
+            return out
+        }
 
         /** A ready-made texture: painted on a [Canvas], then its mean shade brought to 1 on each channel (it details, never recolours). */
         internal fun painted(name: String, size: Int, tile: Float, strength: Float, mapping: Mapping, paint: (Canvas) -> Unit) =
@@ -81,28 +140,23 @@ class Texture private constructor(
                     var sum = 0.0; for (i in c until m.size step 3) sum += m[i]
                     val k = (m.size / 3 / sum).toFloat(); for (i in c until m.size step 3) m[i] *= k
                 }
-                m
+                shadesToBytes(m)
             }
 
-        /** RGBA bytes of every level (shades from 0 to 2 stored as 0…255), each level the mean of four pixels of the last. */
-        private fun withLevels(m: FloatArray, size: Int): ByteArray {
+        /** Every level after the first, each the mean of four pixels of the last (alpha included). */
+        private fun withLevels(first: ByteArray, size: Int): ByteArray {
             var total = 0; var s = size
             while (s >= 1) { total += s * s * 4; s /= 2 }
-            val out = ByteArray(total)
-            var level = m; s = size; var at = 0
-            while (true) {
-                for (i in 0 until s * s) {
-                    for (c in 0..2) out[at + 4 * i + c] = (level[3 * i + c] * 127.5f + .5f).toInt().coerceIn(0, 255).toByte()
-                    out[at + 4 * i + 3] = -1
+            val out = first.copyOf(total)
+            s = size; var at = 0
+            while (s > 1) {
+                val h = s / 2; val next = at + s * s * 4
+                for (y in 0 until h) for (x in 0 until h) for (c in 0..3) {
+                    val a = at + 4 * ((2 * y) * s + 2 * x) + c; val b = a + 4 * s
+                    val sum = (out[a].toInt() and 255) + (out[a + 4].toInt() and 255) + (out[b].toInt() and 255) + (out[b + 4].toInt() and 255)
+                    out[next + 4 * (y * h + x) + c] = ((sum + 2) / 4).toByte()
                 }
-                at += s * s * 4
-                if (s == 1) break
-                val h = s / 2; val next = FloatArray(3 * h * h)
-                for (y in 0 until h) for (x in 0 until h) for (c in 0..2) {
-                    val a = 3 * ((2 * y) * s + 2 * x) + c; val b = a + 3 * s
-                    next[3 * (y * h + x) + c] = (level[a] + level[a + 3] + level[b] + level[b + 3]) * .25f
-                }
-                level = next; s = h
+                at = next; s = h
             }
             return out
         }

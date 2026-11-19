@@ -25,6 +25,9 @@ val island: Scene.() -> Unit = {
     model("models/palmiers.glb").play("vent")
     val port = model("models/port.glb").play("vie")
     lightsAndLife(village, port)
+    // L'enseigne du ponton : une image peinte (PNG dans le GLB), coins arrondis par découpe alpha.
+    model("models/enseigne.glb", at = vec(-3.55, groundHeight(-3.55, 7.0), 7.0)).rotate(y = 160)
+    block(-3.55f, 7.0f, 1.7f, 1.9f, .25f, thin = true)
     model("models/ciel.glb").play("vol").castsShadow = false       // nuages et mouettes : trop haut pour une ombre nette
     // La barque se visite et tangue avec la houle : son pont elliptique en deux boîtes, son mât.
     port.collider(Box(.7f, .25f, .75f), vec(0, -.04, 0), part = "bateau")

@@ -17,6 +17,8 @@ class ModelNode internal constructor(
     val matrix: Mat4?,
     /** Per triangle ([TRI] floats): a, b, c (9 floats), the colour r, g, b, then the material index (−1: none). */
     internal val triangles: FloatArray,
+    /** Per triangle, the texture coordinates of a, b, c (6 floats); empty when the mesh has none. */
+    internal val uvs: FloatArray = FloatArray(0),
 ) {
     val local: Mat4 get() = matrix ?: Mat4.trs(translation, rotation, scale)
 }
@@ -44,7 +46,33 @@ internal const val TRI = 13
 /** A GLB scene kept as a hierarchy, with its animations. */
 class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray, val clips: Map<String, Clip>,
                                  /** Material names of the GLB, by index (as named in Blender). */
-                                 val materials: List<String> = emptyList()) {
+                                 val materials: List<String> = emptyList(),
+                                 /** The base colour texture of each material (null: plain colour). */
+                                 val textures: List<Texture?> = emptyList(),
+                                 /** Per material, the alpha below which it is cut out (0: opaque). */
+                                 internal val cutoffs: FloatArray = FloatArray(0)) {
+    /**
+     * The texture coordinates and textures of the triangles kept in a mesh ([kept]: the source triangle of each),
+     * as [Mesh.effects]; null when none of them is textured.
+     */
+    private fun imageEffects(kept: IntArray, mats: IntArray, uvs: (Int) -> FloatArray?, uvAt: (Int) -> Int): FloatArray? {
+        if (textures.all { it == null }) return null
+        var any = false
+        val e = FloatArray(kept.size * 3 * EFFECT_FLOATS)
+        for (t in kept.indices) {
+            val m = mats[t]
+            val tex = if (m in textures.indices) textures[m] else null
+            if (tex == null) continue
+            any = true
+            val uv = uvs(t) ?: continue; val at = uvAt(t)
+            for (k in 0..2) {
+                val o = (3 * t + k) * EFFECT_FLOATS
+                e[o + 4] = tex.id.toFloat(); e[o + 5] = 1f; e[o + 6] = 1f; e[o + 7] = 2f
+                e[o + 8] = uv[at + 2 * k]; e[o + 9] = uv[at + 2 * k + 1]; e[o + 10] = cutoffs.getOrElse(m) { 0f }
+            }
+        }
+        return if (any) e else null
+    }
     /** Node indices with every parent before its children, in scene order. */
     val order: IntArray = ArrayList<Int>().also { out ->
         val seen = BooleanArray(nodes.size)
@@ -59,14 +87,16 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
     /** Each node's triangles as a mesh in node space (knowing each triangle's material), shared by every instance of the model. */
     private val localMeshes: Map<Int, Mesh> by lazy {
         order.filter { nodes[it].triangles.isNotEmpty() }.associateWith { i ->
-            val g = MeshBuilder(); val t = nodes[i].triangles; val mats = ArrayList<Int>()
+            val g = MeshBuilder(); val t = nodes[i].triangles; val mats = ArrayList<Int>(); val kept = ArrayList<Int>()
             for (k in t.indices step TRI) {
                 val before = g.triangleCount
                 g.triangle(Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]),
                     Color(t[k + 9], t[k + 10], t[k + 11]))
-                if (g.triangleCount > before) mats.add(t[k + 12].toInt())
+                if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); kept.add(k / TRI) }
             }
-            g.build().smooth().withMaterials(mats.toIntArray())
+            val mesh = g.build().smooth().withMaterials(mats.toIntArray())
+            val uvs = nodes[i].uvs
+            imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
         }
     }
 
@@ -75,6 +105,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
 
     private val flat: Mesh by lazy {
         val g = MeshBuilder(); val mats = ArrayList<Int>()
+        val keptNode = ArrayList<Int>(); val keptTri = ArrayList<Int>(); val keptMirrored = ArrayList<Boolean>()
         fun visit(i: Int, parent: Mat4) {
             val n = nodes[i]
             val world = parent * n.local
@@ -88,12 +119,22 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                 // Face normals recomputed, also after a negative scale; degenerate triangles are skipped.
                 val before = g.triangleCount
                 if (mirrored) g.triangle(a, c, b, color) else g.triangle(a, b, c, color)
-                if (g.triangleCount > before) mats.add(t[k + 12].toInt())
+                if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); keptNode.add(i); keptTri.add(k / TRI); keptMirrored.add(mirrored) }
             }
             for (e in n.children) visit(e, world)
         }
         for (r in roots) visit(r, Mat4.IDENTITY)
-        g.build().smooth().withMaterials(mats.toIntArray())
+        val mesh = g.build().smooth().withMaterials(mats.toIntArray())
+        // A mirrored triangle was written a, c, b: its texture coordinates too.
+        val uv = FloatArray(6)
+        imageEffects(IntArray(mats.size) { it }, mats.toIntArray(), { t ->
+            val src = nodes[keptNode[t]].uvs; val o = 6 * keptTri[t]
+            if (src.isEmpty()) null else {
+                if (keptMirrored[t]) { uv[0] = src[o]; uv[1] = src[o + 1]; uv[2] = src[o + 4]; uv[3] = src[o + 5]; uv[4] = src[o + 2]; uv[5] = src[o + 3] }
+                else for (j in 0..5) uv[j] = src[o + j]
+                uv
+            }
+        }, { 0 })?.let { mesh.withEffects(it) } ?: mesh
     }
 
     /**

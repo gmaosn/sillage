@@ -714,7 +714,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         bindings.at(VkVertexInputBindingDescription,0).put(VkVertexInputBindingDescription, "binding" to 0, "stride" to 36, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
         bindings.at(VkVertexInputBindingDescription,1).put(VkVertexInputBindingDescription, "binding" to 1, "stride" to 48, "inputRate" to VK_VERTEX_INPUT_RATE_INSTANCE)
         bindings.at(VkVertexInputBindingDescription,2).put(VkVertexInputBindingDescription, "binding" to 2, "stride" to 4*EFFECT_FLOATS, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
-        val locations=if(shadow) intArrayOf(0,3,4,5,6) else intArrayOf(0,1,2,3,4,5,6,7)
+        val locations=if(shadow) intArrayOf(0,3,4,5,6) else intArrayOf(0,1,2,3,4,5,6,7,8)
         val attrs=s.structs(VkVertexInputAttributeDescription,locations.size)
         for((k,loc) in locations.withIndex()) {
             val (binding,format,offset)=when(loc) {

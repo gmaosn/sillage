@@ -307,6 +307,7 @@ class Scene {
             var any = false
             for (tri in 0 until mesh.triangleCount) {
                 val tex = mats[tri].let { if (it in byMaterial.indices) byMaterial[it] else null } ?: continue
+                if (e[3 * tri * EFFECT_FLOATS + 7] == 2f) continue          // an image painted on the model wins
                 any = true
                 for (k in 0..2) {
                     val o = (3 * tri + k) * EFFECT_FLOATS
