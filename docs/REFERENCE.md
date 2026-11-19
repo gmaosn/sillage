@@ -49,6 +49,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests |
 | `model(path, at, scale = 1)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
 | `mesh(mesh, at)` | a `Mesh` of your own |
+| `chain(from, to, links, radius = .03, color = GREY, start = null, end = null, density = 2000)` | a chain of dynamic capsule nodes joined by ball joints, hanging from `start` (or the world), holding `end`; the links |
 | `player(model = null, at, radius = .28, height = 1.8, setup = {})` | a `Player`; without a model, a capsule |
 | `collider(shape, at, rotation, blocksCamera = true, surface = "stone")` | an invisible static `Body` |
 | `zone(shape, at, onEnter = {}, onExit = {})` | a `Zone` noticing nodes coming in and out |
@@ -103,6 +104,7 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `solid(vararg materials, blocksCamera = true, surface)` | still and solid; a model collides with its triangles (only those of `materials` if given), each with the surface of its material name |
 | `kinematic()` | moved by the game: set `position`/`rotation`, the body follows smoothly and pushes what it meets |
 | `collider(shape, offset, part, surface = "wood", blocksCamera = true)` | an extra collision shape; with `part`, it follows that part of an animated model |
+| `hangFrom(anchor, to = null)`, `hinge(anchor, axis, to = null)`, `slider(axis, to = null)`, `glue(to = null)`, `rope(from, at = position, to = null, length)`, `spring(from, hertz, at = position, to = null, dampingRatio = .5)` | joints to node `to`, or to the world (null, or a node without a body of its own); dynamic first. They return the `Joint` (limits, motors, springs) |
 | `shadow(radius)` | a soft round shadow under it, drawn when the cast shadows are off (moving bodies get one by themselves) |
 | `play(clip, loop = true, speed = 1, fade = .15)` | plays a clip of its model, cross-fading |
 | `onUpdate { dt -> … }` | every frame, with the node as receiver |

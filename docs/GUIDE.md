@@ -140,7 +140,16 @@ The world is `physics`, a `PhysicsWorld`: `raycast(origin, direction, distance, 
 
 The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours, continuous collision for fast bodies (`body.isBullet` for projectiles).
 
-Bodies can be joined: `physics.addHinge(post.body, door.body, anchor, axis = Vec3.Y)` hangs a door, `addBall` a lantern, `addSlider` a lift, `addFixed` glues, `addSpring` and `addRope` pull, `addChain` makes a chain; hinges and sliders take limits, motors and springs. `Vehicle(physics, car.body)` turns a box into a car with suspension, steering, brakes and tyres that skid. A player standing on anything that moves (the boat, a lift, a turning platform, a floating crate) is carried by it, and keeps its speed when jumping off. [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
+Bodies can be joined, once dynamic:
+
+```kotlin
+val door = box(.9, 2, .06, at = vec(.45, 1, 0)).dynamic(density = 600)
+door.hinge(anchor = vec(0, 1, 0), axis = Vec3.Y).limits(-1.6f, 0f)       // opens one way
+val lamp = sphere(.15, Color.YELLOW, at = vec(3, 2, 0)).dynamic()
+chain(from = vec(3, 3.5, 0), to = vec(3, 2.15, 0), links = 6, end = lamp)  // hangs on a chain
+```
+
+`hangFrom` swings freely, `hinge` turns about an axis, `slider` slides (a lift, a drawer), `glue` welds, `rope` and `spring` pull; each joins the node to another (`to = …`) or to the world. Hinges and sliders take limits, motors and springs (`motor(speed, maxTorque)`, `spring(hertz)`). The demo's see-saw and swing are a dozen lines each. `Vehicle(physics, car.body)` turns a box into a car with suspension, steering, brakes and tyres that skid. A player standing on anything that moves (the boat, a lift, a turning platform, a floating crate) is carried by it, and keeps its speed when jumping off. [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
 
 ## The player
 

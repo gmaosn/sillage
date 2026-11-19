@@ -134,6 +134,32 @@ class Scene {
         return add(Node(this, shared(5, w, d, 0f, 0f, color) { Mesh.plane(w, d, color) }).also { it.shape = Box(w / 2, .05f, d / 2) }, at)
     }
 
+    /**
+     * A chain of [links] capsules from [from] to [to], each link a dynamic node joined to the next by a ball
+     * joint: the first hangs from [start] (or the world) at [from], the last from [end] at [to] when given
+     * (a swing's seat, a lamp). Returns the links.
+     */
+    fun chain(from: Vec3, to: Vec3, links: Int, radius: Number = .03, color: Color = Color.GREY, start: Node? = null, end: Node? = null,
+              density: Number = 2000): List<Node> {
+        require(links >= 1) { "A chain needs a link" }
+        val r = radius.toFloat()
+        val span = to - from; val length = span.length()
+        require(length > 2 * r * links) { "The links would be shorter than they are wide" }
+        val dir = span / length; val step = length / links
+        val turn = Quat.fromTo(Vec3.Y, dir)
+        val nodes = ArrayList<Node>()
+        var previous = start
+        for (k in 0 until links) {
+            val link = capsule(r, step, color, at = from + dir * (step * (k + .5f)))
+            link.rotation = turn
+            link.dynamic(density = density, impact = Impact.SILENT)
+            link.hangFrom(from + dir * (step * k), previous)
+            nodes.add(link); previous = link
+        }
+        if (end != null) nodes.last().hangFrom(to, end)
+        return nodes
+    }
+
     /** A node drawing [mesh] (made with [MeshBuilder] or the shapes of [Mesh]). */
     fun mesh(mesh: Mesh, at: Vec3 = Vec3.ZERO): Node = add(Node(this, mesh), at)
 

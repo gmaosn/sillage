@@ -2,6 +2,7 @@ package sillage.demo
 
 import sillage.*
 import sillage.audio.Sounds
+import sillage.math.Quat
 import sillage.math.Vec3
 import sillage.physics.Box
 import sillage.physics.Capsule
@@ -73,6 +74,10 @@ val island: Scene.() -> Unit = {
     crate(4.2f, 6.4f, yaw = 17.2f); crate(4.9f, 6.9f, size = .5f)         // sur la plage
     crate(-1.4f, 11.1f, size = .6f, yaw = 22.9f)                           // au bout du ponton
 
+    // Des articulations : une bascule sur la plage de gauche, une balançoire à chaînes sur celle de droite.
+    seeSaw(-6.4f, 5.6f, yaw = 35f)
+    swing(6.9f, 5.2f, yaw = -30f)
+
     // Le bruit de la mer tout autour du rivage, des mouettes de temps en temps.
     val waves = List(3) { Sounds.waves(it) }
     for (k in 0 until 8) { val a = k * PI.toFloat() / 4 + .2f; ambience(waves[k % 3], at = vec(cos(a) * 12.3f, 0, sin(a) * 12.3f), volume = .55, range = 70) }
@@ -133,6 +138,40 @@ private fun Scene.block(x: Float, z: Float, width: Float, height: Float, depth: 
 private fun Scene.crate(x: Float, z: Float, lift: Float = 0f, size: Float = .7f, yaw: Float = 0f) =
     model("models/caisse.glb", at = vec(x, groundHeight(x, z) + size / 2 + lift + .01f, z), scale = size)
         .rotate(y = yaw).dynamic(mass = 40f * size * size * size, friction = .7)
+
+/**
+ * Une bascule : une planche sur une charnière, au sommet d'un chevalet ; elle penche sous le marin, butée
+ * de chaque côté. [yaw] (degrés) tourne la planche autour de la verticale.
+ */
+private fun Scene.seeSaw(x: Float, z: Float, yaw: Float = 0f) {
+    val ground = groundHeight(x, z)
+    val turn = Quat.rotationY(yaw * PI.toFloat() / 180f)
+    val pivot = vec(x, ground + .45f, z)
+    box(.3, .42, .34, Color.hex(0x8A5A3C), round = .03, at = vec(x, ground + .21f, z)).rotate(y = yaw).solid()
+    val plank = box(3.0, .07, .36, Color.hex(0xC98B4E), round = .02, at = pivot + vec(0, .045, 0)).rotate(y = yaw)
+    plank.dynamic(density = 450, friction = .8)
+    for (side in floatArrayOf(-1f, 1f))                                     // poignées, collées à la planche
+        cylinder(.035, .32, Color.hex(0x6E4A30), at = pivot + turn.rotate(vec(side * 1.25f, .24f, 0)))
+            .dynamic(density = 700, impact = Impact.SILENT).glue(plank)
+    // Pivot un peu décentré : au repos, elle penche d'un côté, un bout sur le sable, comme une vraie.
+    plank.hinge(pivot + turn.rotate(vec(.08, 0, 0)), turn.rotate(Vec3.Z)).limits(-.3f, .3f)
+}
+
+/** Une balançoire : un portique de bois, un siège pendu à deux chaînes ; le marin peut monter dessus. */
+private fun Scene.swing(x: Float, z: Float, yaw: Float = 0f) {
+    val ground = groundHeight(x, z)
+    val turn = Quat.rotationY(yaw * PI.toFloat() / 180f)
+    fun at(dx: Float, y: Float, dz: Float = 0f) = vec(x, ground + y, z) + turn.rotate(vec(dx, 0, dz))
+    val wood = Color.hex(0x7A5034)
+    for (side in floatArrayOf(-1f, 1f)) for (lean in floatArrayOf(-1f, 1f))
+        box(.12, 2.5, .12, wood, round = .02, at = at(side * .85f, 1.22f, lean * .35f))
+            .also { it.rotation = turn * Quat.axisAngle(Vec3.X, -lean * .28f) }.solid(blocksCamera = false)   // en A, vers la poutre
+    val beam = box(1.95, .14, .14, wood, round = .02, at = at(0f, 2.42f)).rotate(y = yaw).solid(blocksCamera = false)
+    val seat = box(.7, .06, .3, Color.hex(0xD9A05B), round = .02, at = at(0f, .55f)).rotate(y = yaw)
+    seat.dynamic(density = 500, friction = .8, angularDamping = .3)
+    for (side in floatArrayOf(-1f, 1f))
+        chain(at(side * .3f, 2.35f), at(side * .3f, .58f), links = 7, radius = .022, color = Color.hex(0x9DA3A8), start = beam, end = seat)
+}
 
 /** Un ballon de plage léger et rebondissant, qui freine vite dans l'air. */
 private fun Scene.beachBall(x: Float, z: Float, radius: Float = .35f) =

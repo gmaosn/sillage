@@ -3,9 +3,14 @@ package sillage
 import sillage.math.Mat4
 import sillage.math.Quat
 import sillage.math.Vec3
+import sillage.physics.BallJoint
 import sillage.physics.Body
+import sillage.physics.DistanceJoint
+import sillage.physics.FixedJoint
+import sillage.physics.HingeJoint
 import sillage.physics.Material
 import sillage.physics.Shape
+import sillage.physics.SliderJoint
 import kotlin.math.PI
 import kotlin.math.atan2
 
@@ -113,6 +118,32 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
     /** Makes it a body moved by the game (a door, a lift): set [position] and [rotation], it pushes what it meets. */
     fun kinematic(): Node { scene.makeKinematic(this); return this }
+
+    // ------------------------------------------------------------------ joints
+    // Joints tie this node (dynamic first) to [to], or to the world when [to] is null or has no body of
+    // its own (a solid model). Points and axes are in world coordinates, where things are now.
+
+    private fun joinable(): Body = requireNotNull(body) { "Make it dynamic() before joining it" }
+
+    /** Hangs it from [anchor]: it swings freely about that point (a lantern, a punching bag). */
+    fun hangFrom(anchor: Vec3, to: Node? = null): BallJoint = scene.physics.addBall(to?.body, joinable(), anchor)
+
+    /** A hinge at [anchor], turning about [axis] (a door, a see-saw, a wheel); limits, motor, spring on the result. */
+    fun hinge(anchor: Vec3, axis: Vec3, to: Node? = null): HingeJoint = scene.physics.addHinge(to?.body, joinable(), anchor, axis)
+
+    /** Slides along [axis] without turning (a drawer, a lift); limits, motor, spring on the result. */
+    fun slider(axis: Vec3, to: Node? = null): SliderJoint = scene.physics.addSlider(to?.body, joinable(), axis)
+
+    /** Glued to [to] (or to the world) as they are now. */
+    fun glue(to: Node? = null): FixedJoint = scene.physics.addFixed(to?.body, joinable())
+
+    /** A rope from [from] (on [to], or in the world) to [at] on this node, [length] metres long (as they are now by default). */
+    fun rope(from: Vec3, at: Vec3 = position, to: Node? = null, length: Number? = null): DistanceJoint =
+        scene.physics.addRope(to?.body, from, joinable(), at, length?.toFloat())
+
+    /** A spring of [hertz] Hz from [from] (on [to], or in the world) to [at] on this node, resting at its present length. */
+    fun spring(from: Vec3, hertz: Number, at: Vec3 = position, to: Node? = null, dampingRatio: Number = .5): DistanceJoint =
+        scene.physics.addSpring(to?.body, from, joinable(), at, hertz.toFloat(), dampingRatio.toFloat())
 
     /** A soft round shadow on the ground under it ([radius] in metres, from its size if not given). */
     fun shadow(radius: Number? = null): Node { scene.addShadow(this, radius?.toFloat()); return this }
