@@ -6,7 +6,9 @@ import kotlin.math.*
 
 /**
  * The software mixer: plays up to [maxVoices] sounds at once, each with its volume, pitch, stereo
- * placement or position in the world, and mixes them into interleaved stereo floats.
+ * placement or position in the world, and mixes them into interleaved stereo floats. Sounds placed in the
+ * world are softer and duller far away, shift in pitch as they come and go (Doppler), and echo in the
+ * place's [reverb].
  *
  * The game thread calls [play], [playAt], [listen] and changes [Voice]s; the audio thread calls
  * [render]. Changes cross over under a short lock at the start of each block, and [render] allocates
@@ -30,6 +32,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     private val maximum = FloatArray(maxVoices)
     private val startedAt = LongArray(maxVoices)
     private val offset = FloatArray(maxVoices)
+    private val sendAmount = FloatArray(maxVoices)
     private val finished = BooleanArray(maxVoices)        // set by the audio side, read by Voice.isPlaying
     private var plays = 0L
     private var lx = 0f; private var ly = 0f; private var lz = 0f
@@ -37,6 +40,15 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     private var fx = 0f; private var fy = 0f; private var fz = -1f
     /** Volume of everything, 0..1 (and a little more). */
     @Volatile var masterVolume = 1f
+    /** How the place sounds (null: no reverberation). Changes glide over a tenth of a second. */
+    @Volatile var reverb: Reverb? = null
+    /**
+     * The Doppler effect: a sound coming closer is higher, one going away lower, by c / (c + v) where v is
+     * how fast its distance grows; 1 is the real effect, 0 none, more exaggerates it (games often do).
+     */
+    @Volatile var doppler = 1f
+    /** Speed of sound for the Doppler effect (m/s). */
+    @Volatile var speedOfSound = 343f
 
     // ---- audio side
     private val aSound = arrayOfNulls<Sound>(maxVoices)
@@ -52,21 +64,31 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     private val aFadeTotal = FloatArray(maxVoices)
     private val aDone = BooleanArray(maxVoices)
     private val aFresh = BooleanArray(maxVoices)        // first block: start at the wanted volume, no glide
+    private val aSend = FloatArray(maxVoices); private val tSend = FloatArray(maxVoices)
+    private val aDistance = FloatArray(maxVoices)       // distance at the last block (NaN: none yet)
+    private val aRadial = FloatArray(maxVoices)         // how fast it grows, smoothed (m/s)
+    private var sendBuffer = FloatArray(0)
+    private val reverbUnit = ReverbUnit(rate)
+    private var reverbOn = false
     private var limiter = 1f
     private var framesRendered = 0L
 
-    /** Plays [sound] without position: [pan] −1 left … 1 right; [offset] seconds into the sound. */
-    fun play(sound: Sound, volume: Float = 1f, pitch: Float = 1f, pan: Float = 0f, loop: Boolean = false, offset: Float = 0f): Voice =
-        start(sound, volume, pitch, loop, false, pan, 0f, 0f, 0f, 1f, 1f, offset)
+    /**
+     * Plays [sound] without position: [pan] −1 left … 1 right; [offset] seconds into the sound; [reverb]:
+     * how much of it echoes in the place (0 by default: interface sounds, music).
+     */
+    fun play(sound: Sound, volume: Float = 1f, pitch: Float = 1f, pan: Float = 0f, loop: Boolean = false, offset: Float = 0f,
+             reverb: Float = 0f): Voice =
+        start(sound, volume, pitch, loop, false, pan, 0f, 0f, 0f, 1f, 1f, offset, reverb)
 
     /**
      * Plays [sound] at [position] in the world: it is heard from the listener's place, softer with
      * distance (full volume up to [referenceDistance], silent from [maxDistance]), duller far away and
-     * behind the head.
+     * behind the head, shifted in pitch as it moves ([doppler]); [reverb] scales how much of it echoes.
      */
     fun playAt(sound: Sound, position: Vec3, volume: Float = 1f, pitch: Float = 1f, loop: Boolean = false,
-               referenceDistance: Float = 2f, maxDistance: Float = 50f, offset: Float = 0f): Voice =
-        start(sound, volume, pitch, loop, true, 0f, position.x, position.y, position.z, referenceDistance, maxDistance, offset)
+               referenceDistance: Float = 2f, maxDistance: Float = 50f, offset: Float = 0f, reverb: Float = 1f): Voice =
+        start(sound, volume, pitch, loop, true, 0f, position.x, position.y, position.z, referenceDistance, maxDistance, offset, reverb)
 
     /** Where the ears are: [forward] is where the listener looks. */
     fun listen(position: Vec3, forward: Vec3, up: Vec3 = Vec3.UP) {
@@ -80,7 +102,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     val playing: Int get() = synchronized(lock) { busy.count { it } }
 
     private fun start(sound: Sound, v: Float, p: Float, l: Boolean, s: Boolean, pn: Float, x: Float, y: Float, z: Float,
-                      ref: Float, max: Float, off: Float): Voice = synchronized(lock) {
+                      ref: Float, max: Float, off: Float, send: Float): Voice = synchronized(lock) {
         var slot = (0 until maxVoices).firstOrNull { !busy[it] }
         if (slot == null) {
             // All taken: steal the oldest sound that does not loop (loops are usually ambiences).
@@ -93,7 +115,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
         volume[i] = v.coerceAtLeast(0f); pitch[i] = p.coerceIn(.05f, 8f); pan[i] = pn.coerceIn(-1f, 1f); loop[i] = l
         spatial[i] = s; sx[i] = x; sy[i] = y; sz[i] = z
         reference[i] = ref.coerceAtLeast(.01f); maximum[i] = max(max, ref + .01f); startedAt[i] = ++plays
-        offset[i] = off.coerceAtLeast(0f)
+        offset[i] = off.coerceAtLeast(0f); sendAmount[i] = send.coerceAtLeast(0f)
         Voice(this, i, generation[i])
     }
 
@@ -112,6 +134,13 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     fun render(out: FloatArray, frames: Int = out.size / 2) {
         require(out.size >= 2 * frames)
         val air = 1f - exp(-2f * PI.toFloat() * 16_000f / rate)
+        val room = reverb
+        if (room == null && reverbOn) { reverbUnit.clear(); reverbOn = false }
+        if (room != null) reverbOn = true
+        if (sendBuffer.size < frames) sendBuffer = FloatArray(frames)
+        val block = frames.toFloat() / rate
+        val follow = 1f - exp(-block / .08f)               // the Doppler speed's smoothing, about 80 ms
+        val c = speedOfSound; val dopplerScale = doppler
         synchronized(lock) {
             for (i in 0 until maxVoices) {
                 if (!busy[i]) { aActive[i] = false; continue }
@@ -122,6 +151,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
                     aSound[i] = snd; aActive[i] = true; aFade[i] = -1f; aDone[i] = false
                     aCursor[i] = (offset[i].toDouble() * snd.rate).let { if (loop[i] && snd.frames > 0) it % snd.frames else it }
                     aLowL[i] = 0f; aLowR[i] = 0f; aFresh[i] = true
+                    aDistance[i] = Float.NaN; aRadial[i] = 0f
                 } else if (aDone[i]) {
                     aDone[i] = false; aActive[i] = false; finished[i] = true; busy[i] = false; sounds[i] = null
                     continue
@@ -130,6 +160,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
                 aStep[i] = pitch[i].toDouble() * snd.rate / rate
                 aLoop[i] = loop[i]
                 var gl: Float; var gr: Float; var cut = air
+                var send = volume[i] * sendAmount[i]
                 if (spatial[i]) {
                     val dx = sx[i] - lx; val dy = sy[i] - ly; val dz = sz[i] - lz
                     val d = sqrt(dx * dx + dy * dy + dz * dz)
@@ -147,17 +178,28 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
                     // Air and head shadow: far and behind sound duller.
                     val hz = 16_000f / (1f + d / 25f) * (if (front < 0f) 1f + .45f * front else 1f)
                     cut = 1f - exp(-2f * PI.toFloat() * hz.coerceAtLeast(600f) / rate)
+                    // The room: far sounds keep more of their echo than of themselves (√ of the direct attenuation).
+                    send *= sqrt(att)
+                    // Doppler: how fast the distance grows, from block to block, smoothed (the game moves sources
+                    // at its own frame rate). A jump (a respawn, a camera cut) is not a speed.
+                    if (aDistance[i].isNaN()) { aDistance[i] = d; aRadial[i] = 0f }
+                    val raw = (d - aDistance[i]) / block
+                    aDistance[i] = d
+                    if (abs(raw) < c * .5f) aRadial[i] += (raw - aRadial[i]) * follow
+                    if (dopplerScale > 0f) aStep[i] *= (c / (c + dopplerScale * aRadial[i])).coerceIn(.5f, 2f).toDouble()
                 } else {
                     val a = (pan[i] + 1f) * PI.toFloat() / 4f
                     // Centred sounds at full volume on both sides; panned ones keep their power.
                     gl = cos(a) * SQRT2 * volume[i]; gr = sin(a) * SQRT2 * volume[i]
                     if (snd.channels == 2) { gl = min(1f, gl); gr = min(1f, gr) }
                 }
-                tGainL[i] = gl; tGainR[i] = gr; tCut[i] = cut
-                if (aFresh[i]) { aGainL[i] = gl; aGainR[i] = gr; aCut[i] = cut; aFresh[i] = false }
+                tGainL[i] = gl; tGainR[i] = gr; tCut[i] = cut; tSend[i] = if (room != null) send else 0f
+                if (aFresh[i]) { aGainL[i] = gl; aGainR[i] = gr; aCut[i] = cut; aSend[i] = tSend[i]; aFresh[i] = false }
             }
         }
         java.util.Arrays.fill(out, 0, 2 * frames, 0f)
+        val sends = sendBuffer
+        if (room != null) java.util.Arrays.fill(sends, 0, frames, 0f)
         val inv = 1f / frames
         for (i in 0 until maxVoices) {
             if (!aActive[i] || aDone[i]) continue
@@ -169,6 +211,8 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
             var cut = aCut[i]; val dc = (tCut[i] - cut) * inv
             var lowL = aLowL[i]; var lowR = aLowR[i]
             var fade = aFade[i]; val fadeTotal = aFadeTotal[i]
+            var sg = aSend[i]; val ds = (tSend[i] - sg) * inv
+            val sending = room != null && (sg > 0f || tSend[i] > 0f)
             var k = 0
             while (k < frames) {
                 val j = cur.toInt()
@@ -191,13 +235,16 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
                     if (fade <= 0f) { aDone[i] = true; out[2 * k] += lowL * gl * g; out[2 * k + 1] += lowR * gr * g; break }
                 }
                 out[2 * k] += lowL * gl * g; out[2 * k + 1] += lowR * gr * g
-                gl += dl; gr += dr; cut += dc
+                if (sending) sends[k] += (lowL + lowR) * .5f * sg * g
+                gl += dl; gr += dr; cut += dc; sg += ds
                 cur += step; k++
             }
             aCursor[i] = cur
-            aGainL[i] = tGainL[i]; aGainR[i] = tGainR[i]; aCut[i] = tCut[i]
+            aGainL[i] = tGainL[i]; aGainR[i] = tGainR[i]; aCut[i] = tCut[i]; aSend[i] = tSend[i]
             aLowL[i] = lowL; aLowR[i] = lowR; aFade[i] = fade
         }
+        // The place's echo of everything sent to it.
+        if (room != null) reverbUnit.process(sends, out, frames, room)
         // Master volume, then a limiter: the gain drops at once on a peak and comes back in about 0.3 s;
         // a soft knee above 0.85 catches what is left, so the output never goes past 1.
         val master = masterVolume

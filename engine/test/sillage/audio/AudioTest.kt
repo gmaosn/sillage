@@ -96,6 +96,7 @@ class AudioTest {
         val s = sine(330f, 2f, .2f)
         repeat(10) { m.playAt(s, Vec3(it.toFloat(), 0f, -2f), loop = true) }
         repeat(10) { m.play(s, loop = true, pan = it / 10f) }
+        m.reverb = Reverb.HALL
         val buf = FloatArray(512)
         repeat(200) { m.render(buf, 256) }               // échauffement (compilation JIT)
         val bean = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
@@ -104,6 +105,82 @@ class AudioTest {
         repeat(2000) { m.render(buf, 256) }
         val bytes = bean.getThreadAllocatedBytes(t) - before
         assertTrue(bytes < 16_384, "$bytes octets alloués pour 2000 blocs")
+    }
+
+    /** Fréquence d'un canal par ses passages à zéro montants, entre [from] et [to] secondes. */
+    private fun frequency(x: FloatArray, ch: Int, from: Float, to: Float): Float {
+        val a = (from * rate).toInt(); val b = (to * rate).toInt()
+        var first = -1.0; var last = -1.0; var count = 0
+        for (i in a + 1 until b) {
+            val p = x[2 * (i - 1) + ch]; val q = x[2 * i + ch]
+            if (p < 0f && q >= 0f) { val t = i - 1 + p / (p - q).toDouble(); if (first < 0) first = t else count++; last = t }
+        }
+        return (count * rate / (last - first)).toFloat()
+    }
+
+    /** Une source qui file sur l'axe z et passe à côté de l'auditeur ; sa position change à 60 images par seconde, comme dans un jeu. */
+    private fun passBy(speed: Float, doppler: Float = 1f, teleport: Boolean = false): FloatArray {
+        val m = Mixer(); m.doppler = doppler; m.listen(Vec3.ZERO, Vec3(1f, 0f, 0f))
+        val v = m.playAt(sine(1000f, 5f, .5f), Vec3(1f, 0f, -2 * speed), referenceDistance = 2f, maxDistance = 400f)
+        val block = 200; val n = 4 * rate / block
+        val out = FloatArray(2 * n * block); val buf = FloatArray(2 * block)
+        for (k in 0 until n) {
+            val t = k * block / rate.toFloat()
+            if (k % 4 == 0) v.position(if (teleport) Vec3(1f, 0f, if (t < 2f) -5f else -60f) else Vec3(1f, 0f, -2 * speed + speed * t))
+            m.render(buf, block); System.arraycopy(buf, 0, out, 2 * k * block, 2 * block)
+        }
+        return out
+    }
+
+    @Test fun effetDopplerQuiApprochePlusAiguQuiSEloignePlusGrave() {
+        val o = passBy(30f)
+        val coming = frequency(o, 1, .6f, 1.5f); val going = frequency(o, 1, 2.5f, 3.4f)
+        // f' = f · c / (c + v), v la vitesse à laquelle la distance grandit.
+        assertEquals(1000f * 343f / (343f - 30f), coming, 3f, "en approche")
+        assertEquals(1000f * 343f / (343f + 30f), going, 3f, "en s'éloignant")
+        val off = passBy(30f, doppler = 0f)
+        assertEquals(1000f, frequency(off, 1, .6f, 1.5f), 1f, "sans effet Doppler")
+        // Un saut (réapparition, coupure de caméra) n'est pas une vitesse : pas de glissando.
+        val jump = passBy(0f, teleport = true)
+        assertEquals(1000f, frequency(jump, 1, 2.01f, 2.3f), 3f, "après un saut de 55 m")
+    }
+
+    /** Durée de réverbération (−60 dB) par l'intégrale de Schroeder, droite ajustée entre −5 et −35 dB. */
+    private fun rt60(x: FloatArray, from: Int): Float {
+        val n = x.size / 2
+        val e = DoubleArray(n - from) { val i = from + it; (x[2 * i] * x[2 * i] + x[2 * i + 1] * x[2 * i + 1]).toDouble() }
+        for (i in e.size - 2 downTo 0) e[i] += e[i + 1]
+        val db = DoubleArray(e.size) { 10 * log10(e[it] / e[0]) }
+        val a = db.indexOfFirst { it <= -5 }; val b = db.indexOfFirst { it <= -35 }
+        val slope = (db[b] - db[a]) / ((b - a).toDouble() / rate)
+        return (-60 / slope).toFloat()
+    }
+
+    @Test fun laReverberationDureCeQuOnLuiDemande() {
+        for (decay in floatArrayOf(.8f, 2.5f)) {
+            val m = Mixer(); m.listen(Vec3.ZERO, Vec3(0f, 0f, -1f))
+            m.reverb = Reverb(decay = decay, wet = .4f, damping = 0f)
+            m.playAt(Sound(FloatArray(96) { if (it < 48) .8f else -.8f }), Vec3(0f, 0f, -3f), maxDistance = 100f)
+            val o = render(m, decay * 1.6f)
+            val t = rt60(o, (.02f * rate).toInt())
+            assertEquals(decay, t, decay * .12f, "durée de réverbération")
+            // Les deux oreilles n'entendent pas la même queue : un son large, pas au centre.
+            var lr = 0.0; var ll = 0.0; var rr = 0.0
+            for (i in (.1f * rate).toInt() until (.5f * rate).toInt()) { lr += o[2 * i] * o[2 * i + 1]; ll += o[2 * i] * o[2 * i]; rr += o[2 * i + 1] * o[2 * i + 1] }
+            assertTrue(abs(lr / sqrt(ll * rr)) < .5, "queue trop corrélée entre gauche et droite : ${lr / sqrt(ll * rr)}")
+        }
+        // Sans réverbération : rien après le son.
+        val m = Mixer(); m.playAt(Sound(FloatArray(96) { .8f }), Vec3(0f, 0f, -3f))
+        val o = render(m, .3f)
+        assertEquals(0f, rms(o, 0, (.05f * rate).toInt()), 0f)
+        // Plus loin, plus de réverbération par rapport au son direct.
+        fun ratio(d: Float): Float {
+            val r = Mixer(); r.reverb = Reverb.HALL; r.listen(Vec3.ZERO, Vec3(0f, 0f, -1f))
+            r.playAt(sine(500f, .2f, .5f), Vec3(0f, 0f, -d), maxDistance = 200f)
+            val x = render(r, .8f)
+            return rms(x, 0, (.25f * rate).toInt(), (.6f * rate).toInt()) / rms(x, 0, (.05f * rate).toInt(), (.18f * rate).toInt())
+        }
+        assertTrue(ratio(20f) > 1.5f * ratio(3f), "loin ${ratio(20f)}, près ${ratio(3f)}")
     }
 
     @Test fun wavAllerRetour() {

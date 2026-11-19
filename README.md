@@ -25,7 +25,7 @@ That is a whole game: a window, a sky, a sun, a lawn, a crate and a ball that ob
 - **Windows**: its own Wayland client, with X11 as a fallback. Relative mouse, pointer lock, sharp output on high-DPI screens. Keys are read by position, so WASD works as ZQSD on an AZERTY keyboard.
 - **Physics**: rigid bodies (boxes, spheres, capsules) on static triangle meshes, after Box2D v3's soft-step solver. Stable stacks, friction patches, mixed masses, rolling resistance, surfaces per material, sleep, rays and sphere sweeps, trigger zones, continuous collision for fast bodies and projectiles. Joints (ball, hinge, slider, fixed, distance, spring, rope, chains) with limits, motors and springs; raycast vehicles with suspension, steering, brakes and tyres that skid; characters carried by moving platforms. Up to 8 threads, with the same result to the bit whatever their number. Collision tests allocate nothing.
 - **A character controller**: walks, runs, climbs steps, handles slopes, rides platforms, pushes crates according to their mass. Third or first person, switchable.
-- **Sound**: its own mixer (48 voices, sounds placed in space), ALSA output. All the engine's sounds are synthesised: footsteps per surface, jumps, landings, impacts, waves, gulls.
+- **Sound**: its own mixer (48 voices, sounds placed in space, Doppler effect, reverberation with presets and zones), its own Ogg Vorbis decoder (the same as libvorbis to 3·10⁻⁷), ALSA output. The engine's own sounds are synthesised: footsteps per surface, jumps, landings, impacts, waves, gulls.
 - **Models**: glTF binary files as Blender exports them: hierarchies, node animations, skins (characters bent by a skeleton), images painted on the model (PNG and JPEG read by the engine's own decoders, alpha cut-outs). Material names in Blender set the surface (grass, sand, wood, stone, road, ice) and the detail texture.
 - **Games**: a scene API in one file. Builders, physics in one call, players, pickups, zones, timers, a HUD with a built-in pixel font, several scenes, and runs without a window for tests.
 
@@ -79,4 +79,4 @@ A game is a module whose `module.yaml` depends on `//engine`. The [tutorial](doc
 
 ## Status
 
-Sillage runs on Linux today. The window layer is ready for other systems, which are not written yet. Not there yet: compressed audio (WAV only), morph targets, cone limits for ragdolls. The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.
+Sillage runs on Linux today. The window layer is ready for other systems, which are not written yet. Not there yet: streamed audio (files are decoded whole into memory), MP3, morph targets, cone limits for ragdolls. The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.

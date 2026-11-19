@@ -145,6 +145,15 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     fun spring(from: Vec3, hertz: Number, at: Vec3 = position, to: Node? = null, dampingRatio: Number = .5): DistanceJoint =
         scene.physics.addSpring(to?.body, from, joinable(), at, hertz.toFloat(), dampingRatio.toFloat())
 
+    /**
+     * Plays [sound] from it (or from its [part], for an animated model), and the sound follows it while it
+     * plays: a gull's cry from the gull, an engine from its car, rising as it comes and falling as it goes.
+     * Null without sound.
+     */
+    fun sound(sound: sillage.audio.Sound, part: String? = null, volume: Number = 1, pitch: Number = 1, range: Number = 40,
+              loop: Boolean = false): sillage.audio.Voice? =
+        scene.sounds.attach(this, part, sound, volume.toFloat(), pitch.toFloat(), range.toFloat(), loop)
+
     /** A soft round shadow on the ground under it ([radius] in metres, from its size if not given). */
     fun shadow(radius: Number? = null): Node { scene.addShadow(this, radius?.toFloat()); return this }
 

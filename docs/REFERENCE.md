@@ -78,7 +78,9 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `step(dt)` | reads the keys and advances everything but the drawing (tests, servers) |
 | **Sound** | |
 | `play(sound, at = null, volume = 1, pitch = 1, range = 60)` | once, in space (heard within `range` m) or everywhere; returns the `Voice`, null when muted |
-| `ambience(sound, at = null, volume = .5, range = 60)` | a loop: waves, wind, a fountain |
+| `ambience(sound, at = null, volume = .5, range = 60)` | a loop: waves, wind, a fountain; returns an `Ambience` whose `volume` can change at any time |
+| `reverb` | how the place sounds (a `Reverb`, or null) |
+| `reverbZone(shape, at, reverb, rotation = IDENTITY)` | while the camera is inside, sounds echo as in `reverb` |
 | `toggleMute()` | |
 
 `Zone`: `trigger` (the physics `Trigger`), `filter: (Node) -> Boolean`, `enabled`.
@@ -104,6 +106,7 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `solid(vararg materials, blocksCamera = true, surface)` | still and solid; a model collides with its triangles (only those of `materials` if given), each with the surface of its material name |
 | `kinematic()` | moved by the game: set `position`/`rotation`, the body follows smoothly and pushes what it meets |
 | `collider(shape, offset, part, surface = "wood", blocksCamera = true)` | an extra collision shape; with `part`, it follows that part of an animated model |
+| `sound(sound, part = null, volume = 1, pitch = 1, range = 40, loop = false)` | plays from the node (or its animated `part`) and follows it while playing; the `Voice`, null without sound |
 | `hangFrom(anchor, to = null)`, `hinge(anchor, axis, to = null)`, `slider(axis, to = null)`, `glue(to = null)`, `rope(from, at = position, to = null, length)`, `spring(from, hertz, at = position, to = null, dampingRatio = .5)` | joints to node `to`, or to the world (null, or a node without a body of its own); dynamic first. They return the `Joint` (limits, motors, springs) |
 | `shadow(radius)` | a soft round shadow under it, drawn when the cast shadows are off (moving bodies get one by themselves) |
 | `play(clip, loop = true, speed = 1, fade = .15)` | plays a clip of its model, cross-fading |
@@ -378,7 +381,11 @@ Made by `addTrigger`. `world`, `shape`, `position`, `rotation`, `filter: (Body) 
 
 ### `Sound`
 
-`Sound(data, channels = 1, rate = 48000)`: float samples in −1..1, mono or interleaved stereo. `frames`, `duration`, `toWav()`, `save(path)`. `Sound.load(path)` reads a WAV file from disk or the resources; `Sound.wav(bytes)` from bytes (8, 16, 24 or 32-bit integers, or 32-bit floats).
+`Sound(data, channels = 1, rate = 48000)`: float samples in −1..1, mono or interleaved stereo. `frames`, `duration`, `toWav()`, `save(path)`. `Sound.load(path)` reads an Ogg Vorbis or WAV file from disk or the resources; `Sound.decode(bytes)` from bytes, either kind; `Sound.wav(bytes)` a WAV (8, 16, 24 or 32-bit integers, or 32-bit floats).
+
+### `Vorbis`
+
+`Vorbis.decode(bytes)`: an Ogg Vorbis file into a `Sound`, by the engine's own decoder (Ogg pages and checksums, Vorbis I: codebooks, floor 1, residues 0 to 2, channel coupling, inverse MDCT by FFT), the same as libvorbis to 3·10⁻⁷. Mono and stereo; floor 0 (unused since 2001) and more than two channels are refused, damaged files too, with an `IllegalArgumentException`. `Vorbis.isOgg(bytes)`. The whole file is decoded into memory (a stereo minute at 44.1 kHz takes 21 MB).
 
 ### `Sounds`
 
@@ -390,7 +397,9 @@ Tools to compute your own sounds. `Synth.sound(seconds) { i, t -> sample }`, `no
 
 ### `Mixer`, `Voice`, `Audio`
 
-`Mixer(rate = 48000, maxVoices = 48)` mixes voices into interleaved stereo floats: `play(sound, volume, pitch, pan, loop, offset)`, `playAt(sound, position, volume, pitch, loop, referenceDistance = 2, maxDistance = 50, offset)`, `listen(position, forward, up)`, `masterVolume`, `playing`, `stopAll(seconds)`, `render(out, frames)`. Volumes glide and nothing clicks. `render` allocates nothing.
+`Mixer(rate = 48000, maxVoices = 48)` mixes voices into interleaved stereo floats: `play(sound, volume, pitch, pan, loop, offset, reverb = 0)`, `playAt(sound, position, volume, pitch, loop, referenceDistance = 2, maxDistance = 50, offset, reverb = 1)`, `listen(position, forward, up)`, `masterVolume`, `reverb` (a `Reverb` or null), `doppler` (1: real, 0: none), `speedOfSound` (343 m/s), `playing`, `stopAll(seconds)`, `render(out, frames)`. Volumes and settings glide and nothing clicks. `render` allocates nothing.
+
+`Reverb(decay, wet, damping = .5)`: seconds to fall by 60 dB, loudness of the echo, how much the highs fade (0..1). Presets `OUTDOOR`, `ROOM`, `HALL`, `CAVE`. The mixer's is a feedback delay network of 8 lines in stereo, its decay time exact to about 10 %.
 
 A `Voice` is a playing sound: `isPlaying`, `volume(v)`, `pitch(v)`, `pan(v)`, `position(p)`, `stop(seconds)`.
 

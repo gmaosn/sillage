@@ -74,8 +74,11 @@ class Sound(val data: FloatArray, val channels: Int = 1, val rate: Int = 48_000)
             throw IllegalArgumentException("WAV file without data")
         }
 
-        /** Reads a WAV file from disk, or from the resources when no such file exists. */
-        fun load(path: String): Sound = wav(
+        /** Decodes a WAV or an Ogg Vorbis file, found from its first bytes. */
+        fun decode(bytes: ByteArray): Sound = if (Vorbis.isOgg(bytes)) Vorbis.decode(bytes) else wav(bytes)
+
+        /** Reads a WAV or Ogg Vorbis file from disk, or from the resources when no such file exists. */
+        fun load(path: String): Sound = decode(
             if (Files.exists(Path.of(path))) Files.readAllBytes(Path.of(path))
             else Sound::class.java.getResourceAsStream("/$path")?.use { it.readAllBytes() } ?: error("Sound not found: $path"))
     }

@@ -1,6 +1,7 @@
 package sillage
 
 import sillage.audio.Audio
+import sillage.audio.Reverb
 import sillage.audio.Sound
 import sillage.audio.Voice
 import sillage.math.Mat4
@@ -456,7 +457,7 @@ class Scene {
         return b
     }
 
-    private fun partPose(node: Node, part: String, offset: Vec3): Pair<Vec3, Quat> {
+    internal fun partPose(node: Node, part: String, offset: Vec3): Pair<Vec3, Quat> {
         val m = node.matrix() * node.animator!!.nodePose(part)!!
         val ax = m.transformDirection(Vec3.X).normalized(); var ay = m.transformDirection(Vec3.Y)
         ay = (ay - ax * (ay dot ax)).normalized()
@@ -527,8 +528,23 @@ class Scene {
     fun play(sound: Sound, at: Vec3? = null, volume: Number = 1, pitch: Number = 1, range: Number = 60): Voice? =
         sounds.play(sound, at, volume.toFloat(), pitch.toFloat(), range.toFloat())
 
-    /** Plays [sound] in a loop, at [at] (heard within [range] metres) or everywhere: waves, wind, a fountain. */
-    fun ambience(sound: Sound, at: Vec3? = null, volume: Number = .5, range: Number = 60) = sounds.ambience(sound, at, volume.toFloat(), range.toFloat())
+    /**
+     * Plays [sound] in a loop, at [at] (heard within [range] metres) or everywhere: waves, wind, a fountain.
+     * The result's [Ambience.volume] can change at any time (a song by the fire only at night).
+     */
+    fun ambience(sound: Sound, at: Vec3? = null, volume: Number = .5, range: Number = 60): Ambience = sounds.ambience(sound, at, volume.toFloat(), range.toFloat())
+
+    /** How the place sounds: an echo for the sounds placed in it (null: none), e.g. [Reverb.OUTDOOR]. */
+    var reverb: Reverb?
+        get() = sounds.reverb
+        set(v) { sounds.reverb = v }
+
+    /** Where the camera is inside [shape] (placed at [at]), sounds echo as in [reverb]: a cave, a hall, a house. */
+    fun reverbZone(shape: Shape, at: Vec3, reverb: Reverb, rotation: Quat = Quat.IDENTITY) = sounds.reverbZone(shape, at, rotation, reverb)
+
+    /** Where a sound made by [node] (or by its [part], for an animated model) is. */
+    internal fun soundPosition(node: Node, part: String?): Vec3 =
+        if (part != null && node.animator?.nodePose(part) != null) partPose(node, part, Vec3.ZERO).first else node.position
 
     /** Mutes or unmutes the whole scene. */
     fun toggleMute() { audio?.let { it.volume = if (it.volume > 0f) 0f else 1f } }

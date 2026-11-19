@@ -210,7 +210,7 @@ Every element has an `opacity` (1 by default): `hud.panel(…, opacity = .7)` le
 
 ## Sound
 
-Every sound is synthesised by the engine (`Sounds.footstep`, `jump`, `land`, `pickup`, `knock`, `bounce`, `scrape`, `waves`, `gull`), or loaded from a WAV file with `Sound.load("sounds/door.wav")`.
+Every sound is synthesised by the engine (`Sounds.footstep`, `jump`, `land`, `pickup`, `knock`, `bounce`, `scrape`, `waves`, `gull`), or loaded from a file with `Sound.load("sounds/door.ogg")`: Ogg Vorbis (decoded by the engine itself, a few hundred times faster than real time) or WAV.
 
 ```kotlin
 play(Sounds.pickup())                                          // everywhere
@@ -218,7 +218,17 @@ play(door, at = vec(3, 1, 0), range = 30)                      // in space, hear
 ambience(Sounds.waves(), at = vec(0, 0, 12), volume = .5)      // a loop placed in the world
 ```
 
-The scene makes its own sounds too: footsteps that follow the walk and run clips and the ground underfoot, jumps and landings, bodies hitting things (louder when harder), a crate scraping as it is pushed. `toggleMute()` turns sound off and on. The mixer runs on its own thread with 48 voices and distance attenuation, and plays through ALSA.
+```kotlin
+gull.sound(cry, part = "wing")                                 // from a moving node: the sound follows it
+val song = ambience(Sound.load("music/fire.ogg"), at = fire, range = 30)
+onUpdate { song.volume = lighting.night }                      // an ambience's volume can change any time
+reverb = Reverb.OUTDOOR                                         // how the place sounds
+reverbZone(Box(4f, 3f, 6f), at = vec(10, 2, 0), reverb = Reverb.CAVE)   // inside, while the camera is there
+```
+
+Sounds placed in the world are softer and duller far away, come from their side, shift in pitch as they come and go (the Doppler effect: `audio.mixer.doppler`, 1 by default) and echo in the place: `Reverb.OUTDOOR`, `ROOM`, `HALL`, `CAVE`, or your own `Reverb(decay, wet, damping)`. Far sounds keep more of their echo than of themselves, as in a real room. Sounds that are not placed (interface, music) stay dry.
+
+The scene makes its own sounds too: footsteps that follow the walk and run clips and the ground underfoot, jumps and landings, bodies hitting things (louder when harder), a crate scraping as it is pushed. `toggleMute()` turns sound off and on. The mixer runs on its own thread with 48 voices, and plays through ALSA.
 
 ## Time, events, zones
 

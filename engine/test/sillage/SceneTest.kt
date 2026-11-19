@@ -63,6 +63,33 @@ class SceneTest {
         assertEquals(.5f, top.position.y, .02f)
     }
 
+    @Test fun sonsQuiSuiventLeurNoeudEtZonesDeReverberation() {
+        val s = Scene()
+        val audio = sillage.audio.Audio.offline(); s.audio = audio
+        s.reverb = sillage.audio.Reverb.OUTDOOR
+        s.reverbZone(Box(3f, 2f, 3f), vec(20, 1, 0), sillage.audio.Reverb.CAVE)
+        s.camera.lookAt(vec(0, 1, 0), vec(0, 1, -5))
+        s.update(dt); s.camera.view(dt); s.update(dt)
+        assertSame(sillage.audio.Reverb.OUTDOOR, audio.mixer.reverb, "dehors : la réverbération de la scène")
+        s.camera.lookAt(vec(21, 1.5, 1), vec(21, 1.5, -5))
+        s.camera.view(dt); s.update(dt)
+        assertSame(sillage.audio.Reverb.CAVE, audio.mixer.reverb, "dans la grotte : la sienne")
+        // Un son qui suit un nœud : sa voix va où va le nœud, et s'arrête quand on retire le nœud.
+        val bell = s.sphere(.2, at = vec(0, 1, -5))
+        val v = bell.sound(sillage.audio.Sound(FloatArray(48_000) { sin(it * .05f) * .3f }), loop = true)
+        assertNotNull(v)
+        val out = FloatArray(1600)
+        for (k in 0 until 30) { bell.position = vec(k * .5f, 1, -5); s.update(dt); s.camera.view(dt); audio.mixer.render(out, 800) }
+        assertTrue(v.isPlaying)
+        s.remove(bell); s.update(dt); repeat(4) { audio.mixer.render(out, 800) }      // un fondu de 30 ms, puis la voix est libérée
+        assertFalse(v.isPlaying, "le nœud retiré, son son s'arrête")
+        // Une ambiance dont on change le volume après coup.
+        val amb = s.ambience(sillage.audio.Sound(FloatArray(4800) { .2f * sin(it * .1f) }), volume = 0)
+        amb.volume = .7f
+        s.update(dt)
+        assertEquals(.7f, amb.volume)
+    }
+
     @Test fun zonesEtMinuteries() {
         val s = Scene(); s.ground()
         var entrees = 0; var sorties = 0

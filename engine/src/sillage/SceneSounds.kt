@@ -2,12 +2,17 @@ package sillage
 
 import sillage.audio.Audio
 import sillage.audio.Noise
+import sillage.audio.Reverb
 import sillage.audio.Sound
 import sillage.audio.Sounds
 import sillage.audio.Voice
 import sillage.math.Vec3
 import sillage.physics.Body
 import sillage.physics.BodyType
+import sillage.physics.Box
+import sillage.physics.Capsule
+import sillage.physics.Shape
+import sillage.physics.Sphere
 import kotlin.math.*
 
 /**
@@ -32,8 +37,15 @@ internal class SceneSounds(private val scene: Scene) {
     private class Walker(var clip: String? = null, var phase: Float = 0f, var air: Float = 0f, var grounded: Boolean = true,
                          var distance: Float = 0f, var last: Vec3 = Vec3.ZERO, var scraping: Voice? = null)
     private val walkers = HashMap<Player, Walker>()
-    private class Pending(val sound: Sound, val at: Vec3?, val volume: Float, val range: Float, val offset: Float)
+    private class Pending(val sound: Sound, val at: Vec3?, val volume: Float, val range: Float, val offset: Float, val handle: Ambience)
     private val pendingAmbience = ArrayList<Pending>()
+    /** Sounds that follow a node (or a part of an animated model) while they play. */
+    private class Attached(val node: Node, val part: String?, val voice: Voice)
+    private val attached = ArrayList<Attached>()
+    private class Zone(val shape: Shape, val at: Vec3, val rotation: sillage.math.Quat, val reverb: Reverb)
+    private val zones = ArrayList<Zone>()
+    /** The place's reverberation outside every zone. */
+    var reverb: Reverb? = null
 
     fun start(a: Audio?) {
         audio = a
@@ -54,15 +66,41 @@ internal class SceneSounds(private val scene: Scene) {
     fun track(body: Body, impact: Impact) { if (impact != Impact.SILENT) tracked.add(Tracked(body, impact, body.velocity)) }
     fun untrack(body: Body) { tracked.removeAll { it.body == body } }
 
-    fun ambience(sound: Sound, at: Vec3?, volume: Float, range: Float) {
-        val p = Pending(sound, at, volume, range, rnd.unit() * sound.duration)
+    fun ambience(sound: Sound, at: Vec3?, volume: Float, range: Float): Ambience {
+        val handle = Ambience(volume)
+        val p = Pending(sound, at, volume, range, rnd.unit() * sound.duration, handle)
         pendingAmbience.add(p)
         audio?.let { startAmbience(it, p) }
+        return handle
     }
 
     private fun startAmbience(a: Audio, p: Pending) {
-        if (p.at == null) a.play(p.sound, p.volume, loop = true, offset = p.offset)
-        else a.playAt(p.sound, p.at, p.volume, vary(.04f), loop = true, referenceDistance = p.range / 12f, maxDistance = p.range, offset = p.offset)
+        p.handle.voice = if (p.at == null) a.play(p.sound, p.handle.volume, loop = true, offset = p.offset)
+        else a.playAt(p.sound, p.at, p.handle.volume, vary(.04f), loop = true, referenceDistance = p.range / 12f, maxDistance = p.range, offset = p.offset)
+    }
+
+    /** Plays [sound] from [node] (its [part]) and keeps it there while it plays. */
+    fun attach(node: Node, part: String?, sound: Sound, volume: Float, pitch: Float, range: Float, loop: Boolean): Voice? {
+        val a = audio ?: return null
+        val v = a.playAt(sound, scene.soundPosition(node, part), volume, pitch, loop = loop, referenceDistance = range / 12f, maxDistance = range)
+        attached.add(Attached(node, part, v))
+        return v
+    }
+
+    fun reverbZone(shape: Shape, at: Vec3, rotation: sillage.math.Quat, reverb: Reverb) { zones.add(Zone(shape, at, rotation, reverb)) }
+
+    /** The reverberation where the ears are: the first zone holding them, else the scene's. */
+    private fun reverbAt(p: Vec3): Reverb? {
+        for (z in zones) {
+            val l = z.rotation.conjugate().rotate(p - z.at)
+            val inside = when (val s = z.shape) {
+                is Sphere -> l.length() <= s.radius
+                is Box -> kotlin.math.abs(l.x) <= s.halfX && kotlin.math.abs(l.y) <= s.halfY && kotlin.math.abs(l.z) <= s.halfZ
+                is Capsule -> { val y = l.y.coerceIn(-s.halfHeight, s.halfHeight); Vec3(l.x, l.y - y, l.z).length() <= s.radius }
+            }
+            if (inside) return z.reverb
+        }
+        return reverb
     }
 
     fun play(sound: Sound, at: Vec3?, volume: Float, pitch: Float, range: Float = 60f): Voice? {
@@ -76,6 +114,15 @@ internal class SceneSounds(private val scene: Scene) {
         val a = audio ?: return
         val cam = scene.camera
         a.listen(cam.position, cam.forward)
+        a.mixer.reverb = reverbAt(cam.position)
+        for (p in pendingAmbience) p.handle.voice?.let { v -> if (p.handle.applied != p.handle.volume) { v.volume(p.handle.volume); p.handle.applied = p.handle.volume } }
+        // Sounds that follow what makes them (a gull in flight): their place each frame, so they come and go (Doppler).
+        var k = 0
+        while (k < attached.size) {
+            val s = attached[k]
+            if (!s.voice.isPlaying || s.node.removed) { if (s.node.removed) s.voice.stop(); attached.removeAt(k); continue }
+            s.voice.position(scene.soundPosition(s.node, s.part)); k++
+        }
         for (p in scene.players) if (p.sounds) { val w = walkers.getOrPut(p) { Walker(last = p.position) }; footsteps(a, p, w); jumps(a, p, w, dt); scraping(a, p, w) }
         impacts(a, dt)
     }
@@ -177,4 +224,12 @@ internal fun exportSounds(dir: java.nio.file.Path) {
     all["scrape"] = Sounds.scrape()
     for ((name, s) in all) s.save(dir.resolve("$name.wav"))
     println("SILLAGE_SOUNDS ${all.size} files in $dir")
+}
+
+/** A looping sound of the scene ([Scene.ambience]): its [volume] can change at any time. */
+class Ambience internal constructor(volume: Float) {
+    var volume: Float = volume
+        set(v) { field = v.coerceAtLeast(0f) }
+    internal var voice: Voice? = null
+    internal var applied = volume
 }

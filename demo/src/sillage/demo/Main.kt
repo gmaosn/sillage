@@ -1,6 +1,8 @@
 package sillage.demo
 
 import sillage.*
+import sillage.audio.Reverb
+import sillage.audio.Sound
 import sillage.audio.Sounds
 import sillage.math.Quat
 import sillage.math.Vec3
@@ -19,6 +21,7 @@ val island: Scene.() -> Unit = {
     lighting.time = 16.5f
     lighting.dayLength = 600f
     water(level = -.22, color = Color.hex(0x3AAFD0), shallows = Color.hex(0xA6EDE2), reach = 7)
+    reverb = Reverb.OUTDOOR                          // en plein air : un écho court et léger
     model("models/terrain.glb").solid()              // herbe, sable et bois du ponton : chacun sa surface
     val village = model("models/village.glb")
     // Le toit est solide tel qu'il est dessiné : depuis les tonneaux, on peut sauter dessus et y grimper.
@@ -31,7 +34,8 @@ val island: Scene.() -> Unit = {
     // L'enseigne du ponton : une image peinte (PNG dans le GLB), coins arrondis par découpe alpha.
     model("models/enseigne.glb", at = vec(-3.55, groundHeight(-3.55, 7.0), 7.0)).rotate(y = 160)
     block(-3.55f, 7.0f, 1.7f, 1.9f, .25f, thin = true)
-    model("models/ciel.glb").play("vol").castsShadow = false       // nuages et mouettes : trop haut pour une ombre nette
+    val sky = model("models/ciel.glb").play("vol")
+    sky.castsShadow = false                          // nuages et mouettes : trop haut pour une ombre nette
     // La barque se visite et tangue avec la houle : son pont elliptique en deux boîtes, son mât.
     port.collider(Box(.7f, .25f, .75f), vec(0, -.04, 0), part = "bateau")
     port.collider(Box(.42f, .25f, 1.4f), vec(0, -.04, 0), part = "bateau")
@@ -81,11 +85,9 @@ val island: Scene.() -> Unit = {
     // Le bruit de la mer tout autour du rivage, des mouettes de temps en temps.
     val waves = List(3) { Sounds.waves(it) }
     for (k in 0 until 8) { val a = k * PI.toFloat() / 4 + .2f; ambience(waves[k % 3], at = vec(cos(a) * 12.3f, 0, sin(a) * 12.3f), volume = .55, range = 70) }
+    // Les mouettes crient en vol : le cri part de l'oiseau et le suit (un peu plus aigu quand il vient vers soi).
     val gulls = List(4) { Sounds.gull(it) }
-    every(6, randomExtra = 10) {
-        val a = Math.random() * 2 * PI; val r = 8 + Math.random() * 14
-        play(gulls.random(), at = vec(cos(a) * r, 9 + Math.random() * 6, sin(a) * r), volume = .5, range = 90)
-    }
+    every(6, randomExtra = 10) { sky.sound(gulls.random(), part = "mouette${(0..2).random()}", volume = .5, range = 90) }
 
     // Touches : R recommence, M coupe le son (en QWERTY et en AZERTY), V passe en première personne.
     onKey(Key.R) { restart() }
@@ -121,11 +123,18 @@ private fun Scene.lightsAndLife(village: Node, port: Node) {
     block(8f, 2.4f, .95f, .5f, .95f, thin = true)
     emit(Particles.SMOKE, at = vec(-2.0, 4.75, -2.6), rate = 3.5)                     // cheminée
 
+    // La guitare du feu de camp, à la nuit tombante : un fichier Ogg Vorbis (tools/create_music.py) lu par le
+    // décodeur du moteur, à côté du jeu (un dixième de seconde) ; elle résonne un peu en plein air.
+    val song = java.util.concurrent.CompletableFuture.supplyAsync { Sound.load("sons/guitare.ogg") }
+    var guitar: Ambience? = null
+
     // Les lucioles sortent à la nuit, au-dessus de l'herbe.
     val fireflies = emit(Particles.FIREFLIES, at = vec(0, groundHeight(0, 0) + .7f, 0), rate = 7)
     onUpdate {
         glow.intensity = .6f + .9f * lighting.night
         fireflies.enabled = lighting.night > .45f
+        if (guitar == null && song.isDone) guitar = ambience(song.get(), at = fire + vec(0, .6, 0), volume = 0, range = 30)
+        guitar?.volume = lighting.night
         if (input.isDown(Key.T)) lighting.time = (lighting.time ?: 12f) + it * 1.5f    // une heure et demie par seconde
     }
 }
