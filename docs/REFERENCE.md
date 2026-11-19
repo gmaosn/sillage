@@ -285,7 +285,8 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `groundBelow(x, z, fromY = 1000, depth = 2000, filter = null)` | a downward ray |
 | `overlaps(shape, position, rotation = IDENTITY, margin = 0, exclude = null)` | `Overlap`s of a shape placed there |
 | `addTrigger(shape, position, rotation = IDENTITY)`, `removeTrigger(trigger)` | trigger zones |
-| `gravity`, `substeps`, `contactHertz`, `contactDampingRatio`, `contactSpeed`, `restitutionThreshold`, `speculativeDistance`, `supportRatio`, `sleepLinearSpeed`, `timeToSleep`, `gyroscopic`, `parallel` | settings (see PHYSICS.md) |
+| `gravity`, `substeps`, `contactHertz`, `contactDampingRatio`, `contactSpeed`, `restitutionThreshold`, `speculativeDistance`, `supportRatio`, `sleepLinearSpeed`, `timeToSleep`, `gyroscopic`, `parallel`, `vectorized` | settings (see PHYSICS.md) |
+| `lastStepVectorized` | whether the last step solved its contacts on SIMD lanes (`--add-modules jdk.incubator.vector`) |
 | `profiling`, `phaseNanos` | time per phase, accumulated while `profiling` |
 
 ### `Body` and `BodyType`

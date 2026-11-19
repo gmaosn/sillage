@@ -301,6 +301,7 @@ repeat(120) { s.step(1f / 60f) }
 What the engine does by itself:
 
 - **Physics on several threads.** Large scenes use a pool of up to 8 threads, one per process: broad phase, contacts and the solver (by graph colouring: contacts that share no moving body are solved together). The result is the same bit for bit with or without threads, whatever their number; `physics.parallel = false` keeps everything on the game's thread. Small scenes always run on one.
+- **Physics on SIMD lanes, if you ask.** With `--add-modules jdk.incubator.vector` among the JVM's options, large scenes solve their contacts 8 at a time (AVX2), still the same to the bit: a quarter faster on one thread, a few per cent with all of them (PHYSICS.md).
 - **One draw call per mesh.** Every copy of a mesh is drawn in one call, with its model matrices in an instance buffer. Primitives of the same size and colour share their mesh, so a thousand `box(.5)` cost one draw; for your own meshes, build one `Mesh` and give it to many nodes (`mesh(crate, at = …)`). To change one node's look, give it another mesh rather than editing a shared one.
 - **Two frames in flight.** The CPU prepares the next frame while the GPU draws the last one.
 - **Keys acting on the next picture.** When the driver can tell when a frame is on screen (Mesa does), the loop waits for the last frame to be shown before reading the keys: a key press reaches the screen one refresh later (16.6 ms at 60 Hz, against about 100 ms with the frames queued in FIFO mode). A tap shorter than a frame is never lost.

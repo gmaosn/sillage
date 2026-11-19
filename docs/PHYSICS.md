@@ -93,6 +93,7 @@ When two bodies touch, the friction is √(μ₁·μ₂), the restitution is the
 | `sleepLinearSpeed`, `timeToSleep` | 0.05, 0.5 | a still group sleeps after this long below this speed |
 | `gyroscopic` | true | spinning bodies keep their angular momentum |
 | `parallel` | true | large scenes use the worker threads |
+| `vectorized` | true | large scenes solve their contacts on SIMD lanes when the JDK's vector module is loaded (see below); `lastStepVectorized` tells whether the last step did |
 
 Bodies resting together fall asleep as a group (an island). A sleeping body costs almost nothing. It wakes when something touches it, when you set its state, or when a body under it is removed.
 
@@ -148,6 +149,8 @@ This makes replays, lockstep networking and regression tests possible. The engin
 The world is not thread-safe: step it and query it from one thread at a time.
 
 ## Performance
+
+**On SIMD lanes.** Run with `--add-modules jdk.incubator.vector` (a JDK module still in incubation: the JVM says so once at start) and large scenes solve their contacts 8 at a time with AVX2 (4 with NEON, 16 with AVX-512): the contacts of one colour share no moving body, so a batch of them goes one per lane. Each lane does the scalar solver's very operations in the same order, so the result stays the same to the bit, with or without the module. Without it, nothing changes: the scalar solver runs. Measured on 3,000 awake bodies: 18.3 → 14.3 ms per step on one thread (the solve and relax passes 1.85 times faster), 6.2 → 5.9 ms on 8 threads; 10,000 bodies on 8 threads 18.2 → 17.1 ms. With threads, the other phases and the memory weigh more.
 
 On a laptop's efficiency cores (Intel Core Ultra 7): a pile of 1,000 bodies settling takes 2 to 4 ms per step, 10,000 awake bodies in a heap about 22 ms (8 threads), the demo island's physics, character and camera about 0.15 ms per frame. Sleeping bodies cost almost nothing.
 

@@ -1,9 +1,18 @@
 product: jvm/lib
 
 settings:
+  kotlin:
+    freeCompilerArgs:
+      - -Xadd-modules=jdk.incubator.vector
+      # No null checks on values from Java calls: on vector results they made every vector escape and be
+      # allocated (the solver on SIMD lanes ran 3.5 times slower than the scalar one).
+      - -Xno-call-assertions
+      - -Xno-receiver-assertions
+      - -Xno-param-assertions
   jvm:
     jdk:
       version: 25
     test:
       freeJvmArgs:
         - --enable-native-access=ALL-UNNAMED
+        - --add-modules=jdk.incubator.vector

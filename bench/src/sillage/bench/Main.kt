@@ -192,6 +192,7 @@ private fun solverCost(count: Int) {
     val total = (System.nanoTime() - t0) / 1e6 / steps
     val ns = w.phaseNanos
     fun per(k: Int, n: Long, passes: Int = 1) = "%.0f".format(ns[k].toDouble() / passes / n)
+    println("Solveur sur voies SIMD : " + w.lastStepVectorized + ", fils : " + w.parallel)
     println("Coût par élément, $count corps éveillés (${points / steps} points, ${pairs / steps} paires, ${"%.2f".format(total)} ms par pas) :")
     println("  paires ${per(1, steps.toLong() * w.bodyCount)} ns/corps, contacts ${per(2, pairs)} ns/paire, préparation ${per(3, points)} ns/point, " +
         "démarrage à chaud ${per(4, points, w.substeps)} ns/point, résolution ${per(5, points, w.substeps)} ns/point, détente ${per(6, points, w.substeps)} ns/point")
