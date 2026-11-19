@@ -215,7 +215,7 @@ Light and air of a scene. Every value can change at any time; turning `shadows` 
 
 ### `Texture` and `Textures`
 
-`Texture`: a detail pattern that shades the colour it lies on (mid-grey: unchanged). `name`, `size` (pixels, a power of two), `tile` (metres per repeat), `strength`, `mapping` (`Texture.Mapping.SIDES`: from the three axes, blended by the slope; `FACES`: along each flat face, rows level). `Texture.paint(name, tile = 1, strength = 1, size = 256, mapping = SIDES) { u, v -> color }` paints one from a function (u, v from 0 to 1; it must join up at the edges). Textures are painted in the background and sent to the GPU once.
+`Texture`: a detail pattern that shades the colour it lies on (mid-grey: unchanged), or an image painted on a model (`Mapping.UV`). `name`, `size` (pixels, a power of two), `tile` (metres per repeat), `strength`, `mapping` (`Texture.Mapping.SIDES`: from the three axes, blended by the slope; `FACES`: along each flat face, rows level). `Texture.paint(name, tile = 1, strength = 1, size = 256, mapping = SIDES) { u, v -> color }` paints one from a function (u, v from 0 to 1; it must join up at the edges). `Texture.image(name, image)` and `Texture.image(name, encodedBytes)` make an image texture (the second decodes a PNG or JPEG once per program). Textures are painted in the background and sent to the GPU once; they live as long as the program.
 
 `Textures`: `GRASS`, `SAND`, `WOOD`, `PLANKS`, `ROOF_TILES`, `STONE`, `ROCK`, `PLASTER`, `FABRIC`, `LEAVES`, `BARK`, `ALL`; `named(material)` picks one from a material name in English or French (case and accents ignored), or null.
 
@@ -231,12 +231,13 @@ Light and air of a scene. Every value can change at any time; turning `shadows` 
 
 ### Models and animation
 
-`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy and clips. `read(bytes)` and `readModel(bytes)` do the same from bytes. Paths are looked up on disk, then in the resources. Image textures, skins and cubic-spline curves are refused with a message.
+`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy, clips, textures and skins. `read(bytes)` and `readModel(bytes, beside)` do the same from bytes (`beside` gives the bytes of a file the GLB names, an image beside it). Paths are looked up on disk, then in the resources. Cubic-spline curves and morph targets are refused with a message.
 
 | Class | |
 |---|---|
-| `Model` | `nodes` (`ModelNode`s), `roots`, `clips` (by name), `materials` (names by index), `order` (parents before children); `flatten()` (rest pose as one mesh), `surfaces()` (world triangles and their material indices, for collision), `parts()` |
-| `ModelNode` | `name`, `parent`, `children`, `translation`, `rotation`, `scale`, `matrix` (when given instead of TRS), `local` |
+| `Model` | `nodes` (`ModelNode`s), `roots`, `clips` (by name), `materials` (names by index), `textures` (each material's image texture or null), `skins`, `order` (parents before children); `flatten()` (rest pose as one mesh, skins included), `surfaces()` (world triangles and their material indices, for collision), `parts()` |
+| `ModelNode` | `name`, `parent`, `children`, `translation`, `rotation`, `scale`, `matrix` (when given instead of TRS), `local`, `skin` (index in `skins`, −1: none) |
+| `Skin` | `joints` (node indices), `inverseBind` (one `Mat4` per joint) |
 | `Clip` | `name`, `channels`, `duration` |
 | `Channel` | `node`, `target` (`ChannelTarget.TRANSLATION`, `ROTATION`, `SCALE`), `times`, `values`, `step` |
 | `Part` | a drawable piece: `node`, `mesh` (its own copy once textured, glowing or swaying), `pose` |
@@ -374,6 +375,10 @@ A strict JSON reader (RFC 8259), used for glTF and handy for settings files. `Js
 - `Json.Str` (`value`), `Json.Bool` (`TRUE`, `FALSE`), `Json.Null`.
 
 Nesting deeper than `Json.MAX_DEPTH` (256) is refused.
+
+### `Image`, `Png`, `Jpeg`
+
+`Image(width, height, rgba)`: pixels as 4 bytes each (red, green, blue, alpha), rows from the top; `argb(x, y)`. `Image.decode(bytes)` reads a PNG or a JPEG, found from its first bytes. `Png.decode`: every colour type and bit depth, transparency, interlacing, checksums verified (its own inflate). `Jpeg.decode`: baseline and progressive, restart intervals, chroma subsampling (upsampled by centred interpolation), greyscale, RGB; CMYK, lossless and arithmetic-coded files are refused. Both refuse damaged files with an `IllegalArgumentException` and images over 64 million pixels.
 
 ---
 

@@ -842,3 +842,74 @@ def save_sign():
     (OUT / 'enseigne.glb').write_bytes(glb)
     print(f'enseigne.glb: {len(glb)} octets, deux images {SIGN_W} × {SIGN_H}')
 save_sign()
+
+
+# ---------------------------------------------------------------- drapeau (squelette)
+# Un drapeau au sommet du phare : une toile déformée par quatre os en chaîne (skin glTF), qui ondule
+# avec le clip « flotter », et son mât. Origine au pied du mât ; la toile part vers +X.
+def save_flag():
+    binary = bytearray(); views = []; accessors = []
+    def view(data):
+        binary.extend(b'\0' * ((-len(binary)) % 4))
+        views.append({'buffer': 0, 'byteOffset': len(binary), 'byteLength': len(data)}); binary.extend(data); return len(views) - 1
+    def acc(rows, kind, fmt='f', component=5126):
+        flat = [c for r in rows for c in (r if isinstance(r, (tuple, list)) else (r,))]
+        a = {'bufferView': view(struct.pack(f'<{len(flat)}{fmt}', *flat)), 'componentType': component, 'count': len(rows), 'type': kind}
+        if component == 5126 and kind in ('VEC3', 'SCALAR'):
+            width = 3 if kind == 'VEC3' else 1
+            cols = [[(r if width > 1 else (r,))[i] for r in rows] for i in range(width)]
+            a['min'] = [min(c) for c in cols]; a['max'] = [max(c) for c in cols]
+        accessors.append(a); return len(accessors) - 1
+    hoist, length, y0, y1 = .04, .9, .62, 1.07
+    joint_x = [hoist, hoist + .3, hoist + .6, hoist + .9]; joint_y = (y0 + y1) / 2
+    cols, rows = 12, 6
+    def vertex(i, j): return (hoist + length * i / cols, y1 - (y1 - y0) * j / rows, 0.0)
+    def weights(x):
+        s = min(max((x - hoist) / .3, 0), 2.9999); k = int(s); f = s - k
+        return (k, k + 1, 0, 0), (1 - f, f, 0, 0)
+    groups = {'corail': ([], [], []), 'blanc': ([], [], [])}
+    for j in range(rows):
+        mat = 'corail' if j % 2 == 0 else 'blanc'
+        pos, jnt, wgt = groups[mat]
+        for i in range(cols):
+            a, b, c, d = vertex(i, j), vertex(i, j + 1), vertex(i + 1, j + 1), vertex(i + 1, j)
+            for tri in ((a, b, c), (a, c, d), (a, c, b), (a, d, c)):          # recto et verso
+                for p in tri:
+                    jj, ww = weights(p[0]); pos.append(p); jnt.append(jj); wgt.append(ww)
+    prims = []; materials = []
+    for k, (mat, (pos, jnt, wgt)) in enumerate(groups.items()):
+        materials.append({'name': 'drapeau_' + mat, 'pbrMetallicRoughness': {'baseColorFactor': [*COLORS[mat], 1], 'metallicFactor': 0}})
+        prims.append({'attributes': {'POSITION': acc(pos, 'VEC3'), 'JOINTS_0': acc(jnt, 'VEC4', 'B', 5121), 'WEIGHTS_0': acc(wgt, 'VEC4')}, 'material': k})
+    pole = Mesh(); pole.tube((0, 0, 0), (0, 1.12, 0), .022, .018, 'fer', 8); pole.sphere(0, 1.14, 0, .035, .035, .035, 'or', 8, 4)
+    materials.append({'name': 'fer', 'pbrMetallicRoughness': {'baseColorFactor': [*COLORS['fer'], 1], 'metallicFactor': 0}})
+    materials.append({'name': 'or', 'pbrMetallicRoughness': {'baseColorFactor': [*COLORS['or'], 1], 'metallicFactor': 0}})
+    pole_prims = [{'attributes': {'POSITION': acc(pole.groups[m], 'VEC3')}, 'material': 2 + i} for i, m in enumerate(('fer', 'or'))]
+    # Nœuds : 0 racine, 1 mât, 2–5 os en chaîne, 6 la toile (sa place est ignorée : la peau la place).
+    nodes = [{'name': 'drapeau', 'children': [1, 2, 6]},
+             {'name': 'mat', 'mesh': 1},
+             {'name': 'os0', 'translation': [joint_x[0], joint_y, 0], 'children': [3]},
+             {'name': 'os1', 'translation': [.3, 0, 0], 'children': [4]},
+             {'name': 'os2', 'translation': [.3, 0, 0], 'children': [5]},
+             {'name': 'os3', 'translation': [.3, 0, 0]},
+             {'name': 'toile', 'mesh': 0, 'skin': 0}]
+    inverse = [[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -x, -joint_y, 0, 1] for x in joint_x]   # colonne par colonne
+    skins = [{'joints': [2, 3, 4, 5], 'inverseBindMatrices': acc(inverse, 'MAT4'), 'skeleton': 2}]
+    # Le clip : chaque os tourne autour de Y, en retard sur le précédent ; la toile tombe un peu (Z).
+    duration, count = 1.6, 17
+    times = [duration * k / (count - 1) for k in range(count)]
+    samplers = []; channels = []
+    for b, (amp, phase) in enumerate([(.06, 0), (.32, .9), (.42, 1.8), (.5, 2.7)]):
+        values = [qmul(qy(amp * math.sin(TAU * t / duration - phase)), qz(-.06 if b else 0)) for t in times]
+        samplers.append({'input': acc(times, 'SCALAR'), 'output': acc(values, 'VEC4'), 'interpolation': 'LINEAR'})
+        channels.append({'sampler': b, 'target': {'node': 2 + b, 'path': 'rotation'}})
+    doc = {'asset': {'version': '2.0', 'generator': 'Sillage / create_assets.py'}, 'scene': 0, 'scenes': [{'nodes': [0]}],
+           'nodes': nodes, 'meshes': [{'name': 'toile', 'primitives': prims}, {'name': 'mat', 'primitives': pole_prims}],
+           'materials': materials, 'skins': skins, 'animations': [{'name': 'flotter', 'samplers': samplers, 'channels': channels}],
+           'buffers': [{'byteLength': len(binary)}], 'bufferViews': views, 'accessors': accessors}
+    text = json.dumps(doc, separators=(',', ':')).encode(); text += b' ' * ((-len(text)) % 4)
+    binary.extend(b'\0' * ((-len(binary)) % 4))
+    size = 12 + 8 + len(text) + 8 + len(binary)
+    glb = struct.pack('<III', 0x46546C67, 2, size) + struct.pack('<II', len(text), 0x4E4F534A) + text + struct.pack('<II', len(binary), 0x004E4942) + binary
+    (OUT / 'drapeau.glb').write_bytes(glb)
+    print(f'drapeau.glb: {len(glb)} octets, {sum(len(g[0]) for g in groups.values()) // 3} triangles, 4 os, clip « flotter »')
+save_flag()

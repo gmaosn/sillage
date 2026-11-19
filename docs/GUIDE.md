@@ -278,7 +278,12 @@ The scene makes some by itself: a puff of dust where a player lands on sand or a
 
 ## Models
 
-Models are glTF binary files (`.glb`): meshes with flat colours (`baseColorFactor`), a node hierarchy and node animations (translation, rotation, scale; linear and step). Image textures and skins are refused with a clear message: the toon look relies on colours, detail comes from the engine's textures chosen by material name (see Textures), and characters are made of rigid parts animated as a hierarchy. `node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part.
+Models are glTF binary files (`.glb`), as Blender exports them: meshes with colours (`baseColorFactor`, vertex colours), a node hierarchy, node animations (translation, rotation, scale; linear and step) and:
+
+- **Images painted on the model** (`baseColorTexture`): PNG or JPEG, inside the file, in a `data:` URI or as a file beside it, read by the engine's own decoders; the texture coordinates `TEXCOORD_0`; `alphaMode` `MASK` cuts out what is below `alphaCutoff` (leaves, fences, a sign's rounded corners; `BLEND` is drawn as `MASK` at 0.5, without sorting). An image decoded once serves every copy and every scene. Images are scaled to 1024 pixels at most. Without an image, detail textures still come from the material names (see Textures).
+- **Skins** (characters bent by a skeleton): joints, inverse bind matrices, four weights per vertex. The mesh is deformed on the CPU after each pose, then sent to the GPU again (a few thousand vertices cost a fraction of a millisecond); a skinned model plays its clips like any other.
+
+`node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part. Cubic-spline curves and morph targets are refused with a clear message; normal and metal/roughness maps are ignored (the toon look has no use for them).
 
 Paths are looked up on disk first, then in the classpath resources (`resources/models/…` in the module).
 

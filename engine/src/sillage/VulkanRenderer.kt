@@ -166,6 +166,9 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private val upFramebuffers=LongArray(BLOOM_LEVELS-1)
     private val meshes=IdentityHashMap<Mesh,Buffer>()
     private val effectBuffers=IdentityHashMap<Mesh,Buffer>()   // per-vertex light and sway, for the meshes that have them
+    // Meshes whose vertices change every frame (skinned parts): a buffer per frame in flight, sent again when their version moved.
+    private class Dynamic(val buffers: Array<Buffer>, val versions: IntArray)
+    private val dynamicMeshes=IdentityHashMap<Mesh,Dynamic>()
     private var zero: Buffer?=null                             // zeros, read as the effects of every other mesh
     /** Copies of one mesh to draw this frame: their model rows (12 floats each), reused from frame to frame. */
     private class Batch(val mesh: Mesh) { var count=0; var rows=FloatArray(12*8); var start=0L; var water: WaterLook?=null }
@@ -872,6 +875,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         dev.deviceWaitIdle()
         meshes.values.forEach { destroy(it) }; meshes.clear()
         effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
+        dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
         batches.clear(); quietBatches.clear(); skyBatches.clear(); shadowBatches.clear(); waterBatches.clear()
         for(f in frames) f.hudSent=null
     }
@@ -914,8 +918,23 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
 
     /** Sorts this frame's copies into batches, one per mesh (new meshes go to the GPU once). Apart from [dessiner], so the JIT compiles it on its own. */
     private fun gather(objets: List<Node>, hidden: Node?) {
+        fun effects(m: Mesh) {
+            val e=m.effects
+            if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
+            else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
+        }
         fun prepare(m: Mesh) {
-            if(m.vertices.isEmpty() || meshes.containsKey(m)) return
+            if(m.vertices.isEmpty()) return
+            if(m.dynamic) {
+                val d=dynamicMeshes.getOrPut(m) {
+                    effects(m)
+                    Dynamic(Array(FRAMES) { buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) }, IntArray(FRAMES) { -1 })
+                }
+                val v=m.version
+                if(d.versions[frameIndex]!=v) { upload(d.buffers[frameIndex],m.vertices); d.versions[frameIndex]=v }
+                return
+            }
+            if(meshes.containsKey(m)) return
             val b=buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
             upload(b,m.vertices); meshes[m]=b
             val e=m.effects
@@ -1108,7 +1127,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             handles.setAtIndex(JAVA_LONG,1,f.instances!!.buffer)
             fun draw(b: Batch) {
                 val m=b.mesh
-                handles.setAtIndex(JAVA_LONG,0,meshes[m]!!.buffer); handles.setAtIndex(JAVA_LONG,2,(effectBuffers[m] ?: zero!!).buffer)
+                handles.setAtIndex(JAVA_LONG,0,(if(m.dynamic) dynamicMeshes[m]!!.buffers[frameIndex] else meshes[m]!!).buffer)
+                handles.setAtIndex(JAVA_LONG,2,(effectBuffers[m] ?: zero!!).buffer)
                 offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start); offsets.setAtIndex(JAVA_LONG,2,0L)
                 dev.cmdBindVertexBuffers(command,0,3,handles,offsets)
                 dev.cmdDraw(command,m.vertices.size/9,b.count,0,0)
@@ -1269,6 +1289,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.deviceWaitIdle()
                 meshes.values.forEach { destroy(it) }; meshes.clear()
                 effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
+                dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
                 zero?.let { destroy(it) }; zero=null
                 for(f in frames) {
                     f.hud?.let { destroy(it) }; f.instances?.let { dev.unmapMemory(it.memory); destroy(it) }

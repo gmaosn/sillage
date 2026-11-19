@@ -94,9 +94,16 @@ class GlbTest {
         assertContains(e.message!!, "TEXCOORD_0")
     }
 
-    @Test fun squelettesRefuses() {
+    @Test fun squeletteSansOsRefuse() {
         val e = assertFailsWith<IllegalArgumentException> { Glb.read(triangle("""{"mesh":0}""", extra = ""","skins":[{}]""")) }
-        assertContains(e.message!!, "Skins")
+        assertContains(e.message!!, "joints")
+    }
+
+    /** Charger deux fois le même modèle (une scène qui recommence) ne refait pas ses textures : une fuite de 2,8 Mo par scène, trouvée par le contrôle qualité. */
+    @Test fun texturesDImagePartagees() {
+        val a = Glb.readModel(texturedTriangle()); val before = Texture.count()
+        val b = Glb.readModel(texturedTriangle())
+        assertSame(a.textures[0], b.textures[0]); assertEquals(before, Texture.count())
     }
 
     @Test fun fichierTronqueOuFauxRefuse() {

@@ -1,5 +1,6 @@
 package sillage
 
+import sillage.math.Mat4
 import sillage.math.Quat
 import sillage.math.Vec3
 import java.nio.ByteBuffer
@@ -128,5 +129,38 @@ class AnimationTest {
         var avant = 0f; var arriere = 0f
         repeat(36) { a.advance(1f / 60f); val z = tibia.pose.transformPoint(Vec3(0f, -.27f, 0f)).z; avant = minOf(avant, z); arriere = maxOf(arriere, z) }
         assertTrue(avant < -.2f && arriere > .2f, "pied entre $avant et $arriere")
+    }
+
+    private fun root(): Path {
+        var dir = Path.of("").toAbsolutePath()
+        while (!Files.exists(dir.resolve("project.yaml"))) dir = dir.parent
+        return dir
+    }
+
+    /** Un drapeau à squelette (quatre os en chaîne) : au repos il est tel qu'il a été lié, puis il ondule, attaché au mât. */
+    @Test fun unePeauSuitSesOs() {
+        val m = Glb.loadModel(root().resolve("demo/resources/models/drapeau.glb").toString())
+        assertEquals(1, m.skins.size); assertEquals(4, m.skins[0].joints.size)
+        assertTrue(m.flatten().triangleCount > 288, "la toile au repos et son mât en un maillage")
+        val parts = m.parts(); val a = Animator(m, parts)
+        val toile = parts.single { m.nodes[it.node].name == "toile" }
+        assertTrue(toile.mesh.dynamic)
+        // Au repos, la peau rend la toile telle qu'elle a été liée : à plat dans z = 0, de 0,04 à 0,94 m.
+        val r = toile.mesh.vertices
+        assertTrue((r.indices step 9).all { kotlin.math.abs(r[it + 2]) < 1e-5f })
+        assertEquals(.94f, (r.indices step 9).maxOf { r[it] }, 1e-4f, "au repos, la toile est où elle a été liée")
+        val v0 = toile.mesh.version
+        a.play("flotter", fade = 0f); a.advance(.4f)
+        assertTrue(toile.mesh.version > v0, "les sommets sont refaits à chaque pose")
+        assertEquals(Mat4.IDENTITY, toile.pose, "une pièce à squelette est déjà dans l'espace du modèle")
+        val v = toile.mesh.vertices
+        var hoist = 0f; var free = 0f
+        for (i in v.indices step 9) {
+            if (v[i] < .05f) hoist = maxOf(hoist, kotlin.math.abs(v[i + 2]))
+            if (v[i] > .8f) free = maxOf(free, kotlin.math.abs(v[i + 2]))
+        }
+        assertTrue(hoist < .003f, "la bordure du mât reste au mât (${hoist} m)")
+        assertTrue(free > .05f, "le bout libre ondule (${free} m)")
+        for (i in v.indices step 9) { val n = kotlin.math.sqrt(v[i + 3] * v[i + 3] + v[i + 4] * v[i + 4] + v[i + 5] * v[i + 5]); assertEquals(1f, n, 1e-3f) }
     }
 }

@@ -88,6 +88,21 @@ class Texture private constructor(
             return Texture(name, size, 1f, 1f, Mapping.UV) { resample(image, size) }
         }
 
+        private class Encoded(val bytes: ByteArray) {
+            private val hash = bytes.contentHashCode()
+            override fun hashCode() = hash
+            override fun equals(other: Any?) = other is Encoded && other.hash == hash && other.bytes.contentEquals(bytes)
+        }
+        private val images = HashMap<Encoded, Texture>()
+
+        /**
+         * The image texture of an encoded PNG or JPEG, decoded once per program: a scene that loads the same
+         * model again (a restart, the next level) gets the same texture, not one more on the GPU.
+         */
+        fun image(name: String, encoded: ByteArray): Texture = synchronized(images) {
+            images.getOrPut(Encoded(encoded.copyOf())) { image(name, sillage.io.Image.decode(encoded)) }
+        }
+
         /** Largest side of an image texture: larger images are scaled down (the texture array holds every texture at one size). */
         const val MAX_IMAGE = 1024
 

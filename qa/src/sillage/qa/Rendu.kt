@@ -94,7 +94,7 @@ fun Qa.rendu() {
     }
 
     // Géométrie des modèles de la démo.
-    val modeles = listOf("terrain", "village", "marin", "palmiers", "ciel", "port", "caisse", "ballon")
+    val modeles = listOf("terrain", "village", "marin", "palmiers", "ciel", "port", "caisse", "ballon", "enseigne", "drapeau")
     controle("modèles de la démo : triangles valides", "aucune valeur non finie, aucun triangle dégénéré dans les collisions") {
         val lignes = ArrayList<String>(); var ok = true
         for (nom in modeles) {

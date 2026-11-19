@@ -12,9 +12,9 @@ import java.nio.file.Path
 /**
  * glTF 2.0 binary (.glb) loader, in Kotlin. It reads the node hierarchy, the material or vertex
  * colours, the material names, the base colour textures (PNG or JPEG, in the file, in a data URI or
- * beside it; alpha masks) and the node animations (translation, rotation, scale; linear or step). Skins
- * and cubic-spline curves are refused with a message that says so. A path is looked up on disk first,
- * then in the classpath resources.
+ * beside it; alpha masks), skins (joints, inverse bind matrices, four weights per vertex) and the node
+ * animations (translation, rotation, scale; linear or step). Cubic-spline curves and morph targets are
+ * refused with a message that says so. A path is looked up on disk first, then in the classpath resources.
  */
 object Glb {
     /** The model in its rest pose as one mesh (static scenery). */
@@ -50,7 +50,6 @@ object Glb {
             }
         }
         val doc = requireNotNull(json) { "Missing JSON chunk" }
-        require(!doc.has("skins")) { "Skins (skeletons) are not supported yet: animate separate objects (nodes) instead" }
         val required = doc.arr("extensionsRequired")
         require(required == null || required.size == 0) { "Unsupported required GLB extensions: " + required }
         val buffers = doc.arr("buffers")
@@ -81,7 +80,7 @@ object Glb {
         }
         fun values(index: Int, type: String): List<FloatArray> {
             val (a, offset) = accessor(index, type)
-            val components = when(type) { "SCALAR" -> 1; "VEC2" -> 2; "VEC3" -> 3; "VEC4" -> 4; else -> error("Invalid accessor type " + type) }
+            val components = when(type) { "SCALAR" -> 1; "VEC2" -> 2; "VEC3" -> 3; "VEC4" -> 4; "MAT4" -> 16; else -> error("Invalid accessor type " + type) }
             val componentType = a.int("componentType")
             val width = when(componentType) {5126 -> 4; 5121 -> 1; 5123 -> 2; else -> error("Unsupported component type")}
             val v = views.obj(a.int("bufferView")!!)
@@ -132,7 +131,7 @@ object Glb {
                 img.string("uri") != null -> beside(java.net.URLDecoder.decode(img.string("uri")!!, Charsets.UTF_8))
                 else -> throw IllegalArgumentException("GLB: image $index has no data")
             }
-            Texture.image(img.string("name") ?: "image$index", sillage.io.Image.decode(data))
+            Texture.image(img.string("name") ?: "image$index", data)
         }
         val materialsJson = doc.arr("materials") ?: Json.Arr(emptyList())
         val textures = List(materialsJson.size) { m ->
@@ -147,16 +146,24 @@ object Glb {
             when (mat.string("alphaMode") ?: "OPAQUE") { "MASK" -> mat.float("alphaCutoff") ?: .5f; "BLEND" -> .5f; else -> 0f }
         }
 
-        /** Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; and their texture coordinates (6 floats each). */
-        fun triangles(meshIndex: Int): Pair<FloatArray, FloatArray> {
-            val out = ArrayList<Float>(); val uvOut = ArrayList<Float>()
+        /**
+         * Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; their
+         * texture coordinates (6 floats each); their skin weights (24 floats each: per vertex 4 joints, 4 weights).
+         */
+        fun triangles(meshIndex: Int): Triple<FloatArray, FloatArray, FloatArray> {
+            val out = ArrayList<Float>(); val uvOut = ArrayList<Float>(); val skinOut = ArrayList<Float>()
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
                 val p = primitive as Json.Obj
                 require((p.int("mode") ?: 4) == 4) { "Only triangles are supported" }
                 val attributes = requireNotNull(p.obj("attributes"))
                 val positions = values(requireNotNull(attributes.int("POSITION")), "VEC3")
+                require(!p.has("targets")) { "GLB: morph targets are not supported (use a skin or separate nodes)" }
                 val textured = p.int("material")?.let { it in textures.indices && textures[it] != null } == true
+                val joints = attributes.int("JOINTS_0")?.let { values(it, "VEC4") }
+                val weights = attributes.int("WEIGHTS_0")?.let { values(it, "VEC4") }
+                require((joints == null) == (weights == null)) { "GLB: JOINTS_0 and WEIGHTS_0 go together" }
+                require(joints == null || (joints.size >= positions.size && weights!!.size >= positions.size)) { "GLB: fewer skin weights than vertices" }
                 val uvs = attributes.int("TEXCOORD_0")?.let { values(it, "VEC2") }
                 require(!textured || uvs != null) { "GLB: a textured material needs texture coordinates (TEXCOORD_0)" }
                 require(uvs == null || uvs.size >= positions.size) { "GLB: fewer texture coordinates than vertices" }
@@ -181,9 +188,15 @@ object Glb {
                     out.add(vc.r); out.add(vc.g); out.add(vc.b)
                     out.add((p.int("material") ?: -1).toFloat())
                     for (v in intArrayOf(a, b, c)) { uvOut.add(uvs?.get(v)?.get(0) ?: 0f); uvOut.add(uvs?.get(v)?.get(1) ?: 0f) }
+                    if (joints != null) for (v in intArrayOf(a, b, c)) {
+                        val w = weights!![v]; val sum = w[0] + w[1] + w[2] + w[3]
+                        for (k in 0..3) skinOut.add(joints[v][k])
+                        // Weights brought to a sum of 1 (exporters round them); none: all on the first joint.
+                        for (k in 0..3) skinOut.add(if (sum > 0f) w[k] / sum else if (k == 0) 1f else 0f)
+                    }
                 }
             }
-            return out.toFloatArray() to uvOut.toFloatArray()
+            return Triple(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray())
         }
 
         val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
@@ -194,7 +207,7 @@ object Glb {
             require(parents[c] < 0 && c != i) { "Cycle or shared node in the GLB hierarchy" }
             parents[c] = i
         }
-        val meshCache = HashMap<Int, Pair<FloatArray, FloatArray>>()
+        val meshCache = HashMap<Int, Triple<FloatArray, FloatArray, FloatArray>>()
         val nodes = List(nodesJson.size) { i ->
             val node = nodesJson.obj(i)
             val matrix = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats().taille(16, "matrix")) }
@@ -208,6 +221,8 @@ object Glb {
                 matrix = matrix,
                 triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) }.first } ?: FloatArray(0),
                 uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).second } ?: FloatArray(0),
+                skin = node.int("skin")?.also { require(it in 0 until (doc.arr("skins")?.size ?: 0)) { "GLB: node $i uses a missing skin" } } ?: -1,
+                skinWeights = node.int("mesh")?.let { m -> meshCache.getValue(m).third } ?: FloatArray(0),
             )
         }
         val scenes = doc.arr("scenes")
@@ -241,6 +256,20 @@ object Glb {
             clips[nom] = Clip(nom, canaux)
         }
         val materialNames = doc.arr("materials")?.map { (it as Json.Obj).string("name") ?: "" } ?: emptyList()
-        return Model(nodes, racines, clips, materialNames, textures, cutoffs)
+        val skins = doc.arr("skins")?.mapIndexed { k, s ->
+            val skin = s as Json.Obj
+            val joints = requireNotNull(skin.arr("joints")?.ints()) { "GLB: skin $k without joints" }
+            require(joints.isNotEmpty() && joints.all { it in nodes.indices }) { "GLB: skin $k names a missing joint" }
+            val inverse = skin.int("inverseBindMatrices")?.let { a -> values(a, "MAT4").map { Mat4.fromColumnMajor(it) } } ?: List(joints.size) { Mat4.IDENTITY }
+            require(inverse.size >= joints.size) { "GLB: skin $k has fewer inverse bind matrices than joints" }
+            Skin(joints, inverse.take(joints.size))
+        } ?: emptyList()
+        for (n in nodes) if (n.skin >= 0) {
+            require(n.skinWeights.size == n.triangles.size / TRI * 24) { "GLB: a skinned mesh needs JOINTS_0 and WEIGHTS_0" }
+            val count = skins[n.skin].joints.size
+            for (t in 0 until n.skinWeights.size / 24) for (v in 0..2) for (k in 0..3)
+                require(n.skinWeights[24 * t + 8 * v + k].toInt() in 0 until count) { "GLB: a vertex names joint ${n.skinWeights[24 * t + 8 * v + k].toInt()} of a skin of $count" }
+        }
+        return Model(nodes, racines, clips, materialNames, textures, cutoffs, skins)
     }
 }

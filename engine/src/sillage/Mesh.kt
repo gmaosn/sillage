@@ -51,16 +51,25 @@ class Mesh(val vertices: FloatArray) {
     /** Per triangle, its material's index in the model it comes from (−1: none); null for meshes made by hand. */
     internal var materials: IntArray? = null
         private set
+    /**
+     * Its vertices change in place, every frame (a skinned part): the renderer sends them again when
+     * [version] has moved since. A copy that shares the array ([withEffects]…) stays dynamic.
+     */
+    internal var dynamic = false
+        private set
+    @Volatile internal var version = 0
     /** The same triangles with [effects] ([EFFECT_FLOATS] per vertex), keeping the materials. */
     internal fun withEffects(effects: FloatArray): Mesh {
         require(effects.size == vertices.size / 9 * EFFECT_FLOATS) { "$EFFECT_FLOATS effect floats per vertex" }
-        return Mesh(vertices).also { it.effects = effects; it.materials = materials }
+        return Mesh(vertices).also { it.effects = effects; it.materials = materials; it.dynamic = dynamic }
     }
     /** The same mesh, knowing the material of each triangle. */
     internal fun withMaterials(materials: IntArray): Mesh {
         require(materials.size == triangleCount) { "One material per triangle" }
-        return Mesh(vertices).also { it.materials = materials; it.effects = effects }
+        return Mesh(vertices).also { it.materials = materials; it.effects = effects; it.dynamic = dynamic }
     }
+    /** A copy of its own (vertices copied, materials and effects shared) whose vertices change every frame. */
+    internal fun dynamicCopy(): Mesh = Mesh(vertices.copyOf()).also { it.materials = materials; it.effects = effects; it.dynamic = true }
     /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
     internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
 

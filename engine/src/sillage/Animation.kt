@@ -19,9 +19,19 @@ class ModelNode internal constructor(
     internal val triangles: FloatArray,
     /** Per triangle, the texture coordinates of a, b, c (6 floats); empty when the mesh has none. */
     internal val uvs: FloatArray = FloatArray(0),
+    /** The skin that deforms its mesh ([Model.skins]), −1: none. */
+    val skin: Int = -1,
+    /** Per triangle, per vertex 4 joints (indices in the skin) then 4 weights (24 floats); empty without a skin. */
+    internal val skinWeights: FloatArray = FloatArray(0),
 ) {
     val local: Mat4 get() = matrix ?: Mat4.trs(translation, rotation, scale)
 }
+
+/**
+ * A skeleton: the nodes that act as its [joints] and, for each, the inverse of its place in the model
+ * when the mesh was bound to it. A skinned vertex goes where its joints take it, by their weights.
+ */
+class Skin internal constructor(val joints: IntArray, val inverseBind: List<Mat4>)
 
 /** What a channel animates. */
 enum class ChannelTarget(val components: Int) { TRANSLATION(3), ROTATION(4), SCALE(3) }
@@ -50,7 +60,32 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                                  /** The base colour texture of each material (null: plain colour). */
                                  val textures: List<Texture?> = emptyList(),
                                  /** Per material, the alpha below which it is cut out (0: opaque). */
-                                 internal val cutoffs: FloatArray = FloatArray(0)) {
+                                 internal val cutoffs: FloatArray = FloatArray(0),
+                                 /** The skeletons of the model's skinned meshes. */
+                                 val skins: List<Skin> = emptyList()) {
+    /** Each node's place in the model at rest. */
+    private val restWorld: Array<Mat4> by lazy {
+        val out = Array(nodes.size) { Mat4.IDENTITY }
+        for (i in order) out[i] = if (nodes[i].parent < 0) nodes[i].local else out[nodes[i].parent] * nodes[i].local
+        out
+    }
+
+    /** Joint matrices of a skin at rest: joint's place × inverse bind matrix. */
+    private val restJoints: List<Array<Mat4>> by lazy { skins.map { s -> Array(s.joints.size) { restWorld[s.joints[it]] * s.inverseBind[it] } } }
+
+    /** Vertex [v] of triangle [t] of skinned node [i] at rest, in the model's space (the node's own place is ignored, as glTF says). */
+    private fun skinnedRest(i: Int, t: Int, v: Int): Vec3 {
+        val n = nodes[i]; val m = restJoints[n.skin]; val w = n.skinWeights; val o = 24 * t + 8 * v
+        val p = Vec3(n.triangles[TRI * t + 3 * v], n.triangles[TRI * t + 3 * v + 1], n.triangles[TRI * t + 3 * v + 2])
+        var x = 0f; var y = 0f; var z = 0f
+        for (k in 0..3) {
+            val weight = w[o + 4 + k]
+            if (weight == 0f) continue
+            val q = m[w[o + k].toInt()].transformPoint(p)
+            x += q.x * weight; y += q.y * weight; z += q.z * weight
+        }
+        return Vec3(x, y, z)
+    }
     /**
      * The texture coordinates and textures of the triangles kept in a mesh ([kept]: the source triangle of each),
      * as [Mesh.effects]; null when none of them is textured.
@@ -84,8 +119,11 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         for (r in roots) visit(r)
     }.toIntArray()
 
+    /** A node's triangles as a mesh in its space (in its bind space when skinned), and per vertex its 4 joints and 4 weights. */
+    private class LocalMesh(val mesh: Mesh, val weights: FloatArray?)
+
     /** Each node's triangles as a mesh in node space (knowing each triangle's material), shared by every instance of the model. */
-    private val localMeshes: Map<Int, Mesh> by lazy {
+    private val localMeshes: Map<Int, LocalMesh> by lazy {
         order.filter { nodes[it].triangles.isNotEmpty() }.associateWith { i ->
             val g = MeshBuilder(); val t = nodes[i].triangles; val mats = ArrayList<Int>(); val kept = ArrayList<Int>()
             for (k in t.indices step TRI) {
@@ -96,7 +134,9 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             }
             val mesh = g.build().smooth().withMaterials(mats.toIntArray())
             val uvs = nodes[i].uvs
-            imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
+            val textured = imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
+            val sw = nodes[i].skinWeights
+            LocalMesh(textured, if (nodes[i].skin < 0) null else FloatArray(kept.size * 24) { j -> sw[24 * kept[j / 24] + j % 24] })
         }
     }
 
@@ -111,10 +151,11 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             val world = parent * n.local
             val mirrored = world.determinant3x3() < 0
             val t = n.triangles
+            val skinned = n.skin >= 0
             for (k in t.indices step TRI) {
-                val a = world.transformPoint(Vec3(t[k], t[k + 1], t[k + 2]))
-                val b = world.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
-                val c = world.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
+                val a = if (skinned) skinnedRest(i, k / TRI, 0) else world.transformPoint(Vec3(t[k], t[k + 1], t[k + 2]))
+                val b = if (skinned) skinnedRest(i, k / TRI, 1) else world.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
+                val c = if (skinned) skinnedRest(i, k / TRI, 2) else world.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
                 val color = Color(t[k + 9], t[k + 10], t[k + 11])
                 // Face normals recomputed, also after a negative scale; degenerate triangles are skipped.
                 val before = g.triangleCount
@@ -149,7 +190,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             val mirrored = world.determinant3x3() < 0
             val t = n.triangles
             for (k in t.indices step TRI) {
-                val pts = (0..2).map { v -> world.transformPoint(Vec3(t[k + 3 * v], t[k + 3 * v + 1], t[k + 3 * v + 2])) }
+                val pts = (0..2).map { v -> if (n.skin >= 0) skinnedRest(i, k / TRI, v) else world.transformPoint(Vec3(t[k + 3 * v], t[k + 3 * v + 1], t[k + 3 * v + 2])) }
                 for (p in if (mirrored) listOf(pts[0], pts[2], pts[1]) else pts) { pos.add(p.x); pos.add(p.y); pos.add(p.z) }
                 mat.add(t[k + 12].toInt())
             }
@@ -159,15 +200,26 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         return pos.toFloatArray() to mat.toIntArray()
     }
 
-    /** New parts for one instance: one per node that has triangles. */
-    fun parts(): List<Part> = order.filter { it in localMeshes }.map { Part(it, localMeshes.getValue(it)) }
+    /** New parts for one instance: one per node that has triangles; a skinned one gets its own mesh, deformed every frame. */
+    fun parts(): List<Part> = order.filter { it in localMeshes }.map { i ->
+        val local = localMeshes.getValue(i)
+        val w = local.weights
+        if (w == null) Part(i, local.mesh)
+        else Part(i, local.mesh.dynamicCopy()).also { it.skin = SkinBinding(nodes[i].skin, local.mesh.vertices, w) }
+    }
+}
+
+/** What deforms a skinned part: its skin, its vertices as bound (9 floats each), per vertex 4 joints and 4 weights. */
+internal class SkinBinding(val skin: Int, val bind: FloatArray, val weights: FloatArray) {
+    var joints = FloatArray(0)                 // per joint, the 12 floats of its matrix this frame (scratch)
 }
 
 /** A drawable piece of an animated node; [pose] places it in the node's space. */
 class Part internal constructor(val node: Int, mesh: Mesh) {
-    /** Its triangles (in its node's space). */
+    /** Its triangles (in its node's space; in the model's space for a skinned part, deformed every frame). */
     var mesh: Mesh = mesh
         internal set
+    internal var skin: SkinBinding? = null
     var pose: Mat4 = Mat4.IDENTITY
         internal set
 }
@@ -269,6 +321,48 @@ class Animator(val model: Model, private val parts: List<Part>) {
                 Quat(pr[4 * i], pr[4 * i + 1], pr[4 * i + 2], pr[4 * i + 3]), Vec3(ps[3 * i], ps[3 * i + 1], ps[3 * i + 2]))
             world[i] = if (nd.parent < 0) local else world[nd.parent]!! * local
         }
-        for (p in parts) p.pose = world[p.node]!!
+        for (p in parts) {
+            val s = p.skin
+            if (s == null) p.pose = world[p.node]!! else { p.pose = Mat4.IDENTITY; deform(p, s) }
+        }
+    }
+
+    /**
+     * A skinned part's vertices where its joints are now: each the weighted sum of what its joints'
+     * matrices (joint's pose × inverse bind matrix) make of it, normals likewise (uniform scales).
+     */
+    private fun deform(p: Part, s: SkinBinding) {
+        val skin = model.skins[s.skin]
+        val n = skin.joints.size
+        if (s.joints.size < 12 * n) s.joints = FloatArray(12 * n)
+        val j = s.joints
+        for (k in 0 until n) {
+            // Mat4 names its coefficients column first: mCR. Rows of the affine part, in 12 floats.
+            val m = world[skin.joints[k]]!! * skin.inverseBind[k]; val o = 12 * k
+            j[o] = m.m00; j[o + 1] = m.m10; j[o + 2] = m.m20; j[o + 3] = m.m30
+            j[o + 4] = m.m01; j[o + 5] = m.m11; j[o + 6] = m.m21; j[o + 7] = m.m31
+            j[o + 8] = m.m02; j[o + 9] = m.m12; j[o + 10] = m.m22; j[o + 11] = m.m32
+        }
+        val src = s.bind; val dst = p.mesh.vertices; val w = s.weights
+        for (v in 0 until src.size / 9) {
+            val i = 9 * v; val wo = 8 * v
+            val px = src[i]; val py = src[i + 1]; val pz = src[i + 2]; val nx = src[i + 3]; val ny = src[i + 4]; val nz = src[i + 5]
+            var x = 0f; var y = 0f; var z = 0f; var a = 0f; var b = 0f; var c = 0f
+            for (k in 0..3) {
+                val weight = w[wo + 4 + k]
+                if (weight == 0f) continue
+                val o = 12 * w[wo + k].toInt()
+                x += weight * (j[o] * px + j[o + 1] * py + j[o + 2] * pz + j[o + 3])
+                y += weight * (j[o + 4] * px + j[o + 5] * py + j[o + 6] * pz + j[o + 7])
+                z += weight * (j[o + 8] * px + j[o + 9] * py + j[o + 10] * pz + j[o + 11])
+                a += weight * (j[o] * nx + j[o + 1] * ny + j[o + 2] * nz)
+                b += weight * (j[o + 4] * nx + j[o + 5] * ny + j[o + 6] * nz)
+                c += weight * (j[o + 8] * nx + j[o + 9] * ny + j[o + 10] * nz)
+            }
+            dst[i] = x; dst[i + 1] = y; dst[i + 2] = z
+            val l = kotlin.math.sqrt(a * a + b * b + c * c)
+            if (l > 0f) { dst[i + 3] = a / l; dst[i + 4] = b / l; dst[i + 5] = c / l }
+        }
+        p.mesh.version++
     }
 }

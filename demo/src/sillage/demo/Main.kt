@@ -25,6 +25,8 @@ val island: Scene.() -> Unit = {
     model("models/palmiers.glb").play("vent")
     val port = model("models/port.glb").play("vie")
     lightsAndLife(village, port)
+    // Le drapeau du phare : une toile à squelette (quatre os), qui flotte dans le sens du vent.
+    model("models/drapeau.glb", at = vec(4, 7.12, -3)).rotate(y = -28).play("flotter")
     // L'enseigne du ponton : une image peinte (PNG dans le GLB), coins arrondis par découpe alpha.
     model("models/enseigne.glb", at = vec(-3.55, groundHeight(-3.55, 7.0), 7.0)).rotate(y = 160)
     block(-3.55f, 7.0f, 1.7f, 1.9f, .25f, thin = true)
