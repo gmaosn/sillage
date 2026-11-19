@@ -19,6 +19,43 @@ class CharacterTest {
         }
     }
 
+    /** Comme la scène : le monde avance d'abord (la plateforme bouge), puis le personnage. */
+    @Test fun unPontQuiAvanceTourneEtTangueEmporteLePersonnage() {
+        val w = world()
+        val deck = w.add(Box(2.5f, .1f, 2.5f), Vec3(0f, 1f, 0f), type = BodyType.KINEMATIC)
+        val c = Character(w, Vec3(1.2f, 1.15f, .6f))
+        repeat(30) { w.step(dt); c.update(Vec3.ZERO, 0f, dt) }
+        assertTrue(c.onGround && c.groundBody == deck)
+        fun local() = deck.rotation.conjugate().rotate(c.position - deck.position)
+        val start = local()
+        var t = 0f; var worst = 0f; var turned = 0f; var steps = 0f
+        repeat(240) {
+            t += dt
+            deck.moveTo(Vec3(1.5f * t, 1f + .15f * sin(2f * t), 0f), dt, Quat.rotationY(.4f * t))
+            w.step(dt); c.update(Vec3.ZERO, 0f, dt)
+            turned += c.platformTurn
+            worst = max(worst, (local() - start).length())
+            steps = max(steps, c.walkVelocity.length())
+        }
+        assertTrue(worst < .03f, "le personnage glisse sur le pont de ${worst * 100} cm")
+        assertEquals(.4f * 4f, turned, .02f, "il tourne avec le pont")
+        assertTrue(steps < .05f, "debout, il ne marche pas : ${c.walkVelocity}")
+        assertTrue(c.onGround)
+        // Il saute du pont qui file en ligne droite : en l'air il garde sa vitesse, et retombe à sa place.
+        val turn = deck.rotation
+        repeat(10) { t += dt; deck.moveTo(Vec3(1.5f * t, 1f, 0f), dt, turn); w.step(dt); c.update(Vec3.ZERO, 0f, dt) }
+        val before = local()
+        var jumped = false; var airborne = 0
+        repeat(120) { i ->
+            t += dt; deck.moveTo(Vec3(1.5f * t, 1f, 0f), dt, turn); w.step(dt)
+            c.update(Vec3.ZERO, if (i == 0) 6f else 0f, dt)
+            if (!c.onGround) { jumped = true; airborne++; assertEquals(1.5f, c.velocity.x, .05f, "en l'air, la vitesse du pont") }
+        }
+        assertTrue(jumped && airborne > 20, "le saut a eu lieu ($airborne images en l'air)")
+        assertTrue(c.onGround && c.groundBody == deck, "il retombe sur le pont")
+        assertTrue((local() - before).length() < .05f, "et à sa place : écart ${(local() - before).length() * 100} cm")
+    }
+
     @Test fun tombeEtSePose() {
         val w = world(); val c = Character(w, Vec3(0f, 3f, 0f))
         run(w, c, 2f)

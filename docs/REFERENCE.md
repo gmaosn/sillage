@@ -280,13 +280,18 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `remove(body)` | takes a body out; its id may be reused |
 | `body(id)`, `bodyCount`, `liveBodyCount` | |
 | `applyForce(body, force)` | at the centre, during the next step |
+| `addBall(a, b, anchor, collideConnected = false)`, `addHinge(a, b, anchor, axis, …)`, `addSlider(a, b, axis, anchor = b.position, …)`, `addFixed(a, b, anchor = b.position, …)` | joints; `a` null: the world |
+| `addDistance(a, anchorA, b, anchorB, length = null, collideConnected = true)`, `addSpring(a, anchorA, b, anchorB, hertz, dampingRatio = .5, length = null)`, `addRope(a, anchorA, b, anchorB, length = null)` | `DistanceJoint`s |
+| `addChain(from, to, links, radius = .03, start = null, end = null, density = 2000, friction = .6)` | capsule links joined by ball joints |
+| `removeJoint(joint)`, `jointList` | |
 | `step(dt)` | advances, then tells the triggers who came in and who left |
 | `contacts()`, `pairCount`, `contactCount` | the last step's contacts |
 | `raycast(origin, direction, maxDistance, radius = 0, meshes = true, filter = null)` | a `RayHit` or null; with a radius, a sphere sweep |
 | `groundBelow(x, z, fromY = 1000, depth = 2000, filter = null)` | a downward ray |
 | `overlaps(shape, position, rotation = IDENTITY, margin = 0, exclude = null)` | `Overlap`s of a shape placed there |
 | `addTrigger(shape, position, rotation = IDENTITY)`, `removeTrigger(trigger)` | trigger zones |
-| `gravity`, `substeps`, `contactHertz`, `contactDampingRatio`, `contactSpeed`, `restitutionThreshold`, `speculativeDistance`, `supportRatio`, `sleepLinearSpeed`, `timeToSleep`, `gyroscopic`, `parallel`, `vectorized` | settings (see PHYSICS.md) |
+| `gravity`, `substeps`, `contactHertz`, `contactDampingRatio`, `contactSpeed`, `restitutionThreshold`, `speculativeDistance`, `supportRatio`, `sleepLinearSpeed`, `timeToSleep`, `gyroscopic`, `parallel`, `vectorized`, `jointHertz`, `jointDampingRatio`, `continuous` | settings (see PHYSICS.md) |
+| `continuousHits` | bodies put back by continuous collision so far |
 | `lastStepVectorized` | whether the last step solved its contacts on SIMD lanes (`--add-modules jdk.incubator.vector`) |
 | `profiling`, `phaseNanos` | time per phase, accumulated while `profiling` |
 
@@ -301,6 +306,8 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `friction`, `restitution`, `rollingResistance`, `linearDamping`, `angularDamping`, `gravityScale` | |
 | `type`, `shape`, `isSleeping`, `isRemoved`, `tag` | |
 | `applyImpulse(impulse, point = position)` | dynamic bodies only |
+| `applyForce(force, point = position)` | during the next step, spread over its substeps |
+| `isBullet` | swept against every body, not only against what does not move |
 | `moveTo(target, dt, targetRotation = null)` | kinematic bodies: velocities that reach the target in `dt` |
 
 ### Shapes
@@ -321,6 +328,31 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 - `Overlap`: `body`, `material`, `point`, `normal` (from the obstacle to the shape), `separation` (negative: overlap).
 - `Contact`: `a` (null for a mesh), `b`, `point`, `normal` (from a to b), `separation`, `normalImpulse`.
 
+### Joints
+
+`Joint` (sealed): `a` (null: the world), `b`, `anchorA`, `anchorB` (where they are now), `collideConnected`, `enabled`, `isRemoved`, `force` (N, during the last step).
+
+- `BallJoint`.
+- `HingeJoint`: `angle`, `speed`, `axis`; `limits(lower, upper)`, `motor(speed, maxTorque)`, `spring(hertz, dampingRatio = 1, angle = 0)`; their settings read back (`lowerAngle`, `motorSpeed`, `springHertz`…).
+- `SliderJoint`: `translation`, `speed`, `axis`; `limits(lower, upper)`, `motor(speed, maxForce)`, `spring(hertz, dampingRatio = 1, position = 0)`.
+- `FixedJoint`.
+- `DistanceJoint`: `length` (settable), `currentLength`, `rope`, `minLength`, `maxLength`, `springHertz`; `spring(hertz, dampingRatio = .5)`, `limits(min, max)`.
+
+A `null` in `limits` or `motor` turns them off.
+
+### `Vehicle`
+
+`Vehicle(world, chassis, forward = Vec3.Z, up = Vec3.Y)`: a raycast vehicle on a dynamic chassis; `update(dt)` before each step.
+
+| Member | |
+|---|---|
+| `addWheel(mount, radius = .35, travel = .3, steered = false, driven = true, handbraked = !steered)` | a `Wheel` hanging at `mount` (chassis frame) when the spring is out |
+| `throttle` (−1..1), `brake` (0..1), `steering` (−1 left..1 right), `handbrake` | the driver |
+| `driveForce`, `topSpeed`, `reverseSpeed`, `brakeForce`, `maxSteer`, `steerSpeed`, `suspensionHertz`, `suspensionDamping`, `grip`, `rollingResistance`, `rollInfluence` | its make |
+| `speed`, `wheels`, `wheelsOnGround` | |
+
+`Wheel`: `mount`, `radius`, `travel`, `steered`, `driven`, `handbraked`; after each update `compression`, `onGround`, `contact`, `normal`, `ground`, `load` (N), `slip` (m/s), `spin`, `spinSpeed`, `steer`, `center` and `rotation` (where to draw it).
+
 ### `Trigger`
 
 Made by `addTrigger`. `world`, `shape`, `position`, `rotation`, `filter: (Body) -> Boolean` (bodies that are not static, by default), `enabled`, `onEnter`, `onExit`, `inside`.
@@ -334,6 +366,7 @@ Made by `addTrigger`. `world`, `shape`, `position`, `rotation`, `filter: (Body) 
 | `update(walk, jumpSpeed, dt)` | after `world.step`: `walk` is the wanted horizontal velocity, `jumpSpeed` > 0 jumps |
 | `teleport(feet)` | |
 | `position`, `velocity`, `onGround`, `groundNormal`, `groundBody`, `groundMaterial`, `pushing` | state after the last update |
+| `platformVelocity`, `platformTurn`, `walkVelocity` | what the ground carried it by during the last update, and its own steps |
 | `gravity` (−22 m/s²), `maxSlope` (50°), `stepHeight` (0.35 m), `snapDistance` (0.3 m), `pushForce` (400 N), `mass` | settings |
 | `body` | its kinematic capsule in the world |
 

@@ -116,6 +116,33 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
 
 private fun boundary(c: Int, step: Int, size: Float) = (c - 4096 + (if (step > 0) 1 else 0)) * size
 
+/**
+ * Continuous collision's sweep: a sphere of [radius] from (ox, oy, oz) along the unit (dx, dy, dz) over
+ * [length], against the meshes and the bodies in [targets] (every body when null), body [self] and the
+ * bodies a joint keeps apart from it excepted. No grid, no allocation: the distance, or NaN.
+ */
+internal fun PhysicsWorld.sweepCore(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, length: Float,
+                                    radius: Float, self: Int, targets: IntList?): Float {
+    val r = ray
+    r.ox = ox; r.oy = oy; r.oz = oz; r.dx = dx; r.dy = dy; r.dz = dz
+    r.radius = radius; r.best = length; r.hit = false; r.body = -1; r.material = null
+    if (targets == null) { for (i in 0 until count) if (i != self && !joinedApart(self, i)) consider(i, r, null) }
+    else for (k in 0 until targets.size) { val i = targets[k]; if (i != self && !joinedApart(self, i)) consider(i, r, null) }
+    val stack = queryStack; val found = queryFound
+    val ex = ox + dx * length; val ey = oy + dy * length; val ez = oz + dz * length
+    for (mesh in meshes) {
+        found.clear()
+        mesh.query(min(ox, ex) - radius, min(oy, ey) - radius, min(oz, ez) - radius,
+            max(ox, ex) + radius, max(oy, ey) + radius, max(oz, ez) + radius, found, stack)
+        for (f in 0 until found.size) {
+            val t = found[f]
+            val h = sweepTriangle(r, r.tri.load(mesh, t), r.best, 0)
+            if (h <= r.best) r.keep(h, 0, -1, null)
+        }
+    }
+    return if (r.hit) r.best else Float.NaN
+}
+
 /** Tests body [i] against the ray, keeping it if it is the nearest hit so far. */
 private fun PhysicsWorld.consider(i: Int, r: RayQuery, filter: ((Body) -> Boolean)?) {
     if (removed[i]) return

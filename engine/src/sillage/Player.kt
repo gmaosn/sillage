@@ -73,7 +73,7 @@ class Player internal constructor(scene: Scene, val character: Character, var sp
     val onGround: Boolean get() = character.onGround
     val velocity: Vec3 get() = character.velocity
     /** True while it really moves (not only pushing against a wall). */
-    val isMoving: Boolean get() = character.velocity.let { it.x * it.x + it.z * it.z } > .16f
+    val isMoving: Boolean get() = character.walkVelocity.let { it.x * it.x + it.z * it.z } > .16f
 
     private var wish = Vec3.ZERO
     private var wishWalk = false
@@ -113,6 +113,8 @@ class Player internal constructor(scene: Scene, val character: Character, var sp
         if (buffered > 0f && coyote > 0f) { up = jumpSpeed; buffered = 0f; coyote = 0f }
         buffered = max(0f, buffered - dt)
         character.update(wish * (if (wishWalk) walkSpeed else runSpeed), up, dt)
+        // A turning platform turns it too (its yaw: about the vertical, counter-clockwise seen from above).
+        if (character.platformTurn != 0f) rotation = Quat.rotationY(character.platformTurn) * rotation
         // Facing: where it walks, or in first person where it looks.
         if (scene.camera.mode == CameraMode.FIRST_PERSON && scene.camera.target === this) rotation = Quat.rotationY(scene.camera.yaw * PI.toFloat() / 180f)
         else if (wish.lengthSquared() > .01f) {
@@ -141,7 +143,9 @@ class Player internal constructor(scene: Scene, val character: Character, var sp
         airTime = if (onGround) 0f else airTime + dt
         if (onGround && before > anim.landAfter && has(anim.land)) landing = .22f
         celebrating = max(0f, celebrating - dt); landing = max(0f, landing - dt)
-        val speed = sqrt(velocity.x * velocity.x + velocity.z * velocity.z)
+        // Its own steps: standing on a boat that moves is standing.
+        val steps = character.walkVelocity
+        val speed = sqrt(steps.x * steps.x + steps.z * steps.z)
         idleTime = if (speed < .3f && onGround && celebrating == 0f) idleTime + dt else 0f
         when {
             velocity.y > 0f && !onGround && has(anim.jump) -> a.play(anim.jump!!, loop = false, fade = .08f, speed = 1f)

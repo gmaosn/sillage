@@ -1,6 +1,8 @@
 package sillage.physics
 
+import sillage.math.Quat
 import sillage.math.Vec3
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -13,7 +15,9 @@ import kotlin.math.sqrt
  * is moved by the game, not by forces. It slides along walls, walks up gentle slopes and slides down
  * steep ones, climbs low steps, sticks to the ground when walking downhill, stands on bodies (and
  * weighs on them) and pushes them according to their mass: a heavy crate slows it down, a ball does
- * not. A kinematic capsule follows it in the world so that bodies collide with it.
+ * not. What it stands on carries it: a boat, a lift, a turning platform, a sliding crate; leaving one
+ * (a jump, a step off), it keeps the platform's speed until it lands. A kinematic capsule follows it in
+ * the world so that bodies collide with it.
  *
  * [position] is the point between the feet.
  */
@@ -48,6 +52,19 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
     /** The movable body pushed during the last update, if any. */
     var pushing: Body? = null
         private set
+    /** Velocity of the ground that carried it during the last update (m/s): zero on still ground. */
+    var platformVelocity: Vec3 = Vec3.ZERO
+        private set
+    /** How far the ground turned it about the vertical during the last update (radians, as [Quat.rotationY]). */
+    var platformTurn = 0f
+        private set
+    /** Its own steps: [velocity] without what the ground carried (for walk animations). */
+    val walkVelocity: Vec3 get() = velocity - platformVelocity
+
+    private var platform: Body? = null
+    private var platformLocal = Vec3.ZERO             // the feet in the platform's frame
+    private var platformRotation = Quat.IDENTITY
+    private var carried = Vec3.ZERO                   // a platform's velocity kept in the air after leaving it
 
     private val shape = Capsule(radius, (height - 2 * radius) / 2)
     /** Kinematic capsule in the world: what other bodies bump into. */
@@ -66,6 +83,7 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
     /** Puts the character at [feet] at once (respawn). */
     fun teleport(feet: Vec3) {
         position = feet; velocity = Vec3.ZERO; fall = 0f; onGround = false
+        platform = null; carried = Vec3.ZERO; platformVelocity = Vec3.ZERO; platformTurn = 0f
         body.position = center(feet); body.velocity = Vec3.ZERO
     }
 
@@ -76,17 +94,47 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
     fun update(walk: Vec3, jumpSpeed: Float, dt: Float) {
         val start = position
         pushing = null
+        // Carried over this update's time by the platform, it does not add the platform's speed again.
+        val carriedNow = carry(dt)
         rest += dt.coerceIn(0f, .1f)
         var jump = jumpSpeed
+        if (jump > 0f) { carried = platformVelocity; jump += max(0f, platformVelocity.y) }
         val h = 1f / 120f
-        while (rest >= h) { substep(walk, jump, h); jump = 0f; rest -= h }
+        while (rest >= h) { substep(walk, jump, h, !carriedNow); jump = 0f; rest -= h }
         velocity = if (dt > 0f) (position - start) / dt else Vec3.ZERO
         body.moveTo(center(position), dt.coerceAtLeast(1e-4f))
+        // What it stands on now carries it next time; off it, it keeps the platform's speed until it lands.
+        val g = groundBody
+        if (onGround) {
+            carried = Vec3.ZERO
+            platform = g
+            if (g != null) { platformRotation = g.rotation; platformLocal = platformRotation.conjugate().rotate(position - g.position) }
+        } else {
+            if (platform != null && jumpSpeed <= 0f) carried = platformVelocity
+            platform = null
+        }
     }
 
-    private fun substep(walk: Vec3, jumpSpeed: Float, h: Float) {
+    /** Moves the feet with the platform they stood on: where their place on it went since, and how it turned. */
+    private fun carry(dt: Float): Boolean {
+        platformVelocity = Vec3.ZERO; platformTurn = 0f
+        val g = platform ?: return false
+        if (g.isRemoved || dt <= 0f) { platform = null; return false }
+        val rotation = g.rotation
+        val delta = g.position + rotation.rotate(platformLocal) - position
+        // A teleported platform (a respawn, a level change) does not drag the character along.
+        if (delta.length() > MAX_CARRY) { platform = null; return false }
+        position += delta
+        platformVelocity = delta / dt
+        val forward = (rotation * platformRotation.conjugate()).rotate(Vec3(0f, 0f, 1f))
+        if (forward.x * forward.x + forward.z * forward.z > 1e-8f) platformTurn = atan2(forward.x, forward.z)
+        return true
+    }
+
+    private fun substep(walk: Vec3, jumpSpeed: Float, h: Float, addCarried: Boolean) {
         val wasOnGround = onGround
         var vx = walk.x; var vz = walk.z
+        if (addCarried && !onGround) { vx += carried.x; vz += carried.z }
         var vy: Float
         if (jumpSpeed > 0f) { vy = jumpSpeed; fall = jumpSpeed; onGround = false }
         else if (onGround) {
@@ -274,5 +322,6 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         val DOWN = Vec3(0f, -1f, 0f)
         const val LIFT = .05f
         const val MAX_PUSH = .25f
+        const val MAX_CARRY = 2f
     }
 }

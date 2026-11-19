@@ -138,7 +138,9 @@ When a model is animated, a collider can follow one of its parts: `port.collider
 
 The world is `physics`, a `PhysicsWorld`: `raycast(origin, direction, distance, radius)` for rays and sphere sweeps, `overlaps(shape, position)` for what a shape would touch, `groundBelow(x, z)`, and gravity. `groundHeight(x, z)` is the height of the solid meshes below a point, handy to put things on a terrain.
 
-The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours. Fast thin objects can still tunnel (there is no continuous collision yet). [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
+The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours, continuous collision for fast bodies (`body.isBullet` for projectiles).
+
+Bodies can be joined: `physics.addHinge(post.body, door.body, anchor, axis = Vec3.Y)` hangs a door, `addBall` a lantern, `addSlider` a lift, `addFixed` glues, `addSpring` and `addRope` pull, `addChain` makes a chain; hinges and sliders take limits, motors and springs. `Vehicle(physics, car.body)` turns a box into a car with suspension, steering, brakes and tyres that skid. A player standing on anything that moves (the boat, a lift, a turning platform, a floating crate) is carried by it, and keeps its speed when jumping off. [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
 
 ## The player
 

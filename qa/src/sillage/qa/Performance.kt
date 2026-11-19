@@ -14,6 +14,7 @@ import java.lang.management.ManagementFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Random
+import kotlin.math.sin
 
 private const val DT = 1f / 60f
 
@@ -65,6 +66,17 @@ fun Qa.performance() {
         repeat(20) { w.step(DT) }
         repeat(40) { val t = System.nanoTime(); w.step(DT); temps.add((System.nanoTime() - t) / 1e6) }
         mesure("physique.pyramide", "pas physique, pyramide de 55 caisses éveillées", "ms", mediane(temps))
+    }
+
+    run {
+        // Cent maillons en apesanteur, qui ondulent : des rotules seules, sans contacts ni sommeil.
+        val w = PhysicsWorld(gravity = Vec3.ZERO); w.timeToSleep = Float.MAX_VALUE
+        val maillons = w.addChain(Vec3(0f, 5f, 0f), Vec3(30f, 5f, 0f), 100, radius = .03f)
+        for ((k, l) in maillons.withIndex()) l.velocity = Vec3(0f, sin(k * .3f) * 2f, 0f)
+        val temps = ArrayList<Double>()
+        repeat(120) { w.step(DT) }
+        repeat(240) { val t = System.nanoTime(); w.step(DT); temps.add((System.nanoTime() - t) / 1e6) }
+        mesure("physique.chaine100", "pas physique, chaîne de 100 maillons (rotules)", "ms", mediane(temps))
     }
 
     run {

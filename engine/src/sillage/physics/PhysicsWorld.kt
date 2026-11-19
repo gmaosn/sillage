@@ -24,13 +24,15 @@ private const val VX = 0; private const val VY = 1; private const val VZ = 2
 private const val WX = 3; private const val WY = 4; private const val WZ = 5
 private const val IM = 6; private const val I0 = 7
 private const val DPX = 13; private const val DQX = 16; private const val DQW = 19
+/** How far before the surface continuous collision puts a body back (m). */
+private const val CCD_SLOP = .005f
 
 /** One contact point of the last step, see [PhysicsWorld.contacts]. */
 class Contact(val a: Body?, val b: Body, val point: Vec3, val normal: Vec3, val separation: Float, val normalImpulse: Float)
 
 /** Handle to a body of a [PhysicsWorld]. Two handles to the same body are equal. */
 @ValueCandidate
-class Body internal constructor(private val world: PhysicsWorld, val id: Int) {
+class Body internal constructor(internal val world: PhysicsWorld, val id: Int) {
     private val o get() = id * S
     val type: BodyType get() = world.types[id]
     val shape: Shape get() = world.shapes[id]!!
@@ -69,6 +71,13 @@ class Body internal constructor(private val world: PhysicsWorld, val id: Int) {
     val isSleeping: Boolean get() = world.sleeping[id]
     /** True once [PhysicsWorld.remove] took it out (its slot may since hold another body). */
     val isRemoved: Boolean get() = world.removed[id]
+    /**
+     * A projectile: swept against every body each step, not only against what does not move (any fast
+     * body is swept against those). Costs a sweep per step while it is fast.
+     */
+    var isBullet: Boolean
+        get() = world.bullet[id]
+        set(v) { world.bullet[id] = v }
     /** Free label for the game (a role, a group, the object it moves…); the engine never reads it. */
     var tag: Any?
         get() = world.tags[id]
@@ -78,6 +87,16 @@ class Body internal constructor(private val world: PhysicsWorld, val id: Int) {
     fun applyImpulse(impulse: Vec3, point: Vec3 = position) {
         if (world.types[id] != BodyType.DYNAMIC) return
         world.wake(id)
+        nudge(impulse, point)
+    }
+
+    /** A force (N) at [point] (the centre by default) during the next step: an engine, a thruster, the wind. */
+    fun applyForce(force: Vec3, point: Vec3 = position) = world.addForce(id, force, point, steady = false)
+
+    /** [applyForce] for a force applied every step (a suspension, a float): an awake body still falls asleep. */
+    internal fun applySteadyForce(force: Vec3, point: Vec3) = world.addForce(id, force, point, steady = true)
+
+    private fun nudge(impulse: Vec3, point: Vec3) {
         val m = world.st[o + IM]
         world.st[o + VX] += impulse.x * m; world.st[o + VY] += impulse.y * m; world.st[o + VZ] += impulse.z * m
         world.prepareInertia(id)
@@ -147,8 +166,11 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private var round = BooleanArray(0)
     internal var sleeping = BooleanArray(0); private var sleepClock = FloatArray(0)
     internal var removed = BooleanArray(0)
+    internal var bullet = BooleanArray(0)
     private val free = IntList()
     private var fx = FloatArray(0); private var fy = FloatArray(0); private var fz = FloatArray(0)
+    private var tx = FloatArray(0); private var ty = FloatArray(0); private var tz = FloatArray(0)      // torques
+    private var torqued = false
     private var q0 = FloatArray(0)
     private var box = FloatArray(0)
     private var poses = Array(0) { Pose() }
@@ -194,8 +216,9 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         friction = friction.copyOf(c); restitution = restitution.copyOf(c)
         linearDamping = linearDamping.copyOf(c); angularDamping = angularDamping.copyOf(c); gravityScale = gravityScale.copyOf(c)
         rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c); round = round.copyOf(c)
-        sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c); removed = removed.copyOf(c)
+        sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c); removed = removed.copyOf(c); bullet = bullet.copyOf(c)
         fx = fx.copyOf(c); fy = fy.copyOf(c); fz = fz.copyOf(c)
+        tx = tx.copyOf(c); ty = ty.copyOf(c); tz = tz.copyOf(c)
         q0 = q0.copyOf(4 * c); box = box.copyOf(6 * c)
         poses = Array(c) { if (it < capacity) poses[it] else Pose() }
         capacity = c
@@ -211,8 +234,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         queryGrid.valid = false
         val i = if (free.size > 0) free.pop() else { if (count == capacity) grow(); count++ }
         // A reused slot starts afresh.
-        removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null; poses[i].px = Float.NaN
-        fx[i] = 0f; fy[i] = 0f; fz[i] = 0f; java.util.Arrays.fill(st, i * S, i * S + S, 0f)
+        removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null; poses[i].px = Float.NaN; bullet[i] = false
+        fx[i] = 0f; fy[i] = 0f; fz[i] = 0f; tx[i] = 0f; ty[i] = 0f; tz[i] = 0f; java.util.Arrays.fill(st, i * S, i * S + S, 0f)
         linearDamping[i] = 0f; angularDamping[i] = 0f
         types[i] = type; shapes[i] = shape
         px[i] = position.x; py[i] = position.y; pz[i] = position.z
@@ -250,6 +273,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             if (box[p] <= box[o + 3] + .05f && box[p + 3] >= box[o] - .05f && box[p + 1] <= box[o + 4] + .05f &&
                 box[p + 4] >= box[o + 1] - .05f && box[p + 2] <= box[o + 5] + .05f && box[p + 5] >= box[o + 2] - .05f) wake(j)
         }
+        // Its joints go with it (what they held wakes up).
+        if (joints.isNotEmpty()) for (j in joints.filter { it.ia == i || it.ib == i }) removeJoint(j)
         removed[i] = true; types[i] = BodyType.STATIC; sleeping[i] = false; tags[i] = null
         queryGrid.valid = false
         java.util.Arrays.fill(st, i * S, i * S + 6, 0f)
@@ -269,8 +294,176 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
     internal fun wake(i: Int) { sleeping[i] = false; sleepClock[i] = 0f }
 
+    // ------------------------------------------------------------------ joints
+
+    /**
+     * Stiffness of the joints' correction (Hz) and its damping ratio (Box2D v3's). It is capped at a quarter
+     * of the substep rate (60 Hz with 4 substeps at 60 steps a second): stiffer, the correction overshoots
+     * and the joints explode. A light body holding a heavy one gives a little (a 2 m beam of four welded
+     * boxes sags 5 cm); more [substeps] with a higher [jointHertz] make it stiffer (8 and 120 Hz: 1.2 cm).
+     */
+    var jointHertz = 60f
+    var jointDampingRatio = 2f
+    private val joints = ArrayList<Joint>()
+    /** The joints in the world, in the order they were added. */
+    val jointList: List<Joint> get() = joints
+    private var noCollide = LongArray(0); private var noCollideCount = 0
+    private var noCollideDirty = false
+    private var jointed = BooleanArray(0)                // per body: in a joint whose bodies do not collide
+
+    private fun checkJoint(a: Body?, b: Body) {
+        require(b.world === this && (a == null || a.world === this)) { "Both bodies must be in this world" }
+        require(!b.isRemoved && (a == null || !a.isRemoved)) { "A removed body cannot be joined" }
+        require(a != b) { "A body cannot be joined to itself" }
+        require(b.type == BodyType.DYNAMIC || a?.type == BodyType.DYNAMIC) { "A joint needs a dynamic body" }
+    }
+    private fun <J : Joint> keep(j: J): J { joints.add(j); noCollideDirty = true; wakeJoint(j); return j }
+
+    /** A ball joint at [anchor] (world): [b] hangs from [a], or from the world when [a] is null. */
+    fun addBall(a: Body?, b: Body, anchor: Vec3, collideConnected: Boolean = false): BallJoint {
+        checkJoint(a, b); return keep(BallJoint(this, a, b, anchor, collideConnected))
+    }
+    /** A hinge at [anchor] turning about [axis] (world): a door, a wheel, a lever. */
+    fun addHinge(a: Body?, b: Body, anchor: Vec3, axis: Vec3, collideConnected: Boolean = false): HingeJoint {
+        checkJoint(a, b); require(axis.lengthSquared() > 1e-12f) { "A hinge needs an axis" }
+        return keep(HingeJoint(this, a, b, anchor, axis, collideConnected))
+    }
+    /** A slider along [axis] (world): [b] moves along it relative to [a] without turning. */
+    fun addSlider(a: Body?, b: Body, axis: Vec3, anchor: Vec3 = b.position, collideConnected: Boolean = false): SliderJoint {
+        checkJoint(a, b); require(axis.lengthSquared() > 1e-12f) { "A slider needs an axis" }
+        return keep(SliderJoint(this, a, b, anchor, axis, collideConnected))
+    }
+    /** Glues [b] to [a] (or to the world) as they are now. */
+    fun addFixed(a: Body?, b: Body, anchor: Vec3 = b.position, collideConnected: Boolean = false): FixedJoint {
+        checkJoint(a, b); return keep(FixedJoint(this, a, b, anchor, collideConnected))
+    }
+    /** Keeps [anchorA] on [a] and [anchorB] on [b] at their present distance (or [length]); see [DistanceJoint.spring]. */
+    fun addDistance(a: Body?, anchorA: Vec3, b: Body, anchorB: Vec3, length: Float? = null, collideConnected: Boolean = true): DistanceJoint {
+        checkJoint(a, b)
+        return keep(DistanceJoint(this, a, b, anchorA, anchorB, collideConnected, rope = false).also { j -> length?.let { j.length = it } })
+    }
+    /** A spring between [anchorA] on [a] and [anchorB] on [b], resting at [length] (default: as they are now). */
+    fun addSpring(a: Body?, anchorA: Vec3, b: Body, anchorB: Vec3, hertz: Float, dampingRatio: Float = .5f, length: Float? = null): DistanceJoint =
+        addDistance(a, anchorA, b, anchorB, length).also { it.spring(hertz, dampingRatio) }
+    /** A rope: [b] can come closer than [length] (default: as they are now), never farther. */
+    fun addRope(a: Body?, anchorA: Vec3, b: Body, anchorB: Vec3, length: Float? = null): DistanceJoint {
+        checkJoint(a, b)
+        return keep(DistanceJoint(this, a, b, anchorA, anchorB, collideConnected = true, rope = true).also { j -> length?.let { j.length = it } })
+    }
+
+    /**
+     * A chain of [links] capsules from [from] to [to], joined end to end by ball joints; the first link
+     * hangs from [start] (or the world) at [from], the last from [end] at [to] when given. Returns the links.
+     */
+    fun addChain(from: Vec3, to: Vec3, links: Int, radius: Float = .03f, start: Body? = null, end: Body? = null,
+                 density: Float = 2000f, friction: Float = .6f): List<Body> {
+        require(links >= 1) { "A chain needs a link" }
+        val span = to - from; val length = span.length()
+        require(length > 2 * radius * links) { "The links would be shorter than they are wide" }
+        val dir = span / length; val step = length / links
+        val turn = Quat.fromTo(Vec3.Y, dir)
+        val bodies = ArrayList<Body>()
+        var previous = start
+        for (k in 0 until links) {
+            val centre = from + dir * (step * (k + .5f))
+            val link = add(Capsule(radius, max(step / 2 - radius, .001f)), centre, turn, density = density, friction = friction)
+            if (previous != null || k == 0) addBall(previous, link, from + dir * (step * k))
+            bodies.add(link); previous = link
+        }
+        if (end != null) addBall(end, bodies.last(), to)
+        return bodies
+    }
+
+    /** Takes [joint] out of the world: its bodies are free again (and collide again if they did not). */
+    fun removeJoint(joint: Joint) {
+        require(joint.world === this) { "This joint is not in this world" }
+        if (joint.isRemoved) return
+        wakeJoint(joint)
+        joint.isRemoved = true
+        joints.remove(joint); noCollideDirty = true
+    }
+
+    /** Wakes the bodies of [j] (a setting changed: a motor started, a limit moved). */
+    internal fun wakeJoint(j: Joint) {
+        noCollideDirty = true
+        if (j.ia >= 0 && types[j.ia] == BodyType.DYNAMIC && !removed[j.ia]) wake(j.ia)
+        if (types[j.ib] == BodyType.DYNAMIC && !removed[j.ib]) wake(j.ib)
+    }
+
+    /** The pairs of bodies a joint keeps from colliding, sorted for a binary search. */
+    private fun rebuildNoCollide() {
+        noCollideDirty = false
+        if (jointed.size < capacity) jointed = BooleanArray(capacity) else jointed.fill(false)
+        if (noCollide.size < joints.size) noCollide = LongArray(joints.size * 2)
+        var n = 0
+        for (j in joints) {
+            if (j.collideConnected || !j.enabled || j.ia < 0) continue
+            noCollide[n++] = pairKey(j.ia, j.ib); jointed[j.ia] = true; jointed[j.ib] = true
+        }
+        java.util.Arrays.sort(noCollide, 0, n)
+        noCollideCount = n
+    }
+    private fun pairKey(i: Int, j: Int) = (min(i, j).toLong() shl 32) or max(i, j).toLong()
+    internal fun joinedApart(i: Int, j: Int) = noCollideCount > 0 && jointed[i] && jointed[j] &&
+        java.util.Arrays.binarySearch(noCollide, 0, noCollideCount, pairKey(i, j)) >= 0
+
+    private var jointParent = IntArray(0); private var jointAwake = BooleanArray(0)
+    private fun jointRoot(i: Int): Int { var r = i; while (jointParent[r] != r) { jointParent[r] = jointParent[jointParent[r]]; r = jointParent[r] }; return r }
+
+    /** A body awake (or a kinematic body moving) wakes everything joined to it, however long the chain. */
+    private fun wakeJoined() {
+        if (jointParent.size < capacity) { jointParent = IntArray(capacity); jointAwake = BooleanArray(capacity) }
+        for (j in joints) { if (j.ia >= 0) { jointParent[j.ia] = j.ia; jointAwake[j.ia] = false }; jointParent[j.ib] = j.ib; jointAwake[j.ib] = false }
+        for (j in joints) if (j.enabled && j.ia >= 0 && types[j.ia] == BodyType.DYNAMIC && types[j.ib] == BodyType.DYNAMIC) {
+            val ra = jointRoot(j.ia); val rb = jointRoot(j.ib); if (ra != rb) jointParent[ra] = rb
+        }
+        var any = false
+        for (j in joints) {
+            if (!j.enabled) continue
+            for (end in 0..1) {
+                val i = if (end == 0) j.ia else j.ib; val other = if (end == 0) j.ib else j.ia
+                if (i < 0 || types[i] != BodyType.DYNAMIC) continue
+                if (!sleeping[i] || (other >= 0 && types[other] == BodyType.KINEMATIC && moving(other))) { jointAwake[jointRoot(i)] = true; any = true }
+            }
+        }
+        if (!any) return
+        for (j in joints) {
+            if (j.ia >= 0 && types[j.ia] == BodyType.DYNAMIC && sleeping[j.ia] && jointAwake[jointRoot(j.ia)]) wake(j.ia)
+            if (types[j.ib] == BodyType.DYNAMIC && sleeping[j.ib] && jointAwake[jointRoot(j.ib)]) wake(j.ib)
+        }
+    }
+
+    private val activeJoints = ArrayList<Joint>()
+    private fun prepareJoints(h: Float) {
+        activeJoints.clear()
+        val hertz = min(jointHertz, .25f / h)
+        for (j in joints) {
+            if (!j.enabled) continue
+            val awake = (j.ia >= 0 && types[j.ia] == BodyType.DYNAMIC && !sleeping[j.ia]) || (types[j.ib] == BodyType.DYNAMIC && !sleeping[j.ib])
+            if (!awake) continue
+            j.prepare(h, hertz, jointDampingRatio)
+            activeJoints.add(j)
+        }
+    }
+    private fun warmStartJoints() { for (k in activeJoints.indices) activeJoints[k].warmStart() }
+    private fun solveJoints(useBias: Boolean, h: Float) { val invH = 1f / h; for (k in activeJoints.indices) activeJoints[k].solve(useBias, invH) }
+
     /** Applies a force at the centre during the next step. */
     fun applyForce(body: Body, force: Vec3) { val i = body.id; fx[i] += force.x; fy[i] += force.y; fz[i] += force.z; wake(i) }
+
+    /**
+     * Adds a force (N) at [point] for the next step, spread over its substeps like gravity. [steady]: a
+     * force applied every step (a suspension, a float) wakes a sleeping body, yet an awake one keeps
+     * counting towards sleep.
+     */
+    internal fun addForce(i: Int, force: Vec3, point: Vec3, steady: Boolean) {
+        if (types[i] != BodyType.DYNAMIC) return
+        if (!steady || sleeping[i]) wake(i)
+        fx[i] += force.x; fy[i] += force.y; fz[i] += force.z
+        val rx = point.x - px[i]; val ry = point.y - py[i]; val rz = point.z - pz[i]
+        val ax = ry * force.z - rz * force.y; val ay = rz * force.x - rx * force.z; val az = rx * force.y - ry * force.x
+        if (ax != 0f || ay != 0f || az != 0f) { tx[i] += ax; ty[i] += ay; tz[i] += az; torqued = true }
+    }
 
     // ------------------------------------------------------------------ inertia
 
@@ -328,22 +521,29 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val h = dt / substeps
         var t = if (profiling) System.nanoTime() else 0L
         fun lap(k: Int) { if (profiling) { val n = System.nanoTime(); phaseNanos[k] += n - t; t = n } }
-        prepareBodies(dt); lap(0)
+        if (noCollideDirty) rebuildNoCollide()
+        prepareBodies(dt)
+        if (joints.isNotEmpty()) wakeJoined()
+        lap(0)
         findPairs(); lap(1)
         collide(dt); lap(2)
-        prepareContacts(h); lap(3)
+        prepareContacts(h)
+        prepareJoints(h); lap(3)
         wideActive = vectorized && wideSolver()?.prepare() == true
+        // Joints before contacts in each pass: the contacts have the last word, nothing sinks into the ground.
         repeat(substeps) {
             integrateVelocities(h)
-            warmStart(); lap(4)
-            solve(h, true); lap(5)
+            warmStartJoints(); warmStart(); lap(4)
+            solveJoints(true, h); solve(h, true); lap(5)
             integratePositions(h)
-            solve(h, false); lap(6)
+            solveJoints(false, h); solve(h, false); lap(6)
         }
         if (wideActive) wide!!.finish()
         restitute()
+        if (continuous) continuous()
         updateSleep(dt); lap(7)
         for (i in 0 until count) { fx[i] = 0f; fy[i] = 0f; fz[i] = 0f }
+        if (torqued) { java.util.Arrays.fill(tx, 0, count, 0f); java.util.Arrays.fill(ty, 0, count, 0f); java.util.Arrays.fill(tz, 0, count, 0f); torqued = false }
         // Les points de ce pas deviennent « précédents » ; l'autre ensemble servira au pas suivant.
         points.keep()
         val spare = previous; previous = points; points = spare
@@ -433,7 +633,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     /** Whether two overlapping bodies can touch at all: one must be dynamic, one must move (read only: any thread). */
     private fun mayPair(i: Int, j: Int): Boolean {
         if (types[i] != BodyType.DYNAMIC && types[j] != BodyType.DYNAMIC) return false
-        return moving(i) || moving(j)
+        return (moving(i) || moving(j)) && !joinedApart(i, j)
     }
 
     /** Keeps a pair, after the sleep rules (one thread, in a fixed order: waking a body changes the next pairs). */
@@ -874,6 +1074,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             st[o] = (st[o] + h * (gx * gs + fx[i] * m)) * ld
             st[o + 1] = (st[o + 1] + h * (gy * gs + fy[i] * m)) * ld
             st[o + 2] = (st[o + 2] + h * (gz * gs + fz[i] * m)) * ld
+            if (torqued) {
+                val k = o + I0; val ax = tx[i]; val ay = ty[i]; val az = tz[i]
+                st[o + 3] += h * (st[k] * ax + st[k + 1] * ay + st[k + 2] * az)
+                st[o + 4] += h * (st[k + 1] * ax + st[k + 3] * ay + st[k + 4] * az)
+                st[o + 5] += h * (st[k + 2] * ax + st[k + 4] * ay + st[k + 5] * az)
+            }
             st[o + 3] *= ad; st[o + 4] *= ad; st[o + 5] *= ad
             if (gyroscopic) gyroscopic(i, h)
         }
@@ -1307,6 +1513,62 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
     }
 
+    // ------------------------------------------------------------------ continuous collision
+
+    /**
+     * Continuous collision for fast bodies (on by default): sweeps put back a body that went through
+     * something during the step. Off, only the speculative contacts stop fast bodies.
+     */
+    var continuous = true
+    private val fast = IntList()
+    private val still = IntList()                 // static and kinematic bodies: what a fast body is swept against
+
+    /**
+     * Continuous collision, the safety net under the speculative contacts: a body that moved more than its
+     * core (half its smallest half-size) during the step is swept from where it was to where it is, its
+     * core as a sphere, against what does not move (and against every body for a [Body.isBullet]). If it
+     * went through something, it is put back just before it, its velocity kept: the next step's contacts
+     * then stop it (Box2D v3's way). A sweep that starts inside something is ignored.
+     */
+    private fun continuous() {
+        fast.clear(); still.clear()
+        val hitsBefore = continuousHits
+        for (i in 0 until count) {
+            if (removed[i]) continue
+            if (types[i] != BodyType.DYNAMIC) { still.add(i); continue }
+            if (sleeping[i]) continue
+            val o = i * S
+            val dx = st[o + DPX]; val dy = st[o + DPX + 1]; val dz = st[o + DPX + 2]
+            val core = core(i)
+            if (dx * dx + dy * dy + dz * dz > core * core) fast.add(i)
+        }
+        val anythingStill = still.size > 0 || meshes.isNotEmpty()
+        for (k in 0 until fast.size) {
+            val i = fast[k]; val o = i * S
+            if (!bullet[i] && !anythingStill) continue            // nothing that stays put to go through
+            val dx = st[o + DPX]; val dy = st[o + DPX + 1]; val dz = st[o + DPX + 2]
+            val travel = sqrt(dx * dx + dy * dy + dz * dz)
+            val ux = dx / travel; val uy = dy / travel; val uz = dz / travel
+            val fx = px[i] - dx; val fy = py[i] - dy; val fz = pz[i] - dz
+            val t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, if (bullet[i]) null else still)
+            if (t.isNaN() || t <= 0f || t >= travel) continue
+            val back = max(0f, t - CCD_SLOP)
+            px[i] = fx + ux * back; py[i] = fy + uy * back; pz[i] = fz + uz * back
+            continuousHits++
+        }
+        if (continuousHits != hitsBefore) queryGrid.valid = false
+    }
+
+    /** Sweeps that put a body back since the world was made (diagnostics). */
+    var continuousHits = 0L
+        private set
+
+    private fun core(i: Int): Float = .5f * when (val s = shapes[i]!!) {
+        is Sphere -> s.radius
+        is Capsule -> s.radius
+        is Box -> min(s.halfX, min(s.halfY, s.halfZ))
+    }
+
     // ------------------------------------------------------------------ sleep
 
     private var parent = IntArray(0)
@@ -1335,6 +1597,14 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             if (types[a] != BodyType.DYNAMIC || types[b] != BodyType.DYNAMIC) continue
             val ra = root(a); val rb = root(b)
             if (ra != rb) parent[ra] = rb
+        }
+        // Joined bodies sleep together; a moving kinematic body keeps what it holds awake.
+        for (j in joints) {
+            if (!j.enabled || j.ia < 0) continue
+            val a = j.ia; val b = j.ib
+            if (types[a] == BodyType.DYNAMIC && types[b] == BodyType.DYNAMIC) { val ra = root(a); val rb = root(b); if (ra != rb) parent[ra] = rb }
+            else if (types[a] == BodyType.KINEMATIC && moving(a)) sleepClock[b] = 0f
+            else if (types[b] == BodyType.KINEMATIC && moving(b)) sleepClock[a] = 0f
         }
         for (i in 0 until count) if (types[i] == BodyType.DYNAMIC && !sleeping[i]) {
             val r = root(i); islandClock[r] = min(islandClock[r], sleepClock[i])

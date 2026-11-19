@@ -122,6 +122,56 @@ water.onExit = { body -> body.linearDamping = 0f }
 
 A trigger notices bodies coming in and going out after each step, without touching them. By default it counts every body that is not static, characters included (`filter` changes that). `inside` lists the bodies within; `enabled = false` makes it forget them; `world.removeTrigger(t)` deletes it.
 
+## Joints
+
+```kotlin
+val lamp = world.add(Sphere(.15f), Vec3(0f, 2f, 0f))
+world.addBall(null, lamp, anchor = Vec3(0f, 3f, 0f))                    // hangs from the world, swings freely
+
+val door = world.add(Box(.45f, 1f, .03f), Vec3(.45f, 1f, 0f), density = 600f)
+val hinge = world.addHinge(null, door, anchor = Vec3(0f, 1f, 0f), axis = Vec3.Y)
+hinge.limits(-1.6f, 0f)                                                  // opens one way, up to 92°
+hinge.spring(hertz = .5f)                                                // and closes by itself
+
+val lift = world.addSlider(null, cabin, axis = Vec3.Y)
+lift.limits(0f, 6f); lift.motor(speed = 1f, maxForce = 20000f)           // up at 1 m/s, stops at 6 m
+
+val links = world.addChain(from = Vec3(0f, 5f, 0f), to = Vec3(0f, 2f, 0f), links = 12)
+```
+
+A joint ties body `b` to body `a`, or to the world when `a` is null. Anchors and axes are given in world coordinates, where the bodies are when joined; at least one of the two bodies must be dynamic.
+
+| Joint | Holds | Options |
+|---|---|---|
+| `addBall(a, b, anchor)` | the anchors together; the bodies turn freely about it | |
+| `addHinge(a, b, anchor, axis)` | the anchors together, turning about one axis only | `limits(lower, upper)` (radians), `motor(speed, maxTorque)`, `spring(hertz, dampingRatio, angle)`; `angle`, `speed` |
+| `addSlider(a, b, axis)` | `b` moves along the axis, without turning | `limits(lower, upper)` (m), `motor(speed, maxForce)`, `spring(hertz, dampingRatio, position)`; `translation`, `speed` |
+| `addFixed(a, b)` | the two bodies as one | |
+| `addDistance(a, anchorA, b, anchorB, length)` | the anchors at a distance, like a rod | `spring(hertz, dampingRatio)`, then `limits(min, max)` |
+| `addSpring(…, hertz, dampingRatio, length)` | a spring between the anchors | `limits(min, max)` |
+| `addRope(a, anchorA, b, anchorB, length)` | never farther than the length, slack below it | |
+| `addChain(from, to, links, radius, start, end)` | capsules joined end to end by ball joints | returns the links |
+
+Joined bodies do not collide with each other unless `collideConnected` is true (distance joints and ropes collide by default). `enabled = false` lets go for a while; `world.removeJoint(j)` for good, and removing a body removes its joints. `force` is what the joint held during the last step, in newtons: a game breaks a rope with `if (rope.force > 2000f) world.removeJoint(rope)`. Joined bodies sleep together and wake together, however long the chain.
+
+The joints are solved with the contacts, in the same substeps and the same soft steps (Box2D v3's solver carried to 3D), joints first, so that contacts have the last word: nothing is pulled into the ground. A spring is soft by nature, at the stiffness asked: its frequency does not depend on the masses. A rigid joint is soft too, at `jointHertz` (60 Hz, at most a quarter of the substep rate, beyond which joints overshoot and explode): a light body holding a heavy load gives a little. A chain of 20 links sags 2.7 cm over its 3 m, 2 mm at the top joint that carries everything; a 2 m beam of four welded boxes sags 5 cm. Eight substeps with `jointHertz = 120` make them four times stiffer, at twice the cost. Measured against physics: a pendulum's period within 0.01 % of the compound pendulum's, a spring's frequency within 1 % from 0.1 to 1000 kg, motors at their speed, hinge limits overshot by less than 0.01 rad under hard knocks.
+
+## Vehicles
+
+```kotlin
+val car = world.add(Box(.9f, .25f, 2f), Vec3(0f, 1.2f, 0f), mass = 1200f)
+val vehicle = Vehicle(world, car)                       // front: +Z, top: +Y (the chassis's own axes)
+for (x in listOf(-.8f, .8f)) for (z in listOf(-1.3f, 1.3f))
+    vehicle.addWheel(Vec3(x, -.15f, z), radius = .35f, travel = .3f, steered = z > 0f)
+
+vehicle.throttle = 1f; vehicle.steering = -.5f          // each frame, from the keys
+vehicle.update(dt); world.step(dt)
+```
+
+A raycast vehicle, as games make them: each wheel is a sphere swept down from its mount; a spring and a damper hold the chassis up (`suspensionHertz`, `suspensionDamping`), and the tyres drive it (`driveForce`, fading to nothing at `topSpeed`), brake it (`brakeForce`, `handbrake` on the rear wheels) and steer it (`maxSteer`, less at speed). The tyre forces are limited by `grip` × the wheel's load: past it, the vehicle skids and drifts (`Wheel.slip` says how much). `rollInfluence` sets how much the turns lean the chassis. Throttle against the motion brakes first, then reverses. Call `update` before each `step`. The wheels are not bodies: draw them at `Wheel.center` and `Wheel.rotation`; `compression`, `load`, `onGround`, `contact`, `ground` and `spin` tell the rest. A vehicle pushes what it rolls on, and the bodies it drives into.
+
+The suspension and the tyres act as forces spread over the substeps, like gravity, so a parked vehicle stands still and falls asleep. Measured: at rest, each spring is pushed in by g/(2πf)² within 1 mm and carries a quarter of the weight within 1 %; braking from 14 m/s takes 11.2 m where v²/(2 · 0.9 g) gives 11.4; the handbrake holds on a 10° slope; random driving over bumpy ground for 20 s keeps the wheels down 98 % of the time and never overturns.
+
 ## Contacts
 
 `world.contacts()` returns the contact points of the last step: the two bodies (`a` is null for a static mesh), the point, the normal from `a` to `b`, the separation, and the normal impulse that the solver applied. Use it for debug drawing, for gameplay (who stands on what, how hard something hit) and for checks. `pairCount` and `contactCount` are cheaper counts.
@@ -138,7 +188,13 @@ repeat(120) {
 
 `Character` is a capsule moved by the game, not by forces, in the spirit of Jolt's virtual character. It slides along walls, climbs steps up to `stepHeight` (0.35 m), walks slopes up to `maxSlope` (50°) and slides down steeper ones, keeps to the ground going downhill (`snapDistance`), stands on moving bodies and weighs on them, and pushes movable bodies with at most `pushForce` (400 N), so a heavy crate slows it down and a ball does not. It has its own `gravity` (−22 m/s², which makes jumps snappy).
 
+What it stands on carries it: a kinematic platform, a boat, a lift, a turning roundabout, a dynamic raft. Its place on the platform follows the platform, turns included (`platformTurn` tells the game how far, to turn the hero's facing), and `walkVelocity` is its own steps without the platform's. Leaving a platform, by a jump or a step off its edge, it keeps the platform's velocity until it lands, so a jump on a moving boat lands on the same plank.
+
 Call `update` after `world.step`: the character then stands where moving platforms really are. `walk` is the wanted horizontal velocity; a `jumpSpeed` above zero starts a jump at that vertical speed (the game decides when jumping is allowed: on the ground, with a little grace after leaving it). `position` is the point between the feet; `velocity`, `onGround`, `groundNormal`, `groundBody`, `groundMaterial` and `pushing` say what happened; `teleport(feet)` moves it at once. Its kinematic capsule, `body`, is what other bodies bump into.
+
+## Continuous collision
+
+Contacts are found a little ahead (the speculative margin grows with the speed), which stops most fast bodies. Behind it, continuous collision is a safety net: a body that moved more than its core (half its smallest half-size) during a step is swept, its core as a sphere, from where it was to where it is, against the meshes and the static and kinematic bodies; if it went through one, it is put back just before it, its velocity kept, and the next step's contacts stop it. `body.isBullet = true` sweeps it against every body: a bullet stops on a crate instead of crossing it. A 2 cm ball stops on a 2 cm slab, a mesh floor or a moving plank at 3,000 m/s. `continuous = false` turns it off; `continuousHits` counts the bodies it put back.
 
 ## Determinism and threads
 
@@ -165,6 +221,7 @@ On a laptop's efficiency cores (Intel Core Ultra 7): a pile of 1,000 bodies sett
 
 ## Limits
 
-- There is no continuous collision: a very fast small body can pass through thin geometry. Measured: a 10 cm ball goes through neither a 10 cm slab nor a mesh floor up to 320 m/s.
-- There are no joints, no convex hulls and no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give.
+- Continuous collision sweeps a body's core, not its whole shape: a fast long box can still clip a corner, and a fast spinning one is swept only along its path. Non-bullets are swept only against what does not move.
+- Joints are soft (see Joints): a light body holding a heavy load gives a little. No cone or twist limits on ball joints yet (ragdolls swing freely), no gear or pulley joints.
+- There are no convex hulls and no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give.
 - A sphere swept with a radius above 0.5 m looks at every body, not through the grid.

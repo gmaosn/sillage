@@ -69,11 +69,11 @@ fun Qa.physique() {
             return b.position.y > -.05f
         }
         fun limite(maillage: Boolean): String {
-            val vitesses = listOf(5f, 10f, 20f, 40f, 80f, 160f, 320f)
+            val vitesses = listOf(5f, 10f, 20f, 40f, 80f, 160f, 320f, 1000f, 3000f)
             val v = vitesses.lastOrNull { s -> vitesses.filter { it <= s }.all { tient(it, maillage) } }
             return if (v == null) "moins de 5 m/s" else if (v == vitesses.last()) "plus de ${v.toInt()} m/s" else "${v.toInt()} m/s (traverse à ${vitesses[vitesses.indexOf(v) + 1].toInt()})"
         }
-        "dalle de 10 cm : ${limite(false)} ; sol maillé : ${limite(true)} (pas de collision continue)"
+        "dalle de 10 cm : ${limite(false)} ; sol maillé : ${limite(true)} (collision continue)"
     }
 
     controle("énergie : jamais créée (chocs en apesanteur, 10 s)", "≤ +1 %") {

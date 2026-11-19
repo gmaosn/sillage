@@ -67,6 +67,19 @@ class Quat(val x: Float, val y: Float, val z: Float, val w: Float) {
             return Quat(axis.x * s, axis.y * s, axis.z * s, c)
         }
         fun rotationY(angle: Float) = axisAngle(Vec3.Y, angle)
+
+        /** The shortest rotation that turns the direction [from] onto the direction [to]. */
+        fun fromTo(from: Vec3, to: Vec3): Quat {
+            val a = from.normalized(); val b = to.normalized()
+            val d = a dot b
+            if (d < -.999999f) {
+                // Opposite: half a turn about any axis across them.
+                val axis = (if (kotlin.math.abs(a.x) < .9f) Vec3.X else Vec3.Y).cross(a).normalized()
+                return Quat(axis.x, axis.y, axis.z, 0f)
+            }
+            val c = a cross b
+            return Quat(c.x, c.y, c.z, 1f + d).normalized()
+        }
     }
 }
 
