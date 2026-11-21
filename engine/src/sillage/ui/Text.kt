@@ -184,7 +184,8 @@ internal object TextLayout {
 internal class GlyphAtlas(initial: Int = 512, private val limit: Int = 4096) {
     var width = initial; private set
     var height = initial; private set
-    var pixels = ByteArray(width * height); private set
+    /** The texels, row by row; empty until the first glyph (a HUD in the pixel font never needs them). */
+    var pixels = ByteArray(0); private set
     /** Bumped whenever pixels change; the rows changed since the renderer last took them. */
     var version = 0; private set
     var dirtyTop = Int.MAX_VALUE; var dirtyBottom = 0
@@ -214,6 +215,7 @@ internal class GlyphAtlas(initial: Int = 512, private val limit: Int = 4096) {
     }
 
     private fun rasterise(face: FontFace, gid: Int, emPx: Float, phase: Int): Entry {
+        if (pixels.isEmpty()) pixels = ByteArray(width * height)
         path.count = 0; path.size = 0
         face.outline(gid, path)
         rasterised++
@@ -246,7 +248,7 @@ internal class GlyphAtlas(initial: Int = 512, private val limit: Int = 4096) {
         if (width >= limit) return false
         val nw = width * 2; val nh = height * 2
         val np = ByteArray(nw * nh)
-        for (row in 0 until height) System.arraycopy(pixels, row * width, np, row * nw, width)
+        if (pixels.isNotEmpty()) for (row in 0 until height) System.arraycopy(pixels, row * width, np, row * nw, width)
         pixels = np; width = nw; height = nh
         dirtyTop = 0; dirtyBottom = height
         version++

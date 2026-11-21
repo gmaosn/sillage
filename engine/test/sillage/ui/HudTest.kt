@@ -159,6 +159,8 @@ class HudTest {
         b.ui.pointAt(ok.left + 2, ok.top + 2); b.frame()
         assertSame(ok, b.hud.hoveredWidget); assertTrue(ok.hovered)
         b.click(ok); assertEquals(1, clicks)
+        // Hors d'un menu, survoler ou cliquer un bouton ne prend pas le clavier au jeu.
+        assertNull(b.hud.focusedWidget); assertFalse(b.hud.usesKeys)
         // Enfoncé sur le bouton, relâché ailleurs : pas de clic.
         b.ui.down = true; b.frame(); b.ui.pointAt(0, 0); b.frame(); b.ui.down = false; b.frame()
         assertEquals(1, clicks)
@@ -180,6 +182,8 @@ class HudTest {
         // Quitter.
         b.tap(Key.ESCAPE); repeat(3) { b.tap(Key.DOWN) }; assertFalse(b.hud.quitting); b.tap(Key.ENTER)
         assertTrue(b.hud.quitting)
+        // Tout effacé : le menu de pause par défaut revient.
+        val e = Banc(); e.frame(); e.hud.clear(); e.tap(Key.ESCAPE); assertTrue(e.hud.pauseMenu!!.isOpen)
         // Sans menu de pause, Échap quitte comme avant.
         val c = Banc(); c.hud.pauseMenu = null; c.frame(); c.tap(Key.ESCAPE); assertTrue(c.hud.quitting)
         // Un menu à soi à la place.
@@ -212,6 +216,9 @@ class HudTest {
         assertSame(f, b.hud.focusedWidget); assertTrue(b.hud.usesKeys)
         b.ui.type("Été à Noël, ça"); b.frame()
         assertEquals("Été à Noël, ça", f.text); assertEquals(14, f.caret)
+        // Le clavier est à l'interface : le jeu ne voit pas les touches (une espace tapée ne fait pas sauter).
+        b.keys.add(Key.SPACE); b.frame(); b.frame()
+        assertFalse(b.scene.input.isDown(Key.SPACE)); b.keys.remove(Key.SPACE); b.frame()
         b.tap(Key.BACKSPACE); assertEquals("Été à Noël, ç", f.text)
         b.tap(Key.HOME); b.tap(Key.DELETE); assertEquals("té à Noël, ç", f.text)
         // Majuscule et flèches : une sélection, remplacée par ce qu'on tape.
@@ -228,6 +235,7 @@ class HudTest {
         assertEquals("Hiv à Noël, ç / Hiv à Noël, ", f.text)
         // Échap quitte le champ ; les touches reviennent au jeu.
         b.tap(Key.ESCAPE); assertNull(b.hud.focusedWidget); assertFalse(b.hud.usesKeys)
+        b.keys.add(Key.SPACE); b.frame(); b.frame(); assertTrue(b.scene.input.isDown(Key.SPACE), "les touches reviennent au jeu")
     }
 
     @Test fun editionDuTexte() {

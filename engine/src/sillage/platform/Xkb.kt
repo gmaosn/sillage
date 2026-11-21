@@ -87,12 +87,14 @@ internal class KeyboardText : AutoCloseable {
     }
 
     val usesXkb: Boolean get() = state != NULL
+    /** Where the layout comes from, for the log: the compositor's, the X server's, compiled from names, or the US table. */
+    var origin = if (Xkb.available) "none yet" else "US table (no libxkbcommon)"; private set
 
     /** The keymap as xkb text (Wayland's keymap event). */
     fun keymapText(text: String) {
         if (context == NULL) return
         val km = Xkb.P_PPII.invokeExact(Xkb.keymapFromString, context, arena.allocateFrom(text), 1, 0) as MemorySegment
-        if (km != NULL) use(km, NULL)
+        if (km != NULL) { use(km, NULL); origin = "compositor (xkb)" }
     }
 
     /** Reads the keymap Wayland hands over as a file descriptor, then closes it. */
@@ -113,7 +115,7 @@ internal class KeyboardText : AutoCloseable {
         val v = listOf(null, model, layout, variant, options)
         for ((i, s) in v.withIndex()) names.set(ADDRESS, 8L * i, s?.let { arena.allocateFrom(it) } ?: NULL)
         val km = Xkb.P_PPI.invokeExact(Xkb.keymapFromNames, context, names, 0) as MemorySegment
-        if (km != NULL) use(km, NULL)
+        if (km != NULL) { use(km, NULL); origin = "xkb names " + (layout ?: System.getenv("XKB_DEFAULT_LAYOUT") ?: "default") }
     }
 
     /** The X server's keymap and state, through libxkbcommon-x11; false if it cannot (then [keymapNames]). */
@@ -127,6 +129,7 @@ internal class KeyboardText : AutoCloseable {
         if (km == NULL) return false
         val st = Xkb.P_PPI.invokeExact(Xkb.x11State, km, connection, device) as MemorySegment
         use(km, st)
+        origin = "X server (xkb-x11)"
         return true
     }
 

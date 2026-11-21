@@ -167,7 +167,7 @@ class TextField internal constructor(placeholder: String, size: Float?, var onSu
     /** The selected part as start and end (equal when nothing is selected). */
     val selection: IntRange get() = editing.selectionStart until editing.selectionEnd
     /** Selects from [start] to [end] (UTF-16 indices), the caret at [end]. */
-    fun select(start: Int, end: Int) { editing.place(start); editing.place(end, select = true); dirty() }
+    fun select(start: Int, end: Int) { editing.place(start); editing.place(end, select = true); blink = 0f; dirty() }
     internal val laid = LaidText()
     internal var shown: String? = null
     /** How far the text is scrolled left so that the caret stays in sight. */

@@ -108,6 +108,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
             writeTitle(title)
             // La disposition du clavier pour le texte tapé : celle du serveur X, sinon celle par défaut.
             if (!text.keymapX11(conn)) text.keymapNames()
+            println("SILLAGE_CLAVIER " + text.origin)
             (PSig.I_PI.invokeExact(Xcb.mapWindow, conn, window) as Int)
             flush()
         } catch (t: Throwable) { PSig.V_P.invokeExact(Xcb.disconnect, conn); arena.close(); throw t }

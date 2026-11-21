@@ -305,7 +305,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     private fun keyboardEvent(event: String, a: MemorySegment) {
         when (event) {
             // Les touches sont lues par position ; la table sert au texte tapé (accents, touches mortes).
-            "keymap" -> if (a.u(0) == 1) text.keymapFd(a.i(1), a.u(2)) else Native.close(a.i(1))
+            "keymap" -> if (a.u(0) == 1) { val first = !text.usesXkb; text.keymapFd(a.i(1), a.u(2)); if (first) println("SILLAGE_CLAVIER " + text.origin) } else Native.close(a.i(1))
             "modifiers" -> text.modifiers(a.u(1), a.u(2), a.u(3), a.u(4))
             "repeat_info" -> { text.repeatRate = a.i(0); text.repeatDelay = a.i(1) }
             "enter" -> {

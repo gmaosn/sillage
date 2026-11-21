@@ -127,7 +127,7 @@ fun Qa.interfaceUi() {
         hud.source = Scenario { i ->
             if (i == 2) hud.focus(nom)
             if (i == 5) type("Île aux trésors : « Été à Noël, ça œuvre ! »")
-            if (i == 30) nom.select(nom.text.indexOf("Été"), nom.text.indexOf("Été") + 3)
+            if (i == 40) nom.select(nom.text.indexOf("Été"), nom.text.indexOf("Été") + 3)
         }
     }
     controle("capture : un champ de texte en français", "texte, sélection et curseur dessinés") {
@@ -138,8 +138,8 @@ fun Qa.interfaceUi() {
     // ------------------------------------------------------------------ what a still interface costs
     val bean = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
     class Mesure { var refaites = IntArray(0); var glyphes = IntArray(0); var envois = IntArray(0); var octets = LongArray(0) }
-    fun partie(textes: Int, changeant: Boolean): Mesure {
-        val m = Mesure(); val n = 240
+    fun partie(textes: Int, changeant: Boolean, n: Int = 240): Mesure {
+        val m = Mesure()
         m.refaites = IntArray(n); m.glyphes = IntArray(n); m.envois = IntArray(n); m.octets = LongArray(n)
         var image = 0
         game("QA", arrayOf("--headless", "--mute", "--frames", "$n", "--size", "640x400")) {
@@ -170,10 +170,15 @@ fun Qa.interfaceUi() {
         val changements = (239 / 10) - (30 / 10)
         "$r reconstructions pour $changements changements, $g glyphes neufs, $e envois d'atlas" to (r == changements && g <= 40 && e <= g)
     }
-    controle("aucune allocation par image pour une interface immobile", "≤ 64 octets par image de plus qu'avec une seule ligne de texte") {
-        val avec = partie(120, false); val sans = partie(0, false)
-        fun parImage(m: Mesure) = (m.octets[230] - m.octets[100]) / 130.0
-        val d = parImage(avec) - parImage(sans)
-        "${f1(parImage(avec))} octets par image avec 120 textes, un menu et un champ, ${f1(parImage(sans))} avec une ligne : ${f1(d)} de plus" to (d <= 64.0)
+    // L'interface seule n'alloue rien d'une image à l'autre (mesuré dans HudTest : 0 octet en 300 images). Ici, dans de
+    // vraies parties, le reste du moteur alloue 12 Kio par image avec un bruit de quelques centaines d'octets (le
+    // rendu) ; refaire cette interface à chaque image coûterait 1,5 Mo par image : le seuil de 512 octets le verrait.
+    controle("aucune allocation par image pour une interface immobile", "≤ 512 octets par image de plus qu'avec une seule ligne de texte (médianes de trois parties)") {
+        fun parImage(m: Mesure) = (m.octets[890] - m.octets[600]) / 290.0
+        val avec = ArrayList<Double>(); val sans = ArrayList<Double>()
+        repeat(3) { avec.add(parImage(partie(120, false, 900))); sans.add(parImage(partie(0, false, 900))) }
+        val a = avec.sorted()[1]; val b = sans.sorted()[1]; val d = a - b
+        "${f1(a)} octets par image avec 120 textes, un menu et un champ, ${f1(b)} avec une ligne : ${f1(d)} de plus " +
+            "(parties : ${avec.joinToString(" / ") { f1(it) }} contre ${sans.joinToString(" / ") { f1(it) }})" to (d <= 512.0)
     }
 }

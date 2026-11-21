@@ -229,8 +229,17 @@ class Hud internal constructor() {
         return m
     }
 
-    fun remove(element: Element) { if (elements.remove(element)) { element.owner = null; if (element is Menu) element.close(); dirty = true } }
-    fun clear() { elements.forEach { it.owner = null }; elements.clear(); openMenus.clear(); focusedWidget = null; hoveredWidget = null; dirty = true }
+    fun remove(element: Element) {
+        if (element is Menu) element.close()
+        if (elements.remove(element)) { element.owner = null; dirty = true }
+        if (element === pauseDefault) pauseDefault = null
+        if (element === chosenPause && pauseChosen) { chosenPause = null; pauseChosen = false }
+    }
+    /** Takes everything away (the pause menu comes back as the default one). */
+    fun clear() {
+        elements.forEach { it.owner = null }; elements.clear(); openMenus.clear(); focusedWidget = null; hoveredWidget = null; dirty = true
+        pauseDefault = null; chosenPause = null; pauseChosen = false
+    }
 
     // ------------------------------------------------------------------ the pause menu
 
@@ -273,7 +282,7 @@ class Hud internal constructor() {
     internal var quitting = false
 
     /** True while a menu that [Menu.pauses] is open: the game's time and physics stand still. */
-    val paused: Boolean get() = openMenus.any { it.pauses }
+    val paused: Boolean get() { for (i in 0 until openMenus.size) if (openMenus[i].pauses) return true; return false }   // read every frame: no iterator
     /** The menu on top, if any is open. */
     val topMenu: Menu? get() = openMenus.lastOrNull()
     /** True while the interface takes the keys: a menu is open or a widget has the focus. */
@@ -286,6 +295,11 @@ class Hud internal constructor() {
         private set
     /** The widget under the pointer, or null. */
     var hoveredWidget: Widget? = null
+        private set
+    /** Where the pointer is, in canvas units (NaN when there is none, or while the mouse is captured). */
+    var pointerX = Float.NaN
+        private set
+    var pointerY = Float.NaN
         private set
 
     /** Gives the focus to [widget] (null: to nothing). */
@@ -348,7 +362,8 @@ class Hud internal constructor() {
         if (p != null) p.open() else quitting = true
     }
 
-    private fun press(b: Button) { if (!b.enabled) return; b.flash = 0f; dirty = true; b.onClick() }
+    private fun press(b: Button) { if (!b.enabled) return; b.flash = 0f; flashing = b; dirty = true; b.onClick() }
+    private var flashing: Button? = null
 
     internal fun menuOpened(m: Menu) {
         dirty = true
@@ -393,8 +408,19 @@ class Hud internal constructor() {
     private val held = FloatArray(256)
     private var hadPointer = false; private var recapture = false
 
+    /** The keys as the interface reads them: its own state, from the scene's key source even while the scene's own view is masked. */
+    private class Keys {
+        private val was = BooleanArray(256); private val now = BooleanArray(256)
+        fun poll(source: KeySource) { now.copyInto(was); for (k in 0 until 256) now[k] = source.isDown(k) }
+        fun isDown(key: Int): Boolean = if (key == Key.SHIFT) now[Key.LEFT_SHIFT] || now[Key.RIGHT_SHIFT] else key in 0..255 && now[key]
+        fun pressed(key: Int): Boolean = key in 0..255 && now[key] && !was[key]
+    }
+    private val keys = Keys()
+    /** What the scene reads while the interface has the keyboard: no key at all (a space typed in a field must not make the player jump). */
+    private class MaskedKeys(val inner: KeySource) : KeySource { override fun isDown(key: Int) = false }
+
     /** True on the frame [key] went down, then repeatedly while it is held (editing and moving keys). */
-    private fun fires(input: Input, key: Int, dt: Float): Boolean {
+    private fun fires(input: Keys, key: Int, dt: Float): Boolean {
         if (!input.isDown(key)) { held[key] = 0f; return false }
         if (input.pressed(key)) { held[key] = 0f; return true }
         val before = held[key]; held[key] += dt
@@ -404,25 +430,28 @@ class Hud internal constructor() {
 
     /**
      * Once a frame, before the scene's update: the pointer, the keys and the text typed reach menus, buttons
-     * and fields; Escape opens the pause menu; the mouse is released while a menu is open. [width] and
-     * [height]: the picture's size in pixels.
+     * and fields; Escape opens the pause menu; the mouse is released while a menu is open, and the scene sees
+     * no key while the interface has the keyboard. [width] and [height]: the picture's size in pixels.
      */
     internal fun interact(scene: Scene, dt: Float, width: Int, height: Int, window: Window?) {
         this.scene = scene
         if (width != pixelWidth || height != pixelHeight) { pixelWidth = width; pixelHeight = height; dirty = true }
-        val input = scene.input
+        val current = scene.input.source
+        val real = (current as? MaskedKeys)?.inner ?: current
+        val input = keys
+        input.poll(real)
         val src = source
         val px: Float; val py: Float; val down: Boolean; val typed: String
         if (src != null) { px = src.pointerX(); py = src.pointerY(); down = src.pointerDown(); typed = src.typed() }
         else if (window != null && !window.mouseCaptured) {
             val k = 600f / max(1, height)
             px = window.pointerX * k; py = window.pointerY * k; down = window.buttonDown(); typed = window.consumeText()
-        } else { px = Float.NaN; py = Float.NaN; down = false; typed = window?.consumeText() ?: "" }
+        } else { px = Float.NaN; py = Float.NaN; down = false; window?.buttonDown(); typed = window?.consumeText() ?: "" }
 
         // Animations: menus appearing, buttons flashing, the caret blinking.
         for (i in 0 until openMenus.size) { val m = openMenus[i]; if (m.appear < 1f) { m.appear = min(1f, m.appear + dt / APPEAR); dirty = true } }
+        flashing?.let { b -> if (b.flash < FLASH) { b.flash += dt; dirty = true } else flashing = null }
         val f = focusedWidget
-        if (f is Button && f.flash < FLASH) { f.flash += dt; dirty = true }
         if (f is TextField) { val was = f.blink % BLINK < BLINK / 2; f.blink += dt; if (was != (f.blink % BLINK < BLINK / 2)) dirty = true }
 
         if (input.pressed(Key.ESCAPE)) cancel()
@@ -470,7 +499,8 @@ class Hud internal constructor() {
             var i = list.size - 1
             if (!px.isNaN()) while (i >= 0) { if (list[i].contains(px, py)) { over = list[i]; break }; i-- }
             if (over !== hoveredWidget) { hoveredWidget = over; dirty = true }
-            if (moved && over is Button && focusedWidget !is TextField) focus(over)
+            // In a menu the focus follows the pointer (one highlight, not two); elsewhere the keys stay with the game.
+            if (moved && over is Button && focusedWidget !is TextField && topMenu != null) focus(over)
         }
         if (down && !wasDown) {
             val over = hoveredWidget
@@ -484,9 +514,9 @@ class Hud internal constructor() {
         } else if (!down && wasDown) {
             val p = pressedWidget
             pressedWidget = null; dirty = true
-            if (p is Button && p === hoveredWidget) { focus(p); press(p) }
+            if (p is Button && p === hoveredWidget) { if (topMenu != null) focus(p); press(p) }
         }
-        lastX = px; lastY = py; wasDown = down
+        lastX = px; lastY = py; wasDown = down; pointerX = px; pointerY = py
 
         // The mouse: free while a menu is open (captured again after if it was), a click captures it only away from widgets.
         if (window != null) {
@@ -496,6 +526,10 @@ class Hud internal constructor() {
             hadPointer = want
             window.clickCaptures = !want && hoveredWidget == null
         }
+        // The keyboard belongs to the interface or to the game, not both.
+        val masked = current is MaskedKeys
+        if (usesKeys && !masked) scene.input.source = MaskedKeys(real)
+        else if (!usesKeys && masked) scene.input.source = real
     }
 
     /** The caret index nearest to [px] (canvas units) in a text field. */
