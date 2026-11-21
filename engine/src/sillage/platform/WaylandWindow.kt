@@ -175,6 +175,9 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     private var discreteThisFrame = false
     private val keys = BooleanArray(KEY_COUNT)
     private val pressed = BooleanArray(KEY_COUNT)          // went down since the game last looked
+    private val text = KeyboardText()
+    private var leftDown = false; private var leftPressed = false
+    override var clickCaptures = true
 
     override var shouldClose = false; private set
     // Une fenêtre Wayland n'apparaît qu'après sa première image, et n'a le focus qu'une fois apparue :
@@ -289,7 +292,10 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
                 if (mouseCaptured && relativePointer == NULL && !lastX.isNaN()) { mouseDx += (x - lastX).toFloat(); mouseDy += (y - lastY).toFloat() }
                 lastX = x; lastY = y
             }
-            "button" -> if (a.u(3) == 1 && a.u(2) == 0x110 && !mouseCaptured) mouseCaptured = true   // clic gauche : capturer
+            "button" -> if (a.u(2) == 0x110) {
+                leftDown = a.u(3) == 1; if (leftDown) leftPressed = true
+                if (leftDown && !mouseCaptured && clickCaptures) mouseCaptured = true            // clic gauche : capturer
+            }
             "axis_discrete" -> if (a.u(0) == 0) { scroll -= a.i(1); discreteThisFrame = true }
             "axis" -> if (a.u(1) == 0 && !discreteThisFrame) scroll -= (a.fixed(2) / 10.0).toFloat()
             "frame" -> discreteThisFrame = false
@@ -298,7 +304,10 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
 
     private fun keyboardEvent(event: String, a: MemorySegment) {
         when (event) {
-            "keymap" -> Native.close(a.i(1))         // les touches sont lues par position : pas besoin de la table
+            // Les touches sont lues par position ; la table sert au texte tapé (accents, touches mortes).
+            "keymap" -> if (a.u(0) == 1) text.keymapFd(a.i(1), a.u(2)) else Native.close(a.i(1))
+            "modifiers" -> text.modifiers(a.u(1), a.u(2), a.u(3), a.u(4))
+            "repeat_info" -> { text.repeatRate = a.i(0); text.repeatDelay = a.i(1) }
             "enter" -> {
                 focused = true
                 val array = a.get(ADDRESS, 16).reinterpret(24)
@@ -306,8 +315,8 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
                 val data = array.get(ADDRESS, 16).reinterpret(size)
                 for (k in 0 until (size / 4)) setKey(data.get(JAVA_INT, 4 * k), true)
             }
-            "leave" -> { focused = false; keys.fill(false); pressed.fill(false) }
-            "key" -> setKey(a.u(2), a.u(3) != 0)
+            "leave" -> { focused = false; keys.fill(false); pressed.fill(false); text.reset() }
+            "key" -> { setKey(a.u(2), a.u(3) != 0); text.key(a.u(2), a.u(3) != 0, System.nanoTime()) }
         }
     }
 
@@ -358,6 +367,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
         if (Native.pollIn(fd, timeoutMs, pollScratch) and 1 != 0) (PSig.I_P.invokeExact(Wl.readEvents, display) as Int)
         else PSig.V_P.invokeExact(Wl.cancelRead, display)
         (PSig.I_P.invokeExact(Wl.dispatchPending, display) as Int)
+        text.repeat(System.nanoTime())
         checkHealth()
     }
 
@@ -368,6 +378,11 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     override fun consumeScroll(): Float { val s = scroll; scroll = 0f; return s }
     override fun consumeResize(): Boolean { val r = resized; resized = false; return r }
 
+    override val pointerX: Float get() = if (pointerInside && !lastX.isNaN()) (lastX * scale).toFloat() else Float.NaN
+    override val pointerY: Float get() = if (pointerInside && !lastY.isNaN()) (lastY * scale).toFloat() else Float.NaN
+    override fun buttonDown(): Boolean { val d = leftDown || leftPressed; leftPressed = false; return d }
+    override fun consumeText(): String = text.take()
+
     override fun close() {
         for (p in listOf(lockedPointer, cursorShape, relativePointer, decoration, toplevel, xdgSurface))
             if (p != NULL) runCatching { destroy(p) }
@@ -376,6 +391,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
             runCatching { flush() }
             PSig.V_P.invokeExact(Wl.disconnect, display)
         }
+        text.close()
         arena.close()
     }
 

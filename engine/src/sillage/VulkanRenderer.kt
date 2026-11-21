@@ -18,6 +18,8 @@ import java.lang.invoke.MethodType
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.IdentityHashMap
+import sillage.ui.GlyphAtlas
+import sillage.ui.HUD_FLOATS
 import javax.imageio.ImageIO
 import kotlin.math.sqrt
 
@@ -53,6 +55,9 @@ internal const val PARTICLE_FLOATS = 8
 // Blending: colour source and destination factors, then alpha's. The alpha of the scene image holds the
 // distance to the eye, which blended things leave as it was.
 private val BLEND_KEEP_ALPHA = intArrayOf(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE)
+/** Formats the interface needs that the scene does not (VkFormat values). */
+private const val HUD_FORMAT_R8 = 9
+private const val HUD_FORMAT_RG32F = 103
 private val BLEND_PREMULTIPLIED = intArrayOf(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE)
 
 /** What a frame draws besides the nodes: the point lights near the camera and the particles. */
@@ -130,7 +135,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var descriptorPool=0L
     private val postSets=LongArray(2*BLOOM_LEVELS)
     private class Frame(val command: MemorySegment, val fence: Long, val acquired: Long) {
-        var hud: Buffer?=null; var hudSent: Mesh?=null
+        var hud: Buffer?=null; var hudSent: HudMesh?=null
         var instances: Buffer?=null; var mapped: MemorySegment=MemorySegment.NULL
         var uniform: Buffer?=null; var uniformMapped: MemorySegment=MemorySegment.NULL; var set=0L
         var timed=false
@@ -222,6 +227,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             createRenderPasses()
             createShadowResources()
             createDescriptors()
+            hudGpu.create()
             syncTextures(target==null)
             createPipelines()
             if(surface != 0L) recreateSwapchain() else createTargets()
@@ -732,14 +738,16 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             "vertexAttributeDescriptionCount" to locations.size, "pVertexAttributeDescriptions" to attrs)
     }
 
-    /** The interface: the mesh only. */
+    /** The interface: per vertex its place, texture or local coordinates, colour, shape and its parameters (ui/Painter.kt). */
     private fun hudInput(s: NativeStack): MemorySegment {
-        val binding=s.struct(VkVertexInputBindingDescription, "binding" to 0, "stride" to 36, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
-        val attrs=s.structs(VkVertexInputAttributeDescription,3)
-        for(i in 0..2) attrs.at(VkVertexInputAttributeDescription,i).put(VkVertexInputAttributeDescription,
-            "binding" to 0, "location" to i, "format" to VK_FORMAT_R32G32B32_SFLOAT, "offset" to i*12)
+        val binding=s.struct(VkVertexInputBindingDescription, "binding" to 0, "stride" to 4*HUD_FLOATS, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
+        val attrs=s.structs(VkVertexInputAttributeDescription,5)
+        val formats=intArrayOf(HUD_FORMAT_RG32F,HUD_FORMAT_RG32F,VK_FORMAT_R32G32B32A32_SFLOAT,VK_FORMAT_R32G32B32A32_SFLOAT,VK_FORMAT_R32G32B32A32_SFLOAT)
+        val at=intArrayOf(0,8,16,32,48)
+        for(i in 0..4) attrs.at(VkVertexInputAttributeDescription,i).put(VkVertexInputAttributeDescription,
+            "binding" to 0, "location" to i, "format" to formats[i], "offset" to at[i])
         return s.struct(VkPipelineVertexInputStateCreateInfo, "vertexBindingDescriptionCount" to 1, "pVertexBindingDescriptions" to binding,
-            "vertexAttributeDescriptionCount" to 3, "pVertexAttributeDescriptions" to attrs)
+            "vertexAttributeDescriptionCount" to 5, "pVertexAttributeDescriptions" to attrs)
     }
 
     /** Particles: per instance its centre and size, its colour and opacity. */
@@ -809,7 +817,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             pipelineDown=make(s,m("post.vert"),m("down.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineUp=make(s,m("post.vert"),m("up.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineComposite=make(s,m("post.vert"),m("composite.frag"),none,compositePass,1,postLayout,false,false,null)
-            pipelineHud=make(s,m("hud.vert"),m("hud.frag"),hudInput(s),compositePass,1,layout,false,false,BLEND_KEEP_ALPHA)
+            pipelineHud=make(s,m("hud.vert"),m("hud.frag"),hudInput(s),compositePass,1,hudGpu.layout,false,false,BLEND_KEEP_ALPHA)
         } finally { modules.values.forEach { dev.destroyShaderModule(it) } }
     }
 
@@ -1056,7 +1064,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         }
     }
 
-    fun dessiner(objets: List<Node>, camera: Mat4, hud: Mesh, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f,
+    fun dessiner(objets: List<Node>, camera: Mat4, hud: HudMesh, capture: Path?=null, oeil: Vec3 = Vec3.ZERO, temps: Float = 0f,
                  hidden: Node? = null, focus: Vec3? = null, lighting: Lighting = defaultLighting, extras: FrameExtras? = null) = stack.frame { s ->
         if(!attendre()) return@frame
         pret=false
@@ -1073,7 +1081,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val index=image
         syncTextures(surface==0L || capture!=null)
         gather(objets,hidden)
-        if(hud!==f.hudSent) { upload(f.hud!!,hud.vertices); f.hudSent=hud }
+        if(hud!==f.hudSent) { hudGpu.send(f,hud); f.hudSent=hud }
+        hudGpu.prepare(hud.atlas)
         // Instance rows of every batch, side by side, then the particles.
         val particleCount=extras?.particleCount ?: 0
         var total=PARTICLE_FLOATS*particleCount
@@ -1107,6 +1116,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.cmdResetQueryPool(command,queries,2*frameIndex,2)
                 dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,2*frameIndex)
             }
+            hudGpu.record(command)
             val constants=s.allocate(JAVA_FLOAT,32)
             fun pushConstants(vp: Mat4, water: WaterLook?=null) {
                 // Column by column, as GLSL reads a mat4 (Mat4 names its coefficients column first).
@@ -1213,10 +1223,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 lighting.glow/BLOOM_LEVELS,lighting.outlines,lighting.vignette,lighting.saturation,maxOf(1,Math.round(hauteur/900f)).toFloat())
             if(hud.vertices.isNotEmpty()) {
                 dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineHud)
-                pushConstants(Mat4.IDENTITY)
+                hudGpu.bind(command,s)
                 handles.setAtIndex(JAVA_LONG,2,f.hud!!.buffer); offsets.setAtIndex(JAVA_LONG,2,0L)
                 dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
-                dev.cmdDraw(command,hud.vertices.size/9,1,0,0)
+                dev.cmdDraw(command,hud.vertices.size/HUD_FLOATS,1,0,0)
             }
             dev.cmdEndRenderPass(command)
             if(readback!=null) {
@@ -1291,6 +1301,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
                 dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
                 zero?.let { destroy(it) }; zero=null
+                hudGpu.close()
                 for(f in frames) {
                     f.hud?.let { destroy(it) }; f.instances?.let { dev.unmapMemory(it.memory); destroy(it) }
                     f.uniform?.let { dev.unmapMemory(it.memory); destroy(it) }
@@ -1320,4 +1331,125 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             }
         } finally { arena.close() }
     }
+
+    // ------------------------------------------------------------------ the interface's glyphs
+
+    /**
+     * The HUD's own resources: its pipeline layout (one texture, the atlas's size as push constants), the
+     * glyph atlas as an 8-bit image, and per frame in flight a staging buffer. The rows of the atlas that
+     * changed are copied at the start of the frame's commands, behind a barrier: new glyphs never stall the
+     * GPU. Only when the atlas changes size is the image made again (the device then waits).
+     */
+    private inner class HudGpu {
+        var setLayout=0L; var layout=0L; var pool=0L; var set=0L
+        var image: Image?=null; var width=0; var height=0
+        var sent: GlyphAtlas?=null; var version=-1; var generation=-1
+        val staging=arrayOfNulls<Buffer>(FRAMES); val mapped=arrayOfNulls<MemorySegment>(FRAMES)
+        var copyTop=0; var copyRows=0                         // rows to copy this frame from the frame's staging buffer
+
+        fun create() = stack.frame { s ->
+            val p=s.allocate(JAVA_LONG)
+            val b=s.struct(VkDescriptorSetLayoutBinding, "binding" to 0, "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                "descriptorCount" to 1, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT)
+            dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 1, "pBindings" to b),p)
+            setLayout=p.get(JAVA_LONG,0)
+            val push=s.struct(VkPushConstantRange, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT, "offset" to 0, "size" to 16)
+            dev.createPipelineLayout(s.struct(VkPipelineLayoutCreateInfo, "setLayoutCount" to 1, "pSetLayouts" to s.longs(setLayout),
+                "pushConstantRangeCount" to 1, "pPushConstantRanges" to push),p)
+            layout=p.get(JAVA_LONG,0)
+            val size=s.struct(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 1)
+            dev.createDescriptorPool(s.struct(VkDescriptorPoolCreateInfo, "maxSets" to 1, "poolSizeCount" to 1, "pPoolSizes" to size),p)
+            pool=p.get(JAVA_LONG,0)
+            dev.allocateDescriptorSets(s.struct(VkDescriptorSetAllocateInfo, "descriptorPool" to pool, "descriptorSetCount" to 1,
+                "pSetLayouts" to s.longs(setLayout)),p)
+            set=p.get(JAVA_LONG,0)
+            makeImage(4,4)
+        }
+
+        /** A new atlas image of [w] × [h] texels, its texels undefined until the next copy (all rows); the set points at it. */
+        fun makeImage(w: Int, h: Int) = stack.frame { s ->
+            image?.let { destroy(it) }
+            val img=image(HUD_FORMAT_R8,VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT,1,w,h)
+            image=img; width=w; height=h
+            // Readable at once, so that the set is valid even before the first glyph.
+            val cmd=uploads
+            dev.resetCommandBuffer(cmd,0)
+            dev.beginCommandBuffer(cmd,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+            barrier(cmd,img.image,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,0,VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,s)
+            dev.endCommandBuffer(cmd)
+            dev.queueSubmit(queue,1,s.struct(VkSubmitInfo, "commandBufferCount" to 1, "pCommandBuffers" to s.pointers(cmd)),0L)
+            dev.queueWaitIdle(queue)
+            val w2=s.struct(VkWriteDescriptorSet, "dstSet" to set, "dstBinding" to 0, "descriptorCount" to 1,
+                "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "pImageInfo" to s.struct(VkDescriptorImageInfo,
+                    "sampler" to linear, "imageView" to img.view, "imageLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+            dev.updateDescriptorSets(1,w2)
+        }
+
+        /** The HUD's vertices into the frame's buffer (made larger if they no longer fit). */
+        fun send(f: Frame, hud: HudMesh) {
+            val bytes=hud.vertices.size*4L
+            if(bytes>f.hud!!.size) { destroy(f.hud!!); f.hud=buffer(maxOf(bytes,2*f.hud!!.size),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) }
+            upload(f.hud!!,hud.vertices)
+        }
+
+        /** Before recording: the rows of [atlas] changed since the last frame go to this frame's staging buffer. */
+        fun prepare(atlas: GlyphAtlas?) {
+            copyRows=0
+            if(atlas==null) return
+            if(atlas!==sent || atlas.width!=width || atlas.height!=height) {
+                dev.deviceWaitIdle()
+                makeImage(atlas.width,atlas.height)
+                sent=atlas; version=-1
+                atlas.takeDirty()
+                copy(atlas,0,atlas.height)
+            } else if(atlas.version!=version) {
+                val (top,bottom)=atlas.takeDirty().let { it[0] to it[1] }
+                if(bottom>top) copy(atlas,top,bottom)
+            }
+            version=atlas.version
+        }
+
+        private fun copy(atlas: GlyphAtlas, top: Int, bottom: Int) {
+            val bytes=(bottom-top).toLong()*atlas.width
+            var b=staging[frameIndex]
+            if(b==null || b.size<bytes) {
+                b?.let { dev.unmapMemory(it.memory); destroy(it) }
+                b=buffer(maxOf(bytes,64L*1024),VK_BUFFER_USAGE_TRANSFER_SRC_BIT); staging[frameIndex]=b; mapped[frameIndex]=map(b)
+            }
+            MemorySegment.copy(atlas.pixels,top*atlas.width,mapped[frameIndex]!!,JAVA_BYTE,0L,bytes.toInt())
+            copyTop=top; copyRows=bottom-top
+        }
+
+        /** At the start of the frame's commands: the staged rows into the atlas image. */
+        fun record(command: MemorySegment) = stack.frame { s ->
+            if(copyRows==0) return@frame
+            val img=image!!
+            barrier(command,img.image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,s)
+            val region=s.struct(VkBufferImageCopy, "bufferOffset" to 0L, "imageOffset.y" to copyTop,
+                "imageExtent.width" to width, "imageExtent.height" to copyRows, "imageExtent.depth" to 1).subresource("imageSubresource",VkBufferImageCopy)
+            dev.cmdCopyBufferToImage(command,staging[frameIndex]!!.buffer,img.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
+            barrier(command,img.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,s)
+        }
+
+        /** Binds the atlas and gives its size to the shader. */
+        fun bind(command: MemorySegment, s: NativeStack) {
+            dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,s.longs(set))
+            val c=s.allocate(JAVA_FLOAT,4)
+            c.setAtIndex(JAVA_FLOAT,0,width.toFloat()); c.setAtIndex(JAVA_FLOAT,1,height.toFloat())
+            c.setAtIndex(JAVA_FLOAT,2,1f/width); c.setAtIndex(JAVA_FLOAT,3,1f/height)
+            dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,16,c)
+        }
+
+        fun close() {
+            for(i in staging.indices) staging[i]?.let { dev.unmapMemory(it.memory); destroy(it) }
+            image?.let { destroy(it) }; image=null
+            if(layout!=0L) dev.destroyPipelineLayout(layout)
+            if(pool!=0L) dev.destroyDescriptorPool(pool)
+            if(setLayout!=0L) dev.destroyDescriptorSetLayout(setLayout)
+        }
+    }
+    private val hudGpu=HudGpu()
 }

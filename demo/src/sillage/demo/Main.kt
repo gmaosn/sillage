@@ -198,33 +198,42 @@ private fun shellMesh(): Mesh {
 
 /**
  * L'interface des Alizés, légère : le titre le temps de découvrir l'île, un compteur discret, l'aide au
- * début (puis sur H), et le message du trésor. Les panneaux laissent voir le jeu au travers.
+ * début (puis sur H), et le message du trésor. Les panneaux prennent la taille de ce qu'ils contiennent
+ * (dans n'importe quelle police) et laissent voir le jeu au travers. Échap ouvre le menu de pause.
  */
 private fun Scene.interfaceAlizes() {
     val ink = Color.hex(0x153D48); val paper = Color.hex(0xFFEDBE); val gold = Color.hex(0xFFCE6E)
-    fun shadowed(text: String, y: Number, size: Number, color: Color) = listOf(
-        hud.text(text, 2, y.toFloat() + 2, size, ink, Hud.Anchor.TOP).also { it.opacity = .45f },
-        hud.text(text, 0, y, size, color, Hud.Anchor.TOP))
-    val title = shadowed("LES ALIZES", 46, 5, gold) + shadowed("UNE ILE, SIX COQUILLAGES", 96, 1.75, paper)
+    hud.theme.panel = ink; hud.theme.text = paper; hud.theme.accent = gold
+    val title = hud.column(0, 46, Hud.Anchor.TOP, spacing = 15, place = Place.CENTER) {
+        text("LES ALIZES", 5, gold).shadow = ink
+        text("UNE ILE, SIX COQUILLAGES", 1.75, paper).shadow = ink
+    }
 
-    val counter = hud.panel(24, 24, 196, 56, ink, Hud.Anchor.TOP_RIGHT, opacity = .72)
-    hud.text({ "COQUILLAGES  ${pickups.count { it.collected }} / ${pickups.size}" }, 42, 36.75, 1.5, paper, Hud.Anchor.TOP_RIGHT)
-    // L'heure, refaite seulement quand la minute change (le texte est relu à chaque image).
+    // Le compteur, et l'heure refaite seulement quand la minute change (le texte est relu à chaque image).
     var minute = -1; var hour = ""
-    hud.text({
-        val m = ((lighting.time ?: 12f) * 60).toInt()
-        if (m != minute) { minute = m; hour = "HEURE  %02d:%02d".format(m / 60 % 24, m % 60) }
-        hour
-    }, 42, 61, 1.25, gold, Hud.Anchor.TOP_RIGHT)
+    val counter = hud.column(24, 24, Hud.Anchor.TOP_RIGHT, spacing = 11, place = Place.END) {
+        panel(ink, opacity = .72, radius = 8); paddingX = 18f; paddingY = 12f
+        text({ "COQUILLAGES  ${pickups.count { it.collected }} / ${pickups.size}" }, 1.5, paper)
+        text({
+            val m = ((lighting.time ?: 12f) * 60).toInt()
+            if (m != minute) { minute = m; hour = "HEURE  %02d:%02d".format(m / 60 % 24, m % 60) }
+            hour
+        }, 1.25, gold)
+    }
 
-    val help = listOf(hud.panel(24, 24, 912, 48, ink, Hud.Anchor.BOTTOM_LEFT, opacity = .7),
-        hud.text("ZQSD / WASD  BOUGER    MAJ  MARCHER    ESPACE  SAUTER    SOURIS  CAMERA", 42, 49.5, 1.5, paper, Hud.Anchor.BOTTOM_LEFT),
-        hud.text("MOLETTE  ZOOM    V  VUE    T  HEURE    M  SON    R  RECOMMENCER    TAB  SOURIS    ECHAP  QUITTER", 42, 33.25, 1.25, gold, Hud.Anchor.BOTTOM_LEFT))
+    val help = hud.column(24, 24, Hud.Anchor.BOTTOM_LEFT, spacing = 7) {
+        panel(ink, opacity = .7, radius = 8); paddingX = 18f; paddingY = 12f
+        text("ZQSD / WASD  BOUGER    MAJ  MARCHER    ESPACE  SAUTER    SOURIS  CAMERA", 1.5, paper)
+        text("MOLETTE  ZOOM    V  VUE    T  HEURE    M  SON    R  RECOMMENCER    TAB  SOURIS    ECHAP  PAUSE", 1.25, gold)
+    }
     val helpKey = hud.text("H  AIDE", 24, 24, 1.25, paper, Hud.Anchor.BOTTOM_RIGHT)
-    val treasure = listOf(hud.panel(0, -68, 520, 84, ink, Hud.Anchor.CENTER, opacity = .85),
-        hud.text("TRESOR DES ALIZES", 0, -81.5, 3, gold, Hud.Anchor.CENTER),
-        hud.text("TOUS LES COQUILLAGES SONT RETROUVES", 0, -46.75, 1.5, paper, Hud.Anchor.CENTER))
+    val treasure = hud.column(0, -68, Hud.Anchor.CENTER, spacing = 14, place = Place.CENTER) {
+        panel(ink, opacity = .85, radius = 10, padding = 22)
+        text("TRESOR DES ALIZES", 3, gold)
+        text("TOUS LES COQUILLAGES SONT RETROUVES", 1.5, paper)
+    }
     hud.mouseHint = "TAB POUR CAPTURER LA SOURIS"
+    hud.pauseMenu("PAUSE", "REPRENDRE", "RECOMMENCER", "SON : OUI" to "SON : NON", "QUITTER")
 
     // Le titre s'efface après quelques secondes, l'aide après quatorze ; H la rappelle ou la range.
     var helpUntil = 14f
@@ -232,13 +241,13 @@ private fun Scene.interfaceAlizes() {
     onKey(Key.F3) { hud.showFps = !hud.showFps }
     onUpdate {
         val fadeTitle = ((7f - time) / 1.5f).coerceIn(0f, 1f)
-        title.forEachIndexed { k, t -> t.opacity = fadeTitle * (if (k % 2 == 0) .45f else 1f); t.visible = fadeTitle > 0f }
+        title.opacity = fadeTitle; title.visible = fadeTitle > 0f
         val fadeHelp = ((helpUntil - time) / .6f).coerceIn(0f, 1f)
-        help.forEachIndexed { k, e -> e.opacity = fadeHelp * (if (k == 0) .7f else 1f); e.visible = fadeHelp > 0f }
+        help.opacity = fadeHelp; help.visible = fadeHelp > 0f
         helpKey.visible = fadeHelp < 1f
-        counter.color = ink.mix(Color.hex(0x3D6E7C), Math.round(lighting.night * 16) / 16f)   // la nuit, le panneau se détache du ciel
+        counter.root.background = ink.mix(Color.hex(0x3D6E7C), Math.round(lighting.night * 16) / 16f)   // la nuit, le panneau se détache du ciel
         val all = pickups.isNotEmpty() && pickups.all { it.collected }
-        treasure.forEach { it.visible = all }
+        treasure.visible = all
         hud.mouseHint = if (all) null else "TAB POUR CAPTURER LA SOURIS"
     }
 }
