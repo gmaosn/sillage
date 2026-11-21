@@ -165,6 +165,8 @@ Without a model the player is a capsule. With a model, the player plays its clip
 
 The player is a character controller: it climbs steps up to 35 cm, walks slopes up to 50°, stands on moving platforms, pushes dynamic bodies with a bounded force, and is never pushed into walls or squeezed through gaps. It respawns at `spawn` below `fallLimit`.
 
+With a pad, the player walks with the left stick: a small tilt walks, slower than `walkSpeed`; half a tilt walks at `walkSpeed`; a full tilt runs at `runSpeed`. Cross (south) jumps, the walk keys still cap the speed. `keys` takes key and pad button codes alike (`keys.jump = intArrayOf(Key.SPACE, Pad.CROSS)`); `keys.stick` picks the stick (`Stick.LEFT`, or null for none) and `keys.pad` the pad by slot (−1, the default, for any), which gives each player of a local multiplayer game its own pad.
+
 `effects` (true) makes a puff of dust when it lands on sand or a path and a splash when it falls into water. From the game: `move(direction, walk)` and `jump()` drive it (set `controls = false` to drive it yourself, for an AI or a cut scene), `position = …` teleports it, `respawn()`, `celebrate()`. `onGround`, `velocity`, `isMoving` and `character` (the controller, with what it stands on and what it pushes) tell you its state. `players` holds them all; `player` is the first.
 
 ## The camera
@@ -175,7 +177,7 @@ The player is a character controller: it climbs steps up to 35 cm, walks slopes 
 | `CameraMode.FIRST_PERSON` | at the target's eyes; the player turns with the mouse and is not drawn |
 | `CameraMode.FIXED` | set by `camera.lookAt(eye, target)` |
 
-Choose with `player { view = … }` or `camera.mode`; `camera.switchKey = Key.V` lets the player toggle between first and third person. `camera.follow(node)` follows another node. `distance`, `minDistance`, `maxDistance`, `targetHeight`, `eyeHeight`, `yaw`, `elevation`, `pitch`, `fov`, `near`, `far` and `mouseSensitivity` are all settable. `camera.moveDirection(x, z)` turns stick or key input into a direction on the ground relative to the view.
+Choose with `player { view = … }` or `camera.mode`; `camera.switchKey = Key.V` lets the player toggle between first and third person (a pad button works too: `camera.switchKey = Pad.R3`). The right stick of a pad turns the view (`lookStick`, `stickSpeed` 160° per second at a full tilt, two thirds of that up and down, `pad` to pick one by slot); `invertY` swaps up and down for the stick and the mouse. In first person, `camera.gyroAim = true` aims with a DualSense's gyroscope: turning the pad turns the view as far (`gyroSensitivity` 1), about the vertical however the pad is held, from every report of the sensor rather than one per frame. `camera.follow(node)` follows another node. `distance`, `minDistance`, `maxDistance`, `targetHeight`, `eyeHeight`, `yaw`, `elevation`, `pitch`, `fov`, `near`, `far` and `mouseSensitivity` are all settable. `camera.moveDirection(x, z)` turns stick or key input into a direction on the ground relative to the view.
 
 A static body made with `blocksCamera = false` (a palm trunk, a lamp post) never pulls the third-person camera in.
 
@@ -189,9 +191,67 @@ onUpdate { if (input.isDown(Key.E)) openDoor() }
 val turn = input.axis(Key.LEFT, Key.RIGHT)          // −1, 0 or 1
 ```
 
-`input.pressed(key)` is true only on the frame the key goes down. `input.mouseDelta`, `input.wheel` and `input.mouseCaptured` give the mouse.
+`input.pressed(key)` is true only on the frame the key goes down, `input.released(key)` on the frame it comes up. `input.mouseDelta`, `input.wheel` and `input.mouseCaptured` give the mouse.
 
 The keys come from `input.source`: the window in a game, or your own `KeySource` to script them (tests, replays, a bot), as in `input.source = KeySource { it == Key.B }`.
+
+### Pads
+
+A game with a window finds the computer's pads by itself, plugged in or paired at any time. A PlayStation 5 DualSense (or DualSense Edge) is read through its raw HID device, over USB or Bluetooth, with everything it has: buttons, analog triggers, the motion sensors with the pad's own calibration, the touchpad, the battery, and the light bar, the player LEDs, the mute light, rumble and adaptive triggers. Other gamepads (Xbox, 8BitDo, Switch Pro…) are read through Linux's evdev, mapped to the same layout, with rumble when they have it.
+
+```kotlin
+onUpdate {
+    val pad = input.pad ?: return@onUpdate              // the first pad connected
+    if (pad.pressed(Pad.CROSS)) jump()
+    val aim = pad.stick(Stick.RIGHT)                    // x right, y up, −1..1, dead zone applied
+    val throttle = pad.trigger(Pad.R2)                  // 0..1
+}
+input.onPadConnected { pad ->
+    pad.lightbar = Color.ORANGE
+    pad.triggerEffect(Pad.R2, TriggerEffect.resistance(start = .3, force = .8))
+}
+input.onPadDisconnected { pause() }
+```
+
+Buttons are codes like keys, named by place (`Pad.SOUTH`, `EAST`, `WEST`, `NORTH`, `L1`, `R1`, `L2`, `R2`, `SELECT`, `START`, `HOME`, `L3`, `R3`, `DPAD_UP`…) and by their DualSense names (`Pad.CROSS`, `CIRCLE`, `SQUARE`, `TRIANGLE`, `CREATE`, `OPTIONS`, `PS`, `TOUCHPAD`, `MUTE`; the Edge's `FN_LEFT`, `FN_RIGHT`, `PADDLE_LEFT`, `PADDLE_RIGHT`). So `input.pressed(Pad.CROSS)`, `onKey(Pad.OPTIONS) { … }` and the player's `keys` work with them, any pad counting.
+
+`input.pads` lists the pads connected, by slot; each keeps its `slot` (player number − 1) until the game ends, even unplugged: the same pad plugging back in gets its slot and its `Pad` object back, and a scene the game goes to keeps the pads. A DualSense shows its slot with its player LEDs and a light bar colour (blue, red, green, pink as on a PlayStation; `input.padLights = false` leaves them alone).
+
+A `Pad` has `isDown`, `pressed`, `released`; `leftStick` and `rightStick` (`x`, `y`, `amount`, and `rawX`, `rawY` before the dead zone) with a radial dead zone (`deadZone` 0.1, `fullTilt` 0.95); `trigger(Pad.L2)` and `trigger(Pad.R2)`; and, on a DualSense, `gyro` (rad/s) and `accel` (m/s²) on the pad's axes (x to its right, y up out of its face, z towards you), `touch` (two fingers, `x` and `y` from the top left, 0..1), `battery` (0..1) and `batteryState`, `headphones` and `microphone`. `rumble(low, high, seconds)` shakes it (the heavy motor, the light one, 0..1; the engine stops it when the time is up), `lightbar`, `playerLeds` (five bits) and `muteLed` light it, and `triggerEffect(Pad.R2, …)` sets an adaptive trigger: `TriggerEffect.resistance(start, force)`, `weapon(start, end, force)` (resists, then gives way with a click, between 20 % and 90 % of the travel), `vibration(start, amplitude, frequency)`, or `OFF`. `canRumble`, `hasLightbar`, `hasAdaptiveTriggers`, `hasMotion`, `hasTouchpad` and `hasBattery` say what a pad offers. When the game ends, trigger effects are freed and motors stopped.
+
+On Linux the user must be allowed to open the pads. Gamepads are, on a desktop session (udev gives the seat's user access to joysticks). A DualSense's raw HID device needs a udev rule: Steam installs one (`60-steam-input.rules`), and some distributions ship such rules (`game-devices-udev`). Without it the DualSense is read through evdev, with its buttons, sticks, triggers and rumble only, and a message says so once. Started by Steam with Steam Input, a game sees Steam's virtual pads instead of the real ones, as SDL games do. Steam, when it runs, may also drive a DualSense's lights.
+
+`--pad-test` (any game, or `./kotlin run -m playground --jvm-args=--enable-native-access=ALL-UNNAMED -- --pad-test`) checks the pads from a terminal, without a window: it says which pads the system shows and which it may not open, prints each pad's state live, cycles the light bar colours, lights the player LEDs, rumbles, sets resistances on the triggers (TRIANGLE changes them, CROSS rumbles, SQUARE lights the mute button), and holding PS for two seconds stops it.
+
+### Actions
+
+Read named actions rather than keys, and the player can change the bindings while the game runs:
+
+```kotlin
+val jump = input.action("jump", Key.SPACE, Pad.CROSS)
+val fire = input.action("fire", Key.F, Pad.R2)
+val move = input.axes("move", Key.A, Key.D, Key.S, Key.W, Stick.LEFT)
+onUpdate {
+    if (jump.pressed) player?.jump()                    // or input.pressed("jump")
+    power = fire.value                                  // 0..1: R2 half pulled gives .5, a key 1
+    steer(move.x, move.y)                               // within the unit circle
+}
+```
+
+An `Action` has `isDown`, `pressed`, `released`, `value`, its `bindings`, and `bind`, `rebind`, `unbind`; `pad` restricts it to one pad. `Axes` has `x`, `y`, `amount`, four arrays of keys or buttons (`left`, `right`, `down`, `up`), a `stick`, and `mouse` (the mouse's movement added, per pixel). `input.actions` lists the actions for a settings menu, which can wait for `input.firstPressed()` (the key or pad button that went down this frame, or −1) and `rebind` to it. `Input.codeName(code)` names a code ("SPACE", "CROSS").
+
+### Pads from code
+
+A `VirtualPad` is a pad driven by code, for tests, bots and scripted runs: `input.plug(pad)`, then `press`, `release`, `stick`, `trigger`, `motion`, `touch`; the scene reads it as a real one, and what the game sent back (`rumbleLow`, `lightbar`, `triggerEffect(…)`…) can be checked. `input.padSource` says where the other pads come from (`PadSource.system()` in a game with a window, `PadSource.NONE` without).
+
+```kotlin
+val bot = VirtualPad()
+val s = Scene().apply { ground(); player(); input.plug(bot) }
+bot.stick(Stick.LEFT, 0, 1)                             // full tilt forward: the player runs
+repeat(60) { s.step(1f / 60f) }
+```
+
+`--pad-script` does the same from the command line, in the scene's time, so a run without a window plays the same every time: `--headless --mute --pad-script "0.5 L 0,1; 2.5 L 0,0; 3 tap CROSS; 4.5 R 1,0; 5.5 R 0,0"` walks forward for two seconds, jumps and turns the camera. Orders: `L x,y` and `R x,y` (sticks), `press B`, `release B`, `tap B` (a tenth of a second), `L2 v`, `R2 v`, `gyro x,y,z`.
 
 ## The interface
 
