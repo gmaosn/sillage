@@ -363,6 +363,9 @@ class Scene {
         return b
     }
 
+    /** The point of the solid ground under (x, z): `vec(x, groundHeight(x, z), z)`. */
+    fun groundAt(x: Number, z: Number): Vec3 = Vec3(x.toFloat(), groundHeight(x, z), z.toFloat())
+
     /** Height of the solid ground (static meshes) under (x, z), 0 where there is none. */
     fun groundHeight(x: Number, z: Number): Float =
         physics.raycast(Vec3(x.toFloat(), 1000f, z.toFloat()), Vec3(0f, -1f, 0f), 2000f, filter = { false })?.point?.y ?: 0f
@@ -574,11 +577,90 @@ class Scene {
     /** Runs [block] when the scene restarts (see [restart]). */
     fun onRestart(block: () -> Unit) { restarts.add(block) }
 
+    // ------------------------------------------------------------------ scripts, conditions, tweens
+
+    private val scripts = ArrayList<Script>()
+    private val scriptCopy = ArrayList<Script>()
+    private class Condition(val test: () -> Boolean, val action: () -> Unit, val again: Boolean) { var held = false; var fired = false }
+    private val conditions = ArrayList<Condition>()
+    private val tweens = ArrayList<Tween>()
+    private val tweenCopy = ArrayList<Tween>()
+
+    /**
+     * A [Script]: [block] runs from the next frame on, and may wait for time or conditions without
+     * stopping the game (`wait(2)`, `waitUntil { … }`).
+     */
+    fun script(block: suspend Script.() -> Unit): Script = Script(this).also { it.start(block); scripts.add(it) }
+
+    /** Runs [action] the first frame [condition] holds; [restart] arms it again. */
+    fun once(condition: () -> Boolean, action: () -> Unit) { conditions.add(Condition(condition, action, again = false)) }
+
+    /** Runs [action] each time [condition] becomes true (it must turn false before it fires again). */
+    fun whenever(condition: () -> Boolean, action: () -> Unit) { conditions.add(Condition(condition, action, again = true)) }
+
+    /**
+     * Calls [step] at every frame for [over] seconds (after waiting [after]) with the share of the way done,
+     * 0 to 1, shaped by [ease]; the last call gets 1.
+     */
+    fun tween(over: Number, ease: Ease = Ease.IN_OUT, after: Number = 0, step: (Float) -> Unit): Tween =
+        addTween(over, after, ease, step) {}
+
+    /** Calls [step] with a value going from [from] to [to] in [over] seconds. */
+    fun tween(from: Number, to: Number, over: Number, ease: Ease = Ease.IN_OUT, after: Number = 0, step: (Float) -> Unit): Tween {
+        val a = from.toFloat(); val b = to.toFloat()
+        return addTween(over, after, ease, { k -> step(a + (b - a) * k) }) {}
+    }
+
+    /** Fades this HUD element's opacity to [to] in [over] seconds, after [after]; at 0 it ends hidden, above 0 it is shown first. */
+    fun Hud.Element.fade(to: Number, over: Number = .5, after: Number = 0, ease: Ease = Ease.IN_OUT): Tween {
+        val target = to.toFloat().coerceIn(0f, 1f)
+        val e = this
+        var from = Float.NaN
+        return addTween(over, after, ease, { k ->
+            if (from.isNaN()) { from = if (e.visible) e.opacity else 0f; if (target > 0f) e.visible = true }
+            e.opacity = from + (target - from) * k
+        }) { if (target == 0f) e.visible = false }
+    }
+
+    /** Fades this HUD element in, to full opacity. */
+    fun Hud.Element.fadeIn(over: Number = .5, after: Number = 0): Tween = fade(1, over, after)
+
+    /** Fades this HUD element out; it ends hidden. */
+    fun Hud.Element.fadeOut(over: Number = .5, after: Number = 0): Tween = fade(0, over, after)
+
+    internal fun addTween(over: Number, after: Number, ease: Ease, apply: (Float) -> Unit, finished: () -> Unit): Tween {
+        val d = over.toFloat(); val wait = after.toFloat()
+        require(d >= 0f && d.isFinite() && wait >= 0f && wait.isFinite()) { "A tween takes durations of 0 seconds or more (got over $over, after $after)" }
+        return Tween(time + wait, d, ease, apply, finished).also { tweens.add(it) }
+    }
+
+    /** Scripts, tweens and conditions, once per frame, in the order they were made. */
+    private fun runScripts() {
+        if (scripts.isNotEmpty()) {
+            scriptCopy.clear(); scriptCopy.addAll(scripts)
+            for (k in 0 until scriptCopy.size) scriptCopy[k].tick()
+            scripts.removeAll { it.done }
+        }
+        if (tweens.isNotEmpty()) {
+            tweenCopy.clear(); tweenCopy.addAll(tweens)
+            for (k in 0 until tweenCopy.size) tweenCopy[k].tick(time)
+            tweens.removeAll { it.done }
+        }
+        for (k in 0 until conditions.size) {
+            val c = conditions[k]
+            if (c.fired && !c.again) continue
+            val now = c.test()
+            if (now && !c.held) { c.fired = true; c.action() }
+            c.held = now
+        }
+    }
+
     /** Players back at their spawn points, pickups back in place, then the [onRestart] actions. */
     fun restart() {
         for (p in playerList) p.respawn()
         for (p in pickupList) { p.collected = false; p.node.visible = true; p.zone.enabled = true }
         particles.clear()
+        for (c in conditions) { c.fired = false; c.held = false }
         restarts.forEach { it() }
     }
 
@@ -716,6 +798,7 @@ class Scene {
             for (k in 0 until timerCopy.size) { val t = timerCopy[k]; if (time >= t.at) { t.action(); if (t.every > 0f) t.at = time + t.every + Math.random().toFloat() * t.spread else timers.remove(t) } }
         }
         for (k in 0 until updates.size) updates[k](this, dt)
+        runScripts()
         nodeCopy.clear(); for (k in 0 until all.size) nodeCopy.add(all[k])
         for (k in 0 until nodeCopy.size) { val n = nodeCopy[k]; val bs = n.behaviours; for (j in 0 until bs.size) n.(bs[j])(dt) }
         // The world first (animated scenery, moving platforms, bodies), then the players: they stand where

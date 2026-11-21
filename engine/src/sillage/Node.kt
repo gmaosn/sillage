@@ -81,6 +81,43 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Sets the size factor (before [dynamic] or [solid]). */
     fun scaled(factor: Number): Node { scale = factor.toFloat(); return this }
 
+    /**
+     * Sets it down on the solid ground at ([x], [z]), [lift] metres above it: its lowest point (as it is
+     * turned and scaled now) rests on the ground. Works before or after [dynamic] and [solid].
+     */
+    fun onGround(x: Number, z: Number, lift: Number = 0): Node {
+        val (lo, hi) = localBounds() ?: (Vec3.ZERO to Vec3.ZERO)
+        var bottom = Float.MAX_VALUE
+        for (i in 0 until 8) {
+            val c = Vec3(if (i and 1 == 0) lo.x else hi.x, if (i and 2 == 0) lo.y else hi.y, if (i and 4 == 0) lo.z else hi.z)
+            bottom = kotlin.math.min(bottom, rotation.rotate(c * scale).y)
+        }
+        return at(Vec3(x.toFloat(), scene.groundHeight(x, z) - bottom + lift.toFloat() + .005f, z.toFloat()))
+    }
+
+    /** Its mesh's bounds before scaling and turning (an animated model: of its rest pose), or null if it draws nothing. */
+    private fun localBounds(): Pair<Vec3, Vec3>? {
+        if (mesh.triangleCount > 0) return mesh.bounds
+        val m = model ?: return null
+        return m.flatten().takeIf { it.triangleCount > 0 }?.bounds
+    }
+
+    /** Moves it to [target] in [over] seconds (after [after]), the way [ease] says; a kinematic body follows smoothly. */
+    fun moveTo(target: Vec3, over: Number, ease: Ease = Ease.IN_OUT, after: Number = 0): Tween {
+        var from: Vec3? = null
+        return scene.addTween(over, after, ease, { k ->
+            val a = from ?: position.also { from = it }
+            val p = a + (target - a) * k
+            if (body?.type == sillage.physics.BodyType.KINEMATIC) position = p else at(p)
+        }) {}
+    }
+
+    /** Changes its size factor to [factor] in [over] seconds (the look only: a body keeps its size). */
+    fun scaleTo(factor: Number, over: Number, ease: Ease = Ease.IN_OUT, after: Number = 0): Tween {
+        val b = factor.toFloat(); var a = Float.NaN
+        return scene.addTween(over, after, ease, { k -> if (a.isNaN()) a = scale; scale = a + (b - a) * k }) {}
+    }
+
     // ------------------------------------------------------------------ physics in one line
 
     /**
@@ -130,11 +167,18 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Hangs it from [anchor]: it swings freely about that point (a lantern, a punching bag). */
     fun hangFrom(anchor: Vec3, to: Node? = null): BallJoint = scene.physics.addBall(to?.body, joinable(), anchor)
 
-    /** A hinge at [anchor], turning about [axis] (a door, a see-saw, a wheel); limits, motor, spring on the result. */
-    fun hinge(anchor: Vec3, axis: Vec3, to: Node? = null): HingeJoint = scene.physics.addHinge(to?.body, joinable(), anchor, axis)
+    /**
+     * A hinge at [anchor], turning about [axis] (a door, a see-saw, a wheel), between [min] and [max]
+     * degrees from where it is now when both are given; motor and spring on the result.
+     */
+    fun hinge(anchor: Vec3, axis: Vec3, to: Node? = null, min: Number? = null, max: Number? = null): HingeJoint =
+        scene.physics.addHinge(to?.body, joinable(), anchor, axis).also { j ->
+            if (min != null && max != null) j.limits(min.toFloat() * PI.toFloat() / 180f, max.toFloat() * PI.toFloat() / 180f)
+        }
 
-    /** Slides along [axis] without turning (a drawer, a lift); limits, motor, spring on the result. */
-    fun slider(axis: Vec3, to: Node? = null): SliderJoint = scene.physics.addSlider(to?.body, joinable(), axis)
+    /** Slides along [axis] without turning (a drawer, a lift), between [min] and [max] metres when both are given; motor and spring on the result. */
+    fun slider(axis: Vec3, to: Node? = null, min: Number? = null, max: Number? = null): SliderJoint =
+        scene.physics.addSlider(to?.body, joinable(), axis).also { j -> if (min != null && max != null) j.limits(min.toFloat(), max.toFloat()) }
 
     /** Glued to [to] (or to the world) as they are now. */
     fun glue(to: Node? = null): FixedJoint = scene.physics.addFixed(to?.body, joinable())

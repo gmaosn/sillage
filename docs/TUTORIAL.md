@@ -106,18 +106,29 @@ The interface is a canvas 600 units high, top-left first. A text given as a bloc
 ## 7. Winning, and playing again
 
 ```kotlin
-onUpdate {
-    if (!won && score == spots.size) {
-        won = true
-        banner.visible = true
-        player?.celebrate(2)
-    }
+once({ score == spots.size }) {
+    won = true
+    banner.fadeIn(over = .4)
+    player?.celebrate(2)
 }
 onKey(Key.R) { restart() }
 onRestart { score = 0; clock = 0f; won = false; banner.visible = false }
 ```
 
-When the four stars are found, the banner shows and the player dances for two seconds. `restart()` puts the player back at the spawn point and the stars back in place. It then calls your `onRestart` blocks, which reset the game's own state.
+`once` watches its condition at every frame and runs its block the first time it holds: when the four stars are found, the banner fades in and the player dances for two seconds. `restart()` puts the player back at the spawn point and the stars back in place, arms `once` again, then calls your `onRestart` blocks, which reset the game's own state. (`whenever` is the same, but fires each time its condition becomes true.)
+
+## 7½. Ready, go!
+
+```kotlin
+val ready = hud.text("READY?", 0, -80, 4, Color.WHITE, Hud.Anchor.CENTER)
+script {
+    wait(1.5)
+    ready.value = { "GO!" }
+    ready.fadeOut(over = .6, after = .4)
+}
+```
+
+A `script` is a block that takes its time: `wait(1.5)` lets the game run for a second and a half, then the script goes on where it stopped. No timer to set, no flag to keep: the steps are written in the order they happen. `waitUntil { … }` waits for a condition, and `fadeOut` spreads a change over time (a *tween*: `moveTo` and `scaleTo` do the same for things in the scene).
 
 ## 8. A little life
 
@@ -172,15 +183,21 @@ fun main(args: Array<String>) {
         onUpdate { dt -> if (!won) clock += dt }
 
         // 7. Winning, and playing again
-        onUpdate {
-            if (!won && score == spots.size) {
-                won = true
-                banner.visible = true
-                player?.celebrate(2)
-            }
+        once({ score == spots.size }) {
+            won = true
+            banner.fadeIn(over = .4)
+            player?.celebrate(2)
         }
         onKey(Key.R) { restart() }
         onRestart { score = 0; clock = 0f; won = false; banner.visible = false }
+
+        // 7½. Ready, go!
+        val ready = hud.text("READY?", 0, -80, 4, Color.WHITE, Hud.Anchor.CENTER)
+        script {
+            wait(1.5)
+            ready.value = { "GO!" }
+            ready.fadeOut(over = .6, after = .4)
+        }
 
         // 8. A little life
         every(6, randomExtra = 6) { play(Sounds.gull(), at = vec(0, 8, -20)) }

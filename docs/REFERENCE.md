@@ -74,7 +74,12 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `onUpdate { dt -> … }` | every frame, with the frame's duration |
 | `onKey(key) { … }` | when a key goes down |
 | `after(seconds) { … }`, `every(seconds, randomExtra = 0) { … }` | once later; repeatedly, with a random extra delay each time |
-| `onRestart { … }`, `restart()` | players to their spawn, pickups back, then the `onRestart` blocks |
+| `onRestart { … }`, `restart()` | players to their spawn, pickups back, `once` armed again, then the `onRestart` blocks |
+| `script { … }` | a `Script`: a block that runs from the next frame on and may `wait`, `waitUntil`, `nextFrame`, `waitFor(tween)` |
+| `once(condition) { … }`, `whenever(condition) { … }` | the first frame the condition holds (again after `restart`); each time it becomes true |
+| `tween(over, ease = IN_OUT, after = 0) { share -> … }`, `tween(from, to, over, ease, after) { value -> … }` | a `Tween`: called at every frame with the share of the way (0 to 1) or the value |
+| `element.fade(to, over = .5, after = 0, ease)`, `fadeIn(over, after)`, `fadeOut(over, after)` | a HUD element's opacity over time; it ends hidden at 0 |
+| `groundAt(x, z)` | the point of the ground under (x, z) |
 | `goTo { … }` | replaces the scene by a new one at the end of the frame; window and sound stay |
 | `step(dt)` | reads the keys and advances everything but the drawing (tests, servers) |
 | **Sound** | |
@@ -103,12 +108,14 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `at(x, y, z)`, `at(vec)` | places it (and its body) |
 | `rotate(x = 0, y = 0, z = 0)` | turns it by degrees from its current rotation (X, then Y, then Z) |
 | `scaled(factor)` | size factor; set it before `dynamic` or `solid` |
+| `onGround(x, z, lift = 0)` | sets it down on the ground at (x, z), its lowest point (as turned and scaled) on it; its body goes with it |
+| `moveTo(target, over, ease = IN_OUT, after = 0)`, `scaleTo(factor, over, ease, after)` | `Tween`s: a kinematic body follows smoothly; the scale changes the look only |
 | `dynamic(mass, density = 400, bounce = 0, friction = .6, shape, surface = "wood", impact = AUTO, damping = 0, angularDamping = 0, rollingResistance)` | a moving rigid body. Shape: the primitive's, a model's bounding box, or `shape` (in metres, not scaled) |
 | `solid(vararg materials, blocksCamera = true, surface)` | still and solid; a model collides with its triangles (only those of `materials` if given), each with the surface of its material name |
 | `kinematic()` | moved by the game: set `position`/`rotation`, the body follows smoothly and pushes what it meets |
 | `collider(shape, offset, part, surface = "wood", blocksCamera = true)` | an extra collision shape; with `part`, it follows that part of an animated model |
 | `sound(sound, part = null, volume = 1, pitch = 1, range = 40, loop = false)` | plays from the node (or its animated `part`) and follows it while playing; the `Voice`, null without sound |
-| `hangFrom(anchor, to = null)`, `hinge(anchor, axis, to = null)`, `slider(axis, to = null)`, `glue(to = null)`, `rope(from, at = position, to = null, length)`, `spring(from, hertz, at = position, to = null, dampingRatio = .5)` | joints to node `to`, or to the world (null, or a node without a body of its own); dynamic first. They return the `Joint` (limits, motors, springs) |
+| `hangFrom(anchor, to = null)`, `hinge(anchor, axis, to = null, min = null, max = null)` (degrees), `slider(axis, to = null, min = null, max = null)` (metres), `glue(to = null)`, `rope(from, at = position, to = null, length)`, `spring(from, hertz, at = position, to = null, dampingRatio = .5)` | joints to node `to`, or to the world (null, or a node without a body of its own); dynamic first. They return the `Joint` (limits, motors, springs) |
 | `shadow(radius)` | a soft round shadow under it, drawn when the cast shadows are off (moving bodies get one by themselves) |
 | `play(clip, loop = true, speed = 1, fade = .15)` | plays a clip of its model, cross-fading |
 | `onUpdate { dt -> … }` | every frame, with the node as receiver |
@@ -134,6 +141,15 @@ What `scene.debug` offers; the keys work in every game while `keys` is true.
 | `freeCamera`, `freeSpeed`, `freePosition`, `freeYaw`, `freePitch` | the free camera (the player waits while it flies), its speed in m/s (6, ×4 with Shift), where it is and looks (degrees) |
 | `paused`, `step()` | the game's time stands still; one frame forward |
 | `describe(eye, direction)` | what a ray meets first, in a few lines (node, place and distance, body, surface, mesh) |
+
+### `Script`, `Tween`, `Ease`
+
+`Script` (from `scene.script { }`; only its own waiting functions can be called inside): `wait(seconds)`, `waitUntil { condition }`, `nextFrame()`, `waitFor(tween)`, `stop()`, `done`.
+`Tween`: `done`, `stop()`. `Ease`: `LINEAR`, `IN`, `OUT`, `IN_OUT`, `SPRING`; `at(t)` gives the eased share.
+
+### Units
+
+The scene's API takes degrees and whole sizes; `sillage.physics` and `sillage.math` take radians and half sizes. Helpers: `rotation(x = 0, y = 0, z = 0)` (degrees → `Quat`, as `Node.rotate`), `boxShape(width, height = width, depth = width)`, `sphereShape(radius)`, `capsuleShape(radius, height)` (whole sizes → physics shapes).
 
 ### `Player`
 

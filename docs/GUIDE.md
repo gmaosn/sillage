@@ -79,7 +79,18 @@ The same from code: `debug.showPhysics`, `debug.freeCamera`, `debug.paused`, `de
 
 ## Units, axes, numbers
 
-Metres, seconds, kilograms; Y points up and the default camera looks towards −Z. Angles given to the API are in degrees. Parameters take any `Number`, so `box(1)`, `box(.5)` and `box(width)` all work; `vec(x, y, z)` builds a `Vec3` from any numbers.
+Metres, seconds, kilograms; Y points up and the default camera looks towards −Z. The scene's API measures as people do: angles in degrees, whole sizes (a box 2 m wide is `box(2)`), and any `Number`, so `box(1)`, `box(.5)` and `box(width)` all work; `vec(x, y, z)` builds a `Vec3` from any numbers.
+
+The physics package (`sillage.physics`) and the maths (`sillage.math`) keep the units of physics engines: radians, half sizes (`Box(1f, .5f, 1f)` is 2 × 1 × 2 m), `Float`. A few helpers cross from one to the other, so that a game never has to:
+
+```kotlin
+rotation(y = 30)                    // a Quat: 30° about Y (X, then Y, then Z, as node.rotate does)
+boxShape(3.4, 1.65, 3)              // a Box 3.4 × 1.65 × 3 m, for collider(), zone(), dynamic(shape = …)
+sphereShape(.5); capsuleShape(.3, 1.6)
+door.hinge(at, Vec3.Y, min = -30, max = 90)     // limits in degrees
+crate.onGround(4, -2)               // set down on the ground there, its lowest point on it
+groundAt(4, -2)                     // the point of the ground under (4, −2)
+```
 
 ## The scene
 
@@ -243,7 +254,7 @@ Every sound is synthesised by the engine (`Sounds.footstep`, `jump`, `land`, `pi
 
 ```kotlin
 play(Sounds.pickup())                                          // everywhere
-play(door, at = vec(3, 1, 0), range = 30)                      // in space, heard within 30 m
+play(creak, at = vec(3, 1, 0), range = 30)                     // in space, heard within 30 m
 ambience(Sounds.waves(), at = vec(0, 0, 12), volume = .5)      // a loop placed in the world
 ```
 
@@ -265,13 +276,41 @@ The scene makes its own sounds too: footsteps that follow the walk and run clips
 onUpdate { dt -> … }                                 // every frame
 after(2) { … }                                       // once, in 2 seconds
 every(5, randomExtra = 3) { … }                      // every 5 to 8 seconds
-zone(Box(2f, 1f, 2f), at = vec(10, 1, 0), onEnter = { node -> … }, onExit = { … })
+zone(boxShape(4, 2, 4), at = vec(10, 1, 0), onEnter = { node -> … }, onExit = { … })
 pickup(cone(.3, .6, Color.YELLOW, at = vec(4, .6, 0)).spin(120)) { player -> score++ }
 ```
 
 A pickup hides its node when a player touches it, plays a chime and makes the player celebrate; `pickups` tells which are collected. `restart()` puts players back at their spawn, shows the pickups again and calls the blocks given to `onRestart`. `goTo { … }` replaces the scene with another at the end of the frame (a new level); the window and the sound stay open.
 
 `time` is the scene's clock in seconds, `fps` the frame rate.
+
+### Scripts, conditions, tweens
+
+What happens in turn is written in turn:
+
+```kotlin
+script {
+    banner.visible = true
+    wait(2)                                    // the game goes on meanwhile
+    waitUntil { player!!.onGround }
+    waitFor(door.moveTo(vec(0, 3, 0), over = 1.5))
+    player!!.celebrate()
+}
+once({ score == 4 }) { banner.fadeIn() }       // the first frame it holds; restart() arms it again
+whenever({ player!!.position.y > 3 }) { play(Sounds.pickup()) }    // each time it becomes true
+```
+
+A `script` runs from the next frame on, on the game's thread, at the scene's update: `wait(seconds)`, `waitUntil { … }`, `nextFrame()` and `waitFor(tween)` let the game run meanwhile, and nothing else can be called that would block. Scripts follow the scene's clock (they stop while the game is paused, F7) and can be stopped (`stop()`).
+
+A tween spreads a change over time, after an optional delay, along an `Ease` (`LINEAR`, `IN`, `OUT`, `IN_OUT` by default, `SPRING` which goes a little past the end):
+
+```kotlin
+lift.moveTo(vec(5, 3, -10), over = 2, ease = Ease.SPRING)   // a kinematic body follows smoothly
+star.scaleTo(1.5, over = .3)
+title.fadeOut(over = 1.5, after = 7)                        // HUD elements: fade, fadeIn, fadeOut
+tween(0, 360, over = 4) { yaw -> sign.yaw = yaw }           // any value
+tween(over = 1) { k -> lighting.saturation = 1 + .3f * k }  // or the share of the way, 0 to 1
+```
 
 ## Light, sky and the hour
 

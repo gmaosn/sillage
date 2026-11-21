@@ -28,6 +28,8 @@ This page is for those who read or change the engine itself. To make games, star
 engine/src/sillage/
   Game.kt            game(): options, the loop, RunReport
   Debug.kt           F5–F8: the physics drawn as lines, the free camera, pause and one frame, the panel
+  Script.kt          scripts (coroutines of the standard library, @RestrictsSuspension), Ease, Tween
+  Units.kt           degrees and whole sizes → Quat and physics shapes
   dev/               ./sillage dev: the host (watches, compiles, reloads), the link with the loop, the error panel
   Scene.kt           the scene: builders, events, the order of a frame's update
   Node.kt Player.kt Camera.kt Input.kt Hud.kt
@@ -109,6 +111,7 @@ The order of floating-point operations is part of the result. In the narrow phas
 | Benches | `./kotlin run -m bench -- pile 3000` | |
 | Smoke run | `./sillage run demo --headless --smoke --frames 180 --capture build/smoke.png` | the player walks and jumps; compare the capture with `tools/reference/demo-smoke-180.png` |
 
+| Documentation | `python3 -I tools/verifier_docs.py` | every Kotlin block of the README and docs/ compiled against the engine (extracts inside a scene, with the usual names declared) |
 | Dev mode | `tools/essai_dev.sh` (`FENETRE=1` for a real window in an isolated KWin) | a game changed while it runs: code, a compile error, an exception, a model, the engine; the player must stay where it was |
 
 ### The dev mode
