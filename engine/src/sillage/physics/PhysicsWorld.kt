@@ -7,6 +7,7 @@ import jdk.incubator.vector.VectorSpecies
 import sillage.math.Quat
 import sillage.math.ValueCandidate
 import sillage.math.Vec3
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.floor
@@ -78,6 +79,8 @@ class Body internal constructor(internal val world: PhysicsWorld, val id: Int) {
     var isBullet: Boolean
         get() = world.bullet[id]
         set(v) { world.bullet[id] = v }
+    /** How much of it is under water (0 to 1), in the last substep: see [WaterVolume]. */
+    val submergedFraction: Float get() = world.wet[id]
     /** Free label for the game (a role, a group, the object it moves…); the engine never reads it. */
     var tag: Any?
         get() = world.tags[id]
@@ -164,6 +167,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     internal var rolling = FloatArray(0); private var rollRadius = FloatArray(0)
     /** Spheres look the same however they turn: their contact anchors need not rotate. */
     private var round = BooleanArray(0)
+    /** Bodies whose inertia is diagonal about turned axes (hulls, compounds): their [Shape.principalAxes], x y z w. */
+    private var principal = BooleanArray(0); private var pq = FloatArray(0)
     internal var sleeping = BooleanArray(0); private var sleepClock = FloatArray(0)
     internal var removed = BooleanArray(0)
     internal var bullet = BooleanArray(0)
@@ -216,7 +221,10 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         friction = friction.copyOf(c); restitution = restitution.copyOf(c)
         linearDamping = linearDamping.copyOf(c); angularDamping = angularDamping.copyOf(c); gravityScale = gravityScale.copyOf(c)
         rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c); round = round.copyOf(c)
+        principal = principal.copyOf(c); pq = pq.copyOf(4 * c)
         sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c); removed = removed.copyOf(c); bullet = bullet.copyOf(c)
+        wet = wet.copyOf(c); wetBefore = wetBefore.copyOf(c); wetIn = wetIn.copyOf(c); entered = entered.copyOf(c); lastWater = lastWater.copyOf(c)
+        wetRest = wetRest.copyOf(c); touched = touched.copyOf(c)
         fx = fx.copyOf(c); fy = fy.copyOf(c); fz = fz.copyOf(c)
         tx = tx.copyOf(c); ty = ty.copyOf(c); tz = tz.copyOf(c)
         q0 = q0.copyOf(4 * c); box = box.copyOf(6 * c)
@@ -226,7 +234,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
     /**
      * Adds a body. Its mass comes from [density] (kg/m³) unless [mass] is given; static and
-     * kinematic bodies have infinite mass. Balls and capsules get a little rolling resistance.
+     * kinematic bodies have infinite mass. Balls, capsules and compounds with round parts get a little rolling resistance.
      */
     fun add(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, type: BodyType = BodyType.DYNAMIC,
             density: Float = 1000f, mass: Float? = null, friction: Float = .6f, restitution: Float = 0f,
@@ -235,14 +243,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val i = if (free.size > 0) free.pop() else { if (count == capacity) grow(); count++ }
         // A reused slot starts afresh.
         removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null; poses[i].px = Float.NaN; bullet[i] = false
+        wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
         fx[i] = 0f; fy[i] = 0f; fz[i] = 0f; tx[i] = 0f; ty[i] = 0f; tz[i] = 0f; java.util.Arrays.fill(st, i * S, i * S + S, 0f)
         linearDamping[i] = 0f; angularDamping[i] = 0f
         types[i] = type; shapes[i] = shape
+        if (type == BodyType.KINEMATIC) kinematics++
         px[i] = position.x; py[i] = position.y; pz[i] = position.z
         val q = rotation.normalized(); qx[i] = q.x; qy[i] = q.y; qz[i] = q.z; qw[i] = q.w
         st[i * S + DQW] = 1f
         if (type == BodyType.DYNAMIC) {
-            val m = mass ?: (density * shape.volume)
+            val m = mass ?: (density * shape.massVolume)
             require(m > 0f) { "A dynamic body needs a positive mass" }
             st[i * S + IM] = 1f / m
             val inertia = shape.inertia(m)
@@ -250,8 +260,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
         this.friction[i] = friction; this.restitution[i] = restitution; gravityScale[i] = 1f
         // Les boules et capsules finissent par s'arrêter de rouler (sinon un tas ne s'endort jamais).
-        rollRadius[i] = when (shape) { is Sphere -> shape.radius; is Capsule -> shape.radius; else -> 0f }
+        rollRadius[i] = when (shape) {
+            is Sphere -> shape.radius; is Capsule -> shape.radius
+            // A compound with round parts rolls on them (a dumbbell rolled for ever): its largest round part's radius.
+            is Compound -> { var r = 0f; for (p in shape.shapes) r = max(r, when (p) { is Sphere -> p.radius; is Capsule -> p.radius; else -> 0f }); r }
+            else -> 0f
+        }
         round[i] = shape is Sphere
+        val axes = shape.principalAxes
+        principal[i] = axes != Quat.IDENTITY && type == BodyType.DYNAMIC
+        pq[4 * i] = axes.x; pq[4 * i + 1] = axes.y; pq[4 * i + 2] = axes.z; pq[4 * i + 3] = axes.w
         rolling[i] = rollingResistance ?: if (rollRadius[i] > 0f) .02f else 0f
         return Body(this, i)
     }
@@ -275,7 +293,9 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
         // Its joints go with it (what they held wakes up).
         if (joints.isNotEmpty()) for (j in joints.filter { it.ia == i || it.ib == i }) removeJoint(j)
+        if (types[i] == BodyType.KINEMATIC) kinematics--
         removed[i] = true; types[i] = BodyType.STATIC; sleeping[i] = false; tags[i] = null
+        wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
         queryGrid.valid = false
         java.util.Arrays.fill(st, i * S, i * S + 6, 0f)
         free.add(i)
@@ -322,6 +342,19 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     /** A ball joint at [anchor] (world): [b] hangs from [a], or from the world when [a] is null. */
     fun addBall(a: Body?, b: Body, anchor: Vec3, collideConnected: Boolean = false): BallJoint {
         checkJoint(a, b); return keep(BallJoint(this, a, b, anchor, collideConnected))
+    }
+    /**
+     * A ball joint at [anchor] whose swing is held in a cone and whose twist is limited (a ragdoll's shoulder,
+     * hip, neck): [axis] (world) is b's bone; b's axis may lean from a's by [swing] radians towards ±[across]
+     * (default: some direction across the axis) and by [swing2] across that, and turn about itself between
+     * [twistLower] and [twistUpper]. See [ConeTwistJoint].
+     */
+    fun addConeTwist(a: Body?, b: Body, anchor: Vec3, axis: Vec3, swing: Float, swing2: Float = swing,
+                     twistLower: Float = -.3f, twistUpper: Float = .3f, across: Vec3? = null, collideConnected: Boolean = false): ConeTwistJoint {
+        checkJoint(a, b); require(axis.lengthSquared() > 1e-12f) { "A cone joint needs an axis" }
+        val j = ConeTwistJoint(this, a, b, anchor, axis, across ?: perpendicular(axis.normalized()), collideConnected)
+        j.limits(swing, swing2, twistLower, twistUpper)
+        return keep(j)
     }
     /** A hinge at [anchor] turning about [axis] (world): a door, a wheel, a lever. */
     fun addHinge(a: Body?, b: Body, anchor: Vec3, axis: Vec3, collideConnected: Boolean = false): HingeJoint {
@@ -447,6 +480,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     }
     private fun warmStartJoints() { for (k in activeJoints.indices) activeJoints[k].warmStart() }
     private fun solveJoints(useBias: Boolean, h: Float) { val invH = 1f / h; for (k in activeJoints.indices) activeJoints[k].solve(useBias, invH) }
+    /**
+     * The joints' rigid velocity pass, before the soft one in each substep: what the bodies' velocities do to
+     * the joints (an impulse, a hit, a contact) is stopped at once, as a real pin would, instead of leaking
+     * through the soft step for a substep. The soft pass then corrects the positions as before; springs and
+     * motors sit this pass out. A door hit hard enough to spin at 24 rad/s left its hinge by 3.9 mm, now 2.1 mm.
+     */
+    private fun rigidJoints(h: Float) {
+        val invH = 1f / h
+        for (k in activeJoints.indices) { val j = activeJoints[k]; j.rigid = true; j.solve(false, invH); j.rigid = false }
+    }
 
     /** Applies a force at the centre during the next step. */
     fun applyForce(body: Body, force: Vec3) { val i = body.id; fx[i] += force.x; fy[i] += force.y; fz[i] += force.z; wake(i) }
@@ -469,7 +512,14 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
     /** World inverse inertia R · diag(invI) · Rᵀ into the body's solver state. */
     internal fun prepareInertia(i: Int) {
-        val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
+        var x = qx[i]; var y = qy[i]; var z = qz[i]; var w = qw[i]
+        if (principal[i]) {
+            // The inertia's own axes: the body's rotation times the shape's principal axes.
+            val ax = pq[4 * i]; val ay = pq[4 * i + 1]; val az = pq[4 * i + 2]; val aw = pq[4 * i + 3]
+            val nx = w * ax + x * aw + y * az - z * ay; val ny = w * ay - x * az + y * aw + z * ax
+            val nz = w * az + x * ay - y * ax + z * aw; val nw = w * aw - x * ax - y * ay - z * az
+            x = nx; y = ny; z = nz; w = nw
+        }
         val r00 = 1 - 2 * (y * y + z * z); val r01 = 2 * (x * y - z * w); val r02 = 2 * (x * z + y * w)
         val r10 = 2 * (x * y + z * w); val r11 = 1 - 2 * (x * x + z * z); val r12 = 2 * (y * z - x * w)
         val r20 = 2 * (x * z - y * w); val r21 = 2 * (y * z + x * w); val r22 = 1 - 2 * (x * x + y * y)
@@ -500,6 +550,121 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private val found = IntList(); private val stack = IntList()
     private val scratch = ContactPoints()
     internal val triggers = ArrayList<Trigger>()
+
+    // ------------------------------------------------------------------ water
+
+    internal val waters = ArrayList<WaterVolume>()
+    /** Per body: submerged fraction in the last substep, at the end of the step before, its water (−1: none), whether it entered this step. */
+    internal var wet = FloatArray(0); private var wetBefore = FloatArray(0); private var entered = BooleanArray(0)
+    private var wetRest = BooleanArray(0); private var touched = BooleanArray(0)
+    private var wetIn = arrayOfNulls<WaterVolume>(0); private var lastWater = arrayOfNulls<WaterVolume>(0)
+    private val wetList = IntList()                  // this step's bodies in water: body, water
+    private val buoyancyScratch = BuoyancyScratch()
+    private val entries = ArrayList<WaterEntry>()
+    private val exits = ArrayList<Body>(); private val exitWater = ArrayList<WaterVolume>()
+    /** The bodies that touched a water during the last step, coming from out of it (see [WaterEntry]). */
+    val waterEntries: List<WaterEntry> get() = entries
+
+    /** Wakes the sleeping bodies that may be in [w] (its level, bounds or density changed). */
+    internal fun wakeWater(w: WaterVolume) {
+        for (i in 0 until count) if (types[i] == BodyType.DYNAMIC && !removed[i] && sleeping[i] &&
+            (wetIn[i] === w || (box[6 * i + 1] <= w.level + speculativeDistance && w.covers(px[i], pz[i])))) wake(i)
+    }
+
+    /** The awake dynamic bodies reaching below a water's level with their centre in its bounds, for this step's substeps. */
+    private fun findWet() {
+        wetList.clear()
+        for (i in 0 until count) {
+            if (types[i] != BodyType.DYNAMIC || removed[i] || sleeping[i]) continue
+            entered[i] = false
+            var water = -1
+            for (k in waters.indices) {
+                val w = waters[k]
+                if (w.enabled && box[6 * i + 1] < w.level && w.covers(px[i], pz[i])) { water = k; break }
+            }
+            if (water >= 0) { wetList.add(i); wetList.add(water) } else wet[i] = 0f
+            wetIn[i] = if (water >= 0) waters[water] else null
+        }
+    }
+
+    /**
+     * Archimedes in one substep: each body in water pushed up by the weight of the water it displaces, at
+     * the centre of what it displaces, then its velocity relative to the water and its turning damped by the
+     * drags times its submerged fraction (implicitly, as the bodies' own damping: stable at any drag).
+     */
+    private fun buoyancy(h: Float) {
+        val sc = buoyancyScratch; val acc = sc.acc
+        val gx = gravity.x; val gy = gravity.y; val gz = gravity.z
+        var k = 0
+        while (k < wetList.size) {
+            val i = wetList[k]; val w = waters[wetList[k + 1]]; k += 2
+            val shape = shapes[i]!!
+            val pose = sc.pose.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
+            acc[0] = 0f; acc[1] = 0f; acc[2] = 0f; acc[3] = 0f
+            submerged(shape, pose, w.level, sc, acc)
+            val v = acc[0]
+            val f = fractionOf(v, shape.volume)
+            val o = i * S
+            if (f > 0f && wetBefore[i] == 0f && !entered[i]) {
+                entered[i] = true
+                entries.add(WaterEntry(Body(this, i), w, Vec3(acc[1] / v, w.level, acc[3] / v), st[o + 1]))
+            }
+            wet[i] = f
+            if (v <= 0f) { wetRest[i] = false; continue }
+            // Buoyant force −ρ V g at the centre of buoyancy: an impulse for this substep.
+            val m = st[o + IM]
+            val s = -w.density * v * h
+            val jx = s * gx; val jy = s * gy; val jz = s * gz
+            st[o] += jx * m; st[o + 1] += jy * m; st[o + 2] += jz * m
+            val rx = acc[1] / v - px[i]; val ry = acc[2] / v - py[i]; val rz = acc[3] / v - pz[i]
+            // At rest in the water only when the water carries its weight and holds it upright (centre of
+            // buoyancy over the centre of mass): else it may not sleep (it slept at the top of a slow bob).
+            val gl = sqrt(gx * gx + gy * gy + gz * gz)
+            run {
+                val along = if (gl > 0f) (rx * gx + ry * gy + rz * gz) / gl else 0f
+                val ux = if (gl > 0f) rx - along * gx / gl else rx; val uy = if (gl > 0f) ry - along * gy / gl else ry; val uz = if (gl > 0f) rz - along * gz / gl else rz
+                wetRest[i] = abs(w.density * v * m - 1f) <= 1e-3f && ux * ux + uy * uy + uz * uz <= 1e-6f * shape.boundingRadius * shape.boundingRadius
+            }
+            val tx = ry * jz - rz * jy; val ty = rz * jx - rx * jz; val tz = rx * jy - ry * jx
+            val ii = o + I0
+            st[o + 3] += st[ii] * tx + st[ii + 1] * ty + st[ii + 2] * tz
+            st[o + 4] += st[ii + 1] * tx + st[ii + 3] * ty + st[ii + 4] * tz
+            st[o + 5] += st[ii + 2] * tx + st[ii + 4] * ty + st[ii + 5] * tz
+            // Drags, relative to the water's flow: linear (slow motions, the waves a body makes) and quadratic,
+            // ½ ρ C_d A |v| v on the cross-section of a ball of the same volume (a dropped ball stops within a
+            // few tens of centimetres instead of bouncing out of the water), both implicit.
+            val fl = w.flow
+            val ux = st[o] - fl.x; val uy = st[o + 1] - fl.y; val uz = st[o + 2] - fl.z
+            val speed = sqrt(ux * ux + uy * uy + uz * uz)
+            val re = Math.cbrt(.75 * shape.volume / PI).toFloat()
+            val quad = .5f * w.density * w.dragCoefficient * PI.toFloat() * re * re * m * f
+            val ld = 1f / (1f + h * (w.linearDrag * f + quad * speed)); val ad = 1f / (1f + h * w.angularDrag * f)
+            st[o] = fl.x + ux * ld; st[o + 1] = fl.y + uy * ld; st[o + 2] = fl.z + uz * ld
+            st[o + 3] *= ad; st[o + 4] *= ad; st[o + 5] *= ad
+            // The waves a body makes bobbing and rolling at the surface: on its vertical speed and its turning about
+            // horizontal axes, most when half under (as the waterline is widest), nothing once it is all under.
+            if (gl > 0f && w.waveDamping > 0f) {
+                val wd = 1f / (1f + h * w.waveDamping * 4f * f * (1f - f))
+                val nx = gx / gl; val ny = gy / gl; val nz = gz / gl
+                val vn = (st[o] - fl.x) * nx + (st[o + 1] - fl.y) * ny + (st[o + 2] - fl.z) * nz
+                val dv = vn * (wd - 1f)
+                st[o] += dv * nx; st[o + 1] += dv * ny; st[o + 2] += dv * nz
+                val wn = st[o + 3] * nx + st[o + 4] * ny + st[o + 5] * nz
+                st[o + 3] = wn * nx + (st[o + 3] - wn * nx) * wd; st[o + 4] = wn * ny + (st[o + 4] - wn * ny) * wd; st[o + 5] = wn * nz + (st[o + 5] - wn * nz) * wd
+            }
+        }
+    }
+
+    /** End of a step with water: who left the water altogether, and what each body had under water, for the next step. */
+    private fun finishWet() {
+        for (i in 0 until count) {
+            if (types[i] != BodyType.DYNAMIC || removed[i] || sleeping[i]) continue
+            if (wet[i] > 0f) lastWater[i] = wetIn[i]
+            else if (wetBefore[i] > 0f) { val w = lastWater[i]; if (w != null && w in waters) { exits.add(Body(this, i)); exitWater.add(w) } }
+            wetBefore[i] = wet[i]
+        }
+    }
+
     internal val triggerScratch = Touches()
     // Scratch for the queries (single-threaded, not reentrant: a query's filter must not query again).
     internal val queryStack = IntList(); internal val queryFound = IntList(); internal val queryScratch = ContactPoints()
@@ -524,6 +689,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         if (noCollideDirty) rebuildNoCollide()
         prepareBodies(dt)
         if (joints.isNotEmpty()) wakeJoined()
+        entries.clear(); exits.clear(); exitWater.clear()
+        if (waters.isNotEmpty()) findWet() else if (wetList.size > 0) { for (k in 0 until wetList.size step 2) wet[wetList[k]] = 0f; wetList.clear() }
         lap(0)
         findPairs(); lap(1)
         collide(dt); lap(2)
@@ -533,15 +700,19 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         // Joints before contacts in each pass: the contacts have the last word, nothing sinks into the ground.
         repeat(substeps) {
             integrateVelocities(h)
+            if (wetList.size > 0) buoyancy(h)
             warmStartJoints(); warmStart(); lap(4)
+            rigidJoints(h)
             solveJoints(true, h); solve(h, true); lap(5)
             integratePositions(h)
             solveJoints(false, h); solve(h, false); lap(6)
         }
         if (wideActive) wide!!.finish()
         restitute()
+        unsqueeze(dt)
         if (continuous) continuous()
         updateSleep(dt); lap(7)
+        if (waters.isNotEmpty() || wetList.size > 0) finishWet()
         for (i in 0 until count) { fx[i] = 0f; fy[i] = 0f; fz[i] = 0f }
         if (torqued) { java.util.Arrays.fill(tx, 0, count, 0f); java.util.Arrays.fill(ty, 0, count, 0f); java.util.Arrays.fill(tz, 0, count, 0f); torqued = false }
         // Les points de ce pas deviennent « précédents » ; l'autre ensemble servira au pas suivant.
@@ -555,6 +726,10 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             events.clear()
             for (k in triggers.indices) triggers[k].check(events)
             for (e in events) e()
+        }
+        if (entries.isNotEmpty() || exits.isNotEmpty()) {
+            for (e in entries.toList()) e.water.onEnter?.invoke(e)
+            for (k in exits.indices) exitWater[k].onExit?.invoke(exits[k])
         }
     }
 
@@ -604,6 +779,14 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 ez = abs(pose.xz) * s.halfX + abs(pose.yz) * s.halfY + abs(pose.zz) * s.halfZ
             }
             is Capsule -> { ex = abs(pose.yx) * s.halfHeight + s.radius; ey = abs(pose.yy) * s.halfHeight + s.radius; ez = abs(pose.yz) * s.halfHeight + s.radius }
+            is ConvexHull, is Compound -> {
+                // The turned box of the shape's own bounds (they need not be centred on the centre of mass).
+                val b = 6 * i
+                localBounds(s, pose, box, b)
+                val m = speculativeDistance + speed(i) * dt
+                box[b] -= m; box[b + 1] -= m; box[b + 2] -= m; box[b + 3] += m; box[b + 4] += m; box[b + 5] += m
+                return
+            }
         }
         val m = speculativeDistance + speed(i) * dt
         ex += m; ey += m; ez += m
@@ -928,6 +1111,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         while (k < c.size) {
             val a = c.a[k]; val b = c.b[k]; val o0 = k * C
             var e = k + 1
+            // The parts of a compound share the pair's patches: a table's four legs on the floor are one patch,
+            // its friction at the middle of the four (as a box's at the middle of its face).
             while (e < c.size && c.a[e] == a && c.b[e] == b &&
                 d[e * C + CNX] * d[o0 + CNX] + d[e * C + CNX + 1] * d[o0 + CNX + 1] + d[e * C + CNX + 2] * d[o0 + CNX + 2] > .9f) e++
             // Key for warm starting: the pair (triangle bits cleared for meshes) and the patch's rank in it.
@@ -1096,7 +1281,13 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val a = ilx[i]; val b = ily[i]; val c = ilz[i]
         if (a == b && b == c) return                                   // sphere-like: no gyroscopic torque
         val o = i * S
-        val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
+        var x = qx[i]; var y = qy[i]; var z = qz[i]; var w = qw[i]
+        if (principal[i]) {
+            val ax = pq[4 * i]; val ay = pq[4 * i + 1]; val az = pq[4 * i + 2]; val aw = pq[4 * i + 3]
+            val nx = w * ax + x * aw + y * az - z * ay; val ny = w * ay - x * az + y * aw + z * ax
+            val nz = w * az + x * ay - y * ax + z * aw; val nw = w * aw - x * ax - y * ay - z * az
+            x = nx; y = ny; z = nz; w = nw
+        }
         // ω in body space: Rᵀ ω.
         val wx0 = st[o + 3]; val wy0 = st[o + 4]; val wz0 = st[o + 5]
         val tx = 2f * (-y * wz0 + z * wy0); val ty = 2f * (-z * wx0 + x * wz0); val tz = 2f * (-x * wy0 + y * wx0)
@@ -1513,6 +1704,104 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
     }
 
+    // ------------------------------------------------------------------ bodies caught by a kinematic body
+
+    private var squeezeK = IntArray(0); private var squeezeS = IntArray(0)      // per body: its deepest point with a kinematic, a static (index + 1, 0: none)
+    private var squeezeKSign = BooleanArray(0); private var squeezeSSign = BooleanArray(0)   // whether that point's normal points at it
+    private val squeezed = IntList()
+
+    /**
+     * A dynamic body caught between a kinematic body coming at it (a lift going down, a door closing) and what
+     * does not move (the floor, a wall): the contacts cannot hold both, the kinematic one wins and the body was
+     * pressed into the floor (a ball under the playground's lift ended with its centre in the ground). It is
+     * moved out sideways instead, across the squeeze, away from the kinematic body's centre, by what the
+     * kinematic body's speed (twice it, at least [contactSpeed]) allows each step, until it is out from under it,
+     * and kept out of what does not move (it overlaps the kinematic body meanwhile). Runs only when
+     * such a pair of contacts overlaps by more than a centimetre: nothing else changes.
+     */
+    private var kinematics = 0
+    private fun unsqueeze(dt: Float) {
+        if (kinematics == 0) return
+        val c = points; val d = c.d
+        var any = false
+        for (k in 0 until c.size) {
+            val a = c.a[k]; val b = c.b[k]
+            if ((a >= 0 && types[a] == BodyType.KINEMATIC) || types[b] == BodyType.KINEMATIC) { any = true; break }
+        }
+        if (!any) return
+        if (squeezeK.size < count) { squeezeK = IntArray(capacity); squeezeS = IntArray(capacity); squeezeKSign = BooleanArray(capacity); squeezeSSign = BooleanArray(capacity) }
+        squeezed.clear()
+        // The deepest point of each dynamic body with a kinematic body and with static geometry.
+        for (k in 0 until c.size) {
+            val a = c.a[k]; val b = c.b[k]
+            for (side in 0..1) {
+                val i = if (side == 0) b else a
+                val other = if (side == 0) a else b
+                if (i < 0 || types[i] != BodyType.DYNAMIC) continue
+                val kind = if (other < 0) BodyType.STATIC else types[other]
+                if (kind == BodyType.DYNAMIC) continue
+                if (squeezeK[i] == 0 && squeezeS[i] == 0) squeezed.add(i)
+                if (kind == BodyType.KINEMATIC) { if (squeezeK[i] == 0 || c.sep[k] < c.sep[squeezeK[i] - 1]) { squeezeK[i] = k + 1; squeezeKSign[i] = side == 0 } }
+                else if (squeezeS[i] == 0 || c.sep[k] < c.sep[squeezeS[i] - 1]) { squeezeS[i] = k + 1; squeezeSSign[i] = side == 0 }
+            }
+        }
+        for (n in 0 until squeezed.size) {
+            val i = squeezed[n]
+            val pk = squeezeK[i] - 1; val ps = squeezeS[i] - 1
+            if (pk < 0 || ps < 0) continue
+            if (-c.sep[pk] - c.sep[ps] < .01f) continue
+            // Normals pointing at the body: from the kinematic one (nk) and from the static one (ns).
+            val fk = if (squeezeKSign[i]) 1f else -1f; val fs = if (squeezeSSign[i]) 1f else -1f
+            val nkx = d[pk * C + CNX] * fk; val nky = d[pk * C + CNX + 1] * fk; val nkz = d[pk * C + CNX + 2] * fk
+            val nsx = d[ps * C + CNX] * fs; val nsy = d[ps * C + CNX + 1] * fs; val nsz = d[ps * C + CNX + 2] * fs
+            if (nkx * nsx + nky * nsy + nkz * nsz > -.5f) continue
+            val kin = if (squeezeKSign[i]) c.a[pk] else c.b[pk]
+            val ok = kin * S
+            val approach = st[ok] * nkx + st[ok + 1] * nky + st[ok + 2] * nkz
+            if (approach <= 1e-4f && -c.sep[pk] - c.sep[ps] < .03f) continue
+            // Across the squeeze, away from the kinematic body's centre (a fixed way when right under it).
+            var ux = nsx - nkx; var uy = nsy - nky; var uz = nsz - nkz
+            val ul = sqrt(ux * ux + uy * uy + uz * uz); ux /= ul; uy /= ul; uz /= ul
+            val rx = px[i] - px[kin]; val ry = py[i] - py[kin]; val rz = pz[i] - pz[kin]
+            val ru = rx * ux + ry * uy + rz * uz
+            var dx = rx - ru * ux; var dy = ry - ru * uy; var dz = rz - ru * uz
+            var dl = sqrt(dx * dx + dy * dy + dz * dz)
+            if (dl < 1e-4f) {
+                if (abs(ux) >= .57735f) { dx = uy; dy = -ux; dz = 0f } else { dx = 0f; dy = uz; dz = -uy }
+                dl = sqrt(dx * dx + dy * dy + dz * dz)
+            }
+            dx /= dl; dy /= dl; dz /= dl
+            // How far until it is out from under the kinematic body (its bounds), and how far this step.
+            val b0 = 6 * kin
+            var exit = -Float.MAX_VALUE
+            for (corner in 0 until 8) {
+                val cx = box[b0 + if (corner and 1 == 0) 0 else 3]; val cy = box[b0 + if (corner and 2 == 0) 1 else 4]; val cz = box[b0 + if (corner and 4 == 0) 2 else 5]
+                exit = max(exit, (cx - px[i]) * dx + (cy - py[i]) * dy + (cz - pz[i]) * dz)
+            }
+            exit += shapes[i]!!.boundingRadius
+            if (exit <= 0f) continue
+            val speed = max(contactSpeed, 2f * sqrt(st[ok] * st[ok] + st[ok + 1] * st[ok + 1] + st[ok + 2] * st[ok + 2]))
+            val move = min(exit, speed * dt)
+            val o = i * S
+            // Out of what does not move, as far as this step's motion took it in (the kinematic body pushed it there).
+            val inside = -c.sep[ps] - (st[o + DPX] * ux + st[o + DPX + 1] * uy + st[o + DPX + 2] * uz)
+            val lift = max(0f, inside - .001f)
+            px[i] += dx * move + ux * lift; py[i] += dy * move + uy * lift; pz[i] += dz * move + uz * lift
+            // Its velocity is left as it was (set to the pace of the move, a ball caught under a running character
+            // was shot off at 13 m/s), but for nothing into what does not move.
+            val vu = st[o] * ux + st[o + 1] * uy + st[o + 2] * uz
+            if (vu < 0f) { st[o] -= ux * vu; st[o + 1] -= uy * vu; st[o + 2] -= uz * vu }
+            squeezes++
+            wake(i)
+            queryGrid.valid = false
+        }
+        for (n in 0 until squeezed.size) { val i = squeezed[n]; squeezeK[i] = 0; squeezeS[i] = 0 }
+    }
+
+    /** Steps in which a body caught by a kinematic body was moved out sideways, since the world was made (diagnostics). */
+    var squeezes = 0L
+        private set
+
     // ------------------------------------------------------------------ continuous collision
 
     /**
@@ -1550,7 +1839,19 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             val travel = sqrt(dx * dx + dy * dy + dz * dz)
             val ux = dx / travel; val uy = dy / travel; val uz = dz / travel
             val fx = px[i] - dx; val fy = py[i] - dy; val fz = pz[i] - dz
-            val t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, if (bullet[i]) null else still)
+            val targets = if (bullet[i]) null else still
+            val shape = shapes[i]!!
+            var t: Float
+            if (shape is Compound) {
+                // Each part's core from where it was (moved along, not turned), the first hit for the whole body.
+                t = Float.NaN
+                val pose = ccdPose.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
+                for (j in 0 until shape.count) {
+                    val part = ccdPart.setPart(pose, shape, j)
+                    val h = sweepCore(part.px - dx, part.py - dy, part.pz - dz, ux, uy, uz, travel, .5f * coreOf(shape.shapes[j]), i, targets)
+                    if (!h.isNaN() && (t.isNaN() || h < t)) t = h
+                }
+            } else t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, targets)
             if (t.isNaN() || t <= 0f || t >= travel) continue
             val back = max(0f, t - CCD_SLOP)
             px[i] = fx + ux * back; py[i] = fy + uy * back; pz[i] = fz + uz * back
@@ -1563,10 +1864,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     var continuousHits = 0L
         private set
 
-    private fun core(i: Int): Float = .5f * when (val s = shapes[i]!!) {
+    private fun core(i: Int): Float = .5f * coreOf(shapes[i]!!)
+    private val ccdPose = Pose(); private val ccdPart = Pose()
+
+    /** The radius of the largest ball about the centre inside the shape (a compound: its smallest part's). */
+    private fun coreOf(s: Shape): Float = when (s) {
         is Sphere -> s.radius
         is Capsule -> s.radius
         is Box -> min(s.halfX, min(s.halfY, s.halfZ))
+        is ConvexHull -> s.inradius
+        is Compound -> { var c = Float.MAX_VALUE; for (j in 0 until s.count) c = min(c, coreOf(s.shapes[j])); c }
     }
 
     // ------------------------------------------------------------------ sleep
@@ -1588,6 +1895,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             sleepClock[i] = if (v + shapes[i]!!.boundingRadius * w > sleepLinearSpeed) 0f else sleepClock[i] + dt
         }
         val c = points; val d = c.d
+        if (wetList.size > 0) {
+            // A body floating free sleeps only at rest in the water (its weight carried, upright).
+            for (k in 0 until c.size) if (d[k * C + CLN] > 0f) { if (c.a[k] >= 0) touched[c.a[k]] = true; touched[c.b[k]] = true }
+            for (k in 0 until wetList.size step 2) { val i = wetList[k]; if (wet[i] > 0f && !touched[i] && !wetRest[i]) sleepClock[i] = 0f }
+            for (k in 0 until c.size) { if (c.a[k] >= 0) touched[c.a[k]] = false; touched[c.b[k]] = false }
+        }
         for (k in 0 until c.size) {
             if (d[k * C + CLN] <= 0f) continue
             val a = c.a[k]; val b = c.b[k]

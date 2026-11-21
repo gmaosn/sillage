@@ -7,6 +7,7 @@ import sillage.physics.BodyType
 import sillage.physics.Box
 import sillage.physics.Capsule
 import sillage.physics.Character
+import sillage.physics.ConeTwistJoint
 import sillage.physics.PhysicsWorld
 import sillage.physics.Sphere
 import sillage.physics.TriangleMesh
@@ -22,6 +23,28 @@ private fun voiture(w: PhysicsWorld, a: Vec3, rotation: Quat = Quat.IDENTITY): V
     return Vehicle(w, caisse).also { v ->
         for (x in floatArrayOf(-.8f, .8f)) for (z in floatArrayOf(-1.3f, 1.3f)) v.addWheel(Vec3(x, -.15f, z), radius = .35f, travel = .3f, steered = z > 0f)
     }
+}
+
+/** Un pantin de 11 corps : cônes et torsion au cou, aux épaules et aux hanches, charnières aux coudes et aux genoux. */
+private fun pantin(w: PhysicsWorld, p: Vec3, tour: Quat): List<Body> {
+    fun a(x: Float, y: Float) = p + tour.rotate(Vec3(x, y, 0f))
+    val bas = tour.rotate(Vec3(0f, -1f, 0f)); val haut = tour.rotate(Vec3.Y); val cote = tour.rotate(Vec3.X)
+    val tronc = w.add(Box(.18f, .3f, .1f), a(0f, 1.2f), tour, mass = 30f)
+    val tete = w.add(Sphere(.11f), a(0f, 1.65f), tour, mass = 5f)
+    w.addConeTwist(tronc, tete, a(0f, 1.52f), haut, .6f, .4f, -.5f, .5f, across = cote)
+    val corps = arrayListOf(tronc, tete)
+    for (sx in floatArrayOf(-1f, 1f)) {
+        val bras = w.add(Capsule(.05f, .13f), a(sx * .25f, 1.32f), tour, mass = 2.5f)
+        w.addConeTwist(tronc, bras, a(sx * .25f, 1.5f), bas, 1.2f, .8f, -.6f, .6f, across = cote)
+        val avant = w.add(Capsule(.04f, .12f), a(sx * .25f, .96f), tour, mass = 1.5f)
+        w.addHinge(bras, avant, a(sx * .25f, 1.14f), cote).limits(0f, 2.5f)
+        val cuisse = w.add(Capsule(.07f, .16f), a(sx * .1f, .67f), tour, mass = 8f)
+        w.addConeTwist(tronc, cuisse, a(sx * .1f, .9f), bas, 1f, .5f, -.4f, .4f, across = cote)
+        val jambe = w.add(Capsule(.05f, .17f), a(sx * .1f, .22f), tour, mass = 4f)
+        w.addHinge(cuisse, jambe, a(sx * .1f, .44f), cote).limits(-2.4f, 0f)
+        corps += listOf(bras, avant, cuisse, jambe)
+    }
+    return corps
 }
 
 /** Articulations, véhicules, plateformes, collision continue : chacun contre la physique attendue, et au hasard. */
@@ -85,6 +108,31 @@ fun Qa.articulations() {
             }
         }
         "dépassement ${f3(max(0f, depasse))} rad, gonds ${mm(gonds)}" to (depasse <= .03f && gonds <= .003f)
+    }
+
+    // Comme les chaînes : en mouvement, les articulations souples cèdent un peu (un avant-bras de 1,5 kg frappé à 8 m/s,
+    // un membre coincé sous le tronc : les contacts ont le dernier mot) ; au repos, un membre pressé par un autre aussi.
+    controle("pantins (cônes et torsion) lâchés puis frappés au hasard", "valeurs finies ; sous les coups, écart ≤ 4 cm, butées ≤ 0,1 rad ; au repos ≤ 6 mm et 0,03 rad") {
+        var finis = true; var coups = 0f; var depasseCoups = 0f; var repos = 0f; var depasseRepos = 0f; var vmax = 0f
+        fun ecart(w: PhysicsWorld) = w.jointList.maxOf { (it.anchorA - it.anchorB).length() }
+        fun depasse(w: PhysicsWorld) = w.jointList.filterIsInstance<ConeTwistJoint>().maxOf {
+            max(it.swingAngle - max(it.swing, it.swing2), max(it.twistLower - it.twistAngle, it.twistAngle - it.twistUpper)) }
+        repeat(cas(3, 10)) {
+            val w = PhysicsWorld(); w.addMesh(TriangleMesh(solMaille()))
+            val corps = pantin(w, Vec3(rnd.f(-1f, 1f), rnd.f(1f, 3f), rnd.f(-1f, 1f)), rnd.rotation())
+            corps[0].angularVelocity = rnd.dir() * rnd.f(0f, 6f)
+            repeat(180) { w.step(DT) }
+            repeat(20) {
+                val b = corps[rnd.nextInt(corps.size)]
+                b.applyImpulse(rnd.dir() * (b.mass * rnd.f(0f, 8f)), b.position + rnd.dir() * .05f)
+                repeat(18) { w.step(DT); coups = max(coups, ecart(w)); depasseCoups = max(depasseCoups, depasse(w)); vmax = max(vmax, corps.maxOf { it.velocity.length() }) }
+            }
+            repeat(240) { w.step(DT) }
+            repos = max(repos, ecart(w)); depasseRepos = max(depasseRepos, depasse(w))
+            finis = finis && corps.all { it.fini() }
+        }
+        "${cas(3, 10)} pantins : coups ${mm(coups)} et ${f3(max(0f, depasseCoups))} rad, repos ${mm(repos)} et ${f3(max(0f, depasseRepos))} rad, vitesse max ${f1(vmax)} m/s" to
+            (finis && coups <= .04f && depasseCoups <= .1f && repos <= .006f && depasseRepos <= .03f)
     }
 
     controle("moteurs : charnière et glissière à leur vitesse", "écart ≤ 1 %") {

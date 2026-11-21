@@ -1,6 +1,6 @@
 # The physics engine
 
-`sillage.physics` is a rigid-body engine written in Kotlin: boxes, spheres, capsules and static triangle meshes, with friction, bounce, rolling resistance, stacking, sleep, rays, sphere sweeps, trigger zones and a character controller. A `Scene` uses it as `scene.physics`, and the [guide](GUIDE.md) shows the one-line forms (`dynamic()`, `solid()`, `kinematic()`). This page is about the engine itself. It needs nothing from the scene or the renderer, so it also serves for a server, a test or a tool.
+`sillage.physics` is a rigid-body engine written in Kotlin: boxes, spheres, capsules, convex hulls, compound bodies and static triangle meshes, with friction, bounce, rolling resistance, stacking, sleep, water that floats things, rays, sphere sweeps, trigger zones and a character controller. A `Scene` uses it as `scene.physics`, and the [guide](GUIDE.md) shows the one-line forms (`dynamic()`, `solid()`, `kinematic()`). This page is about the engine itself. It needs nothing from the scene or the renderer, so it also serves for a server, a test or a tool.
 
 ## A world in ten lines
 
@@ -29,9 +29,26 @@ Units are metres, seconds and kilograms; Y points up. Positions and velocities l
 | `Sphere(radius)` | | |
 | `Box(halfX, halfY, halfZ)` | **half** extents | `Box(.5f, .5f, .5f)` is a 1 m cube |
 | `Capsule(radius, halfHeight)` | segment from −halfHeight to +halfHeight on local Y, swept by the radius | total height 2·(halfHeight + radius) |
+| `ConvexHull(points, maxVertices = 32)` | the smallest convex shape holding the points | rocks, bevelled crates, the collision volumes of models |
+| `Compound(parts)` | `Compound.Part(shape, position, rotation, density)` each | one body of several shapes: a table, a boat and its keel |
 | `TriangleMesh(triangles, …)` | 9 floats per triangle | static only: terrain, buildings |
 
-A shape is centred on its body's position, which is also its centre of mass. Shapes are immutable and can be shared by many bodies.
+A shape is centred on its body's position, which is also its centre of mass. Shapes are immutable and can be shared by many bodies. `shape.scaled(k)` gives the same shape `k` times larger.
+
+A `ConvexHull` is built from points (a `FloatArray` of x, y, z or a list of `Vec3`) by quickhull, in double precision; triangles that lie in one plane are merged into polygons (a cube gives 6 squares, a cylinder of 2 × 16 points its two discs and 16 sides) and points in the middle of an edge are dropped. It keeps at most `maxVertices` vertices (4 to 255): quickhull adds the point farthest from the hull so far at each round, so when it stops early it has kept those that matter, and `simplificationError` says how far outside the hull the farthest point left out lies. Fewer than four points, points at one place, on a line or in a plane (a hull needs a volume), and values that are not finite are refused with an `IllegalArgumentException` that says which. Its volume, centre of mass and inertia are those of the solid polyhedron, exactly; its inertia is diagonal about `principalAxes` (a turned box given by its corners finds its own axes), which the solver handles. The hull is recentred on its centre of mass: `centre` is where that was among the points, so a body at `position + rotation.rotate(hull.centre)` puts the points where they were given. `vertex(i)`, `face(f)`, `faceNormal(f)`, `triangles()` (to draw it) and `contains(point)` read it.
+
+```kotlin
+val rock = ConvexHull(points)                                   // points around (2, 0, 1), say
+val body = world.add(rock, Vec3(2f, 3f, 1f) + rock.centre)      // the hull's points over where they were
+```
+
+A `Compound` makes one body of several parts: spheres, boxes, capsules and hulls, each placed and turned in the compound's frame, with a density relative to the others (a lead keel of density 10 under a wooden hull of density 1). Its mass is the body's density (or the mass given) times the parts' volumes weighted by their densities; its centre of mass and inertia are those of all the parts together, about principal axes as for a hull. It is recentred like a hull (`centre`, `parts` about the centre of mass); a hull part sits on its own centre of mass, so put it at `hull.centre` to keep its points where they were. Parts may not be compounds, and should not overlap much (their volumes and masses add up). Each pair of parts is collided on its own, then the points with one normal are kept to four (the widest), so a table on four thin legs stands on one point per foot.
+
+```kotlin
+val table = Compound(listOf(Compound.Part(Box(.6f, .03f, .4f), Vec3(0f, .73f, 0f))) +
+    listOf(-1f, 1f).flatMap { x -> listOf(-1f, 1f).map { z -> Compound.Part(Box(.025f, .35f, .025f), Vec3(x * .55f, .35f, z * .35f)) } })
+world.add(table, Vec3(0f, 0f, -3f) + table.centre, density = 600f)
+```
 
 A `TriangleMesh` is a triangle soup with a bounding volume hierarchy. Triangles are **one-sided**: the front is the side from which the corners turn counter-clockwise, the normal being (b − a) × (c − a). Bodies are pushed out towards the front, and a body behind a triangle, inside a closed mesh, is not thrown through it. Degenerate triangles are dropped. Each triangle may have its own `Material`:
 
@@ -57,7 +74,7 @@ val body = world.add(shape, position, rotation = Quat.IDENTITY, type = BodyType.
 
 `Body` gives `position`, `rotation`, `velocity`, `angularVelocity` (read and write), `mass`, `friction`, `restitution`, `linearDamping`, `angularDamping`, `gravityScale`, `rollingResistance`, `isSleeping`, `isRemoved`, `shape`, `type` and `tag` (yours: the engine never reads it). `applyImpulse(impulse, point)` changes momentum at once; `world.applyForce(body, force)` acts during the next step. Setting a position, rotation or velocity wakes the body.
 
-A kinematic body is driven with `moveTo(target, dt, targetRotation)`, which sets the velocities that reach the target in `dt` seconds. Call it before each step: a lift moved this way carries what stands on it, and a door pushes what is in its way.
+A kinematic body is driven with `moveTo(target, dt, targetRotation)`, which sets the velocities that reach the target in `dt` seconds. Call it before each step: a lift moved this way carries what stands on it, and a door pushes what is in its way. A dynamic body caught between a kinematic body coming at it and what does not move (a ball under a lift going down to the floor) cannot be held by both: it is moved out sideways, across the squeeze and away from the kinematic body's centre, until it is out from under it, kept out of the floor meanwhile (`squeezes` counts the steps this happened).
 
 `world.remove(body)` takes a body out. Bodies that rested on it wake up. Its id may be given to the next body added, so drop the handle. `body(id)` makes a handle from an id, `bodyCount` counts ids ever used, `liveBodyCount` the bodies in the world.
 
@@ -122,6 +139,24 @@ water.onExit = { body -> body.linearDamping = 0f }
 
 A trigger notices bodies coming in and going out after each step, without touching them. By default it counts every body that is not static, characters included (`filter` changes that). `inside` lists the bodies within; `enabled = false` makes it forget them; `world.removeTrigger(t)` deletes it.
 
+## Water
+
+```kotlin
+val lake = world.addWater(level = 0f)                                   // everywhere below y = 0
+val pool = world.addWater(level = .5f, minX = -4f, minZ = -2f, maxX = 4f, maxZ = 2f)
+pool.flow = Vec3(1f, 0f, 0f)                                            // a current
+lake.onEnter = { e -> println("splash at ${e.point}, ${e.verticalSpeed} m/s") }
+val crate = world.add(Box(.5f, .5f, .5f), Vec3(0f, 3f, 0f), density = 500f)   // floats half under
+```
+
+A `WaterVolume` holds up the dynamic bodies whose centre is within its horizontal bounds: the weight of the water they displace (`density`, 1000 kg/m³) pushes them up at the centre of what they displace (Archimedes), in every substep like gravity, so that a wide boat with a low centre of mass rights itself and a long plank floats flat. The volume under the surface is exact for spheres (a spherical cap), boxes and hulls (the polyhedron cut by the surface); a capsule is summed over 24 slices across its axis, each an exact disc segment, scaled so that the whole capsule is exact; a compound adds up its parts. Nothing is allocated per step.
+
+The water slows what is in it, implicitly (stable at any setting): `linearDrag` (0.5 /s) and `angularDrag` (0.5 /s) times the fraction under water, a quadratic drag ½ ρ C_d A v² with `dragCoefficient` C_d (1) on the cross-section of a ball of the body's volume (what stops a fast body going in: a ball dropped from 2 m does not jump back out), and `waveDamping` (6 /s) for the waves a body makes bobbing and rolling: on its vertical speed and its turning about horizontal axes, most when half under, nothing once all under. A floating crate stops bobbing within a few seconds; one sliding along the water is not slowed by the waves. `flow` carries bodies along. A body floating free falls asleep only at rest in the water: its weight carried and its centre of buoyancy over its centre of mass (else it slept at the top of a slow bob). Changing `level`, `density`, `flow`, `enabled` or the bounds wakes the bodies around.
+
+`body.submergedFraction` says how much of a body is under water (0 to 1). `world.waterEntries` lists the bodies that touched a water during the last step coming from out of it: a `WaterEntry` with the `body`, the `water`, the `point` on the surface above the centre of what first went under, and the `verticalSpeed` just before (negative: falling) — for splashes, sounds and ripples. `onEnter` and `onExit` are called after the step, like a trigger's.
+
+Measured against Archimedes: a cube of density 500 floats with half its volume under water, of 250 a quarter, of 750 three quarters (it settles on its stable side, a corner up, as a real cube that dense does), within 0.2 %; a slab of density 250 sinks by a quarter of its thickness and rests without a tremor; a ball's waterline within 2 mm of the spherical cap's; a box barge rolls at the period its metacentric height gives (1.23 s) within 0.06 s and comes back upright; a hull boat with a lead keel rights itself from 60° of heel; random shapes, densities and poses float with the fraction under water at their density ratio within 0.1 %; a body dropped into still water touches it at the speed of its fall within 1.5 %. Cost: about 1 µs per floating body and step for a ball, 3 µs for a hull of 24 vertices or a capsule (4 substeps).
+
 ## Joints
 
 ```kotlin
@@ -144,6 +179,7 @@ A joint ties body `b` to body `a`, or to the world when `a` is null. Anchors and
 | Joint | Holds | Options |
 |---|---|---|
 | `addBall(a, b, anchor)` | the anchors together; the bodies turn freely about it | |
+| `addConeTwist(a, b, anchor, axis, swing, swing2, twistLower, twistUpper, across)` | a ball joint whose axis leans at most `swing` (towards ±`across`) and `swing2` (across that) from a's, an elliptical cone, and twists within limits: ragdolls | `limits(swing, swing2, twistLower, twistUpper)`, `friction` (N·m); `swingAngle`, `twistAngle` |
 | `addHinge(a, b, anchor, axis)` | the anchors together, turning about one axis only | `limits(lower, upper)` (radians), `motor(speed, maxTorque)`, `spring(hertz, dampingRatio, angle)`; `angle`, `speed` |
 | `addSlider(a, b, axis)` | `b` moves along the axis, without turning | `limits(lower, upper)` (m), `motor(speed, maxForce)`, `spring(hertz, dampingRatio, position)`; `translation`, `speed` |
 | `addFixed(a, b)` | the two bodies as one | |
@@ -152,9 +188,20 @@ A joint ties body `b` to body `a`, or to the world when `a` is null. Anchors and
 | `addRope(a, anchorA, b, anchorB, length)` | never farther than the length, slack below it | |
 | `addChain(from, to, links, radius, start, end)` | capsules joined end to end by ball joints | returns the links |
 
+A ragdoll is bodies joined by cone joints at the neck, shoulders and hips and hinges at the elbows and knees:
+
+```kotlin
+val torso = world.add(Box(.18f, .3f, .1f), Vec3(0f, 1.2f, 0f), mass = 30f)
+val arm = world.add(Capsule(.05f, .13f), Vec3(.25f, 1.32f, 0f), mass = 2.5f)
+world.addConeTwist(torso, arm, anchor = Vec3(.25f, 1.5f, 0f), axis = Vec3(0f, -1f, 0f),     // the arm hangs down
+                   swing = 1.2f, swing2 = .8f, twistLower = -.6f, twistUpper = .6f, across = Vec3.X)
+```
+
+The swing is the angle between a's axis and b's (the bone), at most `swing` when b leans towards ±`across` and `swing2` when it leans across that, an ellipse in between; the twist is b's turn about its bone, measured once the swing is undone. Like a hinge's, the limits turn the bodies about the anchor. `friction` resists every turn (a limp body comes to rest). Measured: an arm hit at random for 10 s stays in its cone and its twist range within 0.03 rad, 4 mm from its shoulder; an elliptical cone stops at each of its half-angles within 0.03 rad; ten ragdolls of 11 bodies dropped spinning and struck at random (up to 8 m/s at once on a limb) stay within their limits by 0.07 rad under the hits and 0.01 rad at rest, their joints within 2.3 cm under the hits and 3 mm at rest.
+
 Joined bodies do not collide with each other unless `collideConnected` is true (distance joints and ropes collide by default). `enabled = false` lets go for a while; `world.removeJoint(j)` for good, and removing a body removes its joints. `force` is what the joint held during the last step, in newtons: a game breaks a rope with `if (rope.force > 2000f) world.removeJoint(rope)`. Joined bodies sleep together and wake together, however long the chain.
 
-The joints are solved with the contacts, in the same substeps and the same soft steps (Box2D v3's solver carried to 3D), joints first, so that contacts have the last word: nothing is pulled into the ground. A spring is soft by nature, at the stiffness asked: its frequency does not depend on the masses. A rigid joint is soft too, at `jointHertz` (60 Hz, at most a quarter of the substep rate, beyond which joints overshoot and explode): a light body holding a heavy load gives a little. A chain of 20 links sags 2.7 cm over its 3 m, 2 mm at the top joint that carries everything; a 2 m beam of four welded boxes sags 5 cm. Eight substeps with `jointHertz = 120` make them four times stiffer, at twice the cost. Measured against physics: a pendulum's period within 0.01 % of the compound pendulum's, a spring's frequency within 1 % from 0.1 to 1000 kg, motors at their speed, hinge limits overshot by less than 0.01 rad under hard knocks.
+The joints are solved with the contacts, in the same substeps and the same soft steps (Box2D v3's solver carried to 3D), joints first, so that contacts have the last word: nothing is pulled into the ground. A spring is soft by nature, at the stiffness asked: its frequency does not depend on the masses. A rigid joint is soft too, at `jointHertz` (60 Hz, at most a quarter of the substep rate, beyond which joints overshoot and explode): a light body holding a heavy load gives a little. A chain of 20 links sags 2.7 cm over its 3 m, 2 mm at the top joint that carries everything; a 2 m beam of four welded boxes sags 5 cm. Eight substeps with `jointHertz = 120` make them four times stiffer, at twice the cost. The softness is for the position errors only: each substep first runs a rigid velocity pass over the joints (springs and motors sit it out), so that a sudden hit, an impulse or a contact is stopped at once at the joint, as by a real pin, instead of leaking through the soft step. A hinge's limits, motor, spring and axis rows turn the bodies about the anchor, each with the linear impulse that keeps the anchors together, so a door slammed against its stop does not pull at its hinges. Measured against physics: a pendulum's period within 0.01 % of the compound pendulum's, a spring's frequency within 1 % from 0.1 to 1000 kg, motors at their speed, hinge limits overshot by less than 0.01 rad under hard knocks; a 40 kg door struck beyond its edge hard enough to spin at 24 rad/s leaves its hinges by 1.2 mm (2.5 mm before these two changes).
 
 ## Vehicles
 
@@ -210,18 +257,22 @@ The world is not thread-safe: step it and query it from one thread at a time.
 
 On a laptop's efficiency cores (Intel Core Ultra 7): a pile of 1,000 bodies settling takes 2 to 4 ms per step, 10,000 awake bodies in a heap about 22 ms (8 threads), the demo island's physics, character and camera about 0.15 ms per frame. Sleeping bodies cost almost nothing.
 
+**Hulls.** The narrow phase per pair (bodies and ground), measured in a pit of 600 awake bodies: boxes 0.2 µs, bevelled crates of 24 vertices 1.1 µs, rocks of 16 vertices 0.8 µs, of 32 vertices 1.9 µs; a step of those 600 bodies takes 3.6, 5.5, 5.8 and 10.5 ms. Piles of hulls settle and sleep as piles of boxes do.
+
 `profiling = true` fills `phaseNanos` with the time spent per phase (bodies, pairs, contacts, preparation, warm start, solve, relax, sleep). The `bench` module measures pyramids, piles, the solver and thread determinism: `./kotlin run -m bench -- pile 3000`.
 
 ## How it works
 
 - **Broad phase**: a uniform grid. Each body is entered in the cells its bounds overlap, as one sorted array of 64-bit keys. A pair is reported only in the cell holding the lowest corner of the two bounds' overlap, so no pair comes twice. Large bodies are tested apart.
-- **Narrow phase**: one routine per pair of shapes. Spheres and capsules are solved analytically. Boxes use separating axes, then clip the incident face against the reference face (at most four points kept, the deepest and the widest). Capsules against boxes and triangles clip their segment by the face's sides, as Box2D does. Each point has its own normal and a feature id, which matches it with the same point at the next step for warm starting. The code works on plain floats and allocates nothing.
+- **Narrow phase**: one routine per pair of shapes. Spheres and capsules are solved analytically. Convex hulls (and a box against a hull, the box as a polytope) use the separating axis test over the faces of both and the edge pairs that make a face of their Minkowski difference (D. Gregorius's Gauss map test, with edges that face away from the other shape skipped by a bound on their normal cones), with relative tolerances so that small and large hulls choose alike; then the incident face, around the vertex deepest along the reference normal, is clipped by the reference face's sides, its other vertices within 2 cm of the ground are added (a rock with a faceted bottom stands on all of them), and four points are kept: of the touching ones, the one farthest from their centre, the farthest from it, and the two that span the widest area — the same four each step, whatever the rounding, so that hulls stack as still as boxes. Spheres and capsules against a hull use its closest features (the face it is farthest in front of, else the nearest edge), triangles against a hull the triangle's front, the hull's faces and the active triangle edges. Compounds collide part by part. Boxes use separating axes, then clip the incident face against the reference face (at most four points kept, the deepest and the widest). Capsules against boxes and triangles clip their segment by the face's sides, as Box2D does. Each point has its own normal and a feature id, which matches it with the same point at the next step for warm starting. The code works on plain floats and allocates nothing.
 - **Solver**: soft step after Box2D v3 (Erin Catto). Each substep integrates velocities, warm starts, solves contacts as soft springs with a bias, integrates positions, then relaxes without bias; restitution comes last. Friction acts at the centre of each contact patch (two directions plus a twist), not per point, so a crate on a slope slides straight. Contacts within the speculative distance are solved before they touch. A heavy body resting on a light one sees it as at least 1/`supportRatio` of its mass, and the load this hides is given back to the light body's friction: stacks of very different masses hold.
 - **Sleep**: islands of touching bodies, after Box2D v3's rule.
 
 ## Limits
 
 - Continuous collision sweeps a body's core, not its whole shape: a fast long box can still clip a corner, and a fast spinning one is swept only along its path. Non-bullets are swept only against what does not move.
-- Joints are soft (see Joints): a light body holding a heavy load gives a little. No cone or twist limits on ball joints yet (ragdolls swing freely), no gear or pulley joints.
-- There are no convex hulls and no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give.
+- Joints are soft (see Joints): a light body holding a heavy load gives a little, and a limb crushed between a heavy body and the ground parts from its joint for a moment (the contacts have the last word). No gear or pulley joints.
+- There are no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give (a hull of its points, a compound).
+- Hull against hull costs about the product of their edge counts, after pruning: keep collision hulls to 16–32 vertices. A body balanced on a single vertex of a hull spins on it without friction (a point has no grip about the normal).
+- A tall stack of compounds whose parts touch by small faces settles more slowly than one of boxes.
 - A sphere swept with a radius above 0.5 m looks at every body, not through the grid.

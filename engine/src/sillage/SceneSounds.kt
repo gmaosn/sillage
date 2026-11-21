@@ -97,6 +97,8 @@ internal class SceneSounds(private val scene: Scene) {
                 is Sphere -> l.length() <= s.radius
                 is Box -> kotlin.math.abs(l.x) <= s.halfX && kotlin.math.abs(l.y) <= s.halfY && kotlin.math.abs(l.z) <= s.halfZ
                 is Capsule -> { val y = l.y.coerceIn(-s.halfHeight, s.halfHeight); Vec3(l.x, l.y - y, l.z).length() <= s.radius }
+                is sillage.physics.ConvexHull -> s.contains(l)
+                is sillage.physics.Compound -> s.contains(l)
             }
             if (inside) return z.reverb
         }
