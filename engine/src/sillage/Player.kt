@@ -5,15 +5,22 @@ import sillage.math.Vec3
 import sillage.physics.Character
 import kotlin.math.*
 
-/** Keys that drive a [Player] (several keys may do the same thing). */
+/**
+ * Keys and pad inputs that drive a [Player] (several may do the same thing). The arrays take [Key] codes
+ * and [Pad] button codes alike.
+ */
 class PlayerKeys {
     var forward = intArrayOf(Key.W, Key.UP)
     var back = intArrayOf(Key.S, Key.DOWN)
     var left = intArrayOf(Key.A, Key.LEFT)
     var right = intArrayOf(Key.D, Key.RIGHT)
-    var jump = intArrayOf(Key.SPACE)
+    var jump = intArrayOf(Key.SPACE, Pad.CROSS)
     /** Held: walk instead of run. */
     var walk = intArrayOf(Key.SHIFT)
+    /** The pad stick it walks with (null: none): a small tilt walks, a full tilt runs. */
+    var stick: Stick? = Stick.LEFT
+    /** Which pad drives it, by slot; −1 (the default) for any pad. Give each player its own for local multiplayer. */
+    var pad = -1
 }
 
 /**
@@ -92,6 +99,18 @@ class Player internal constructor(scene: Scene, val character: Character, var sp
     /** Jumps (if on the ground, or just off a ledge; a jump asked a little early is kept a moment). */
     fun jump() { wantJump = true }
 
+    /**
+     * Walks with a stick: up to half a tilt it walks, from nothing to [walkSpeed]; beyond, it speeds up to
+     * [runSpeed] at a full tilt. [walkOnly] (the walk keys held) keeps it at walking speed.
+     */
+    private fun walkWith(s: Thumbstick, walkOnly: Boolean) {
+        val a = s.amount
+        var speed = if (a < .5f) walkSpeed * a / .5f else walkSpeed + (runSpeed - walkSpeed) * (a - .5f) / .5f
+        if (walkOnly) speed = min(speed, walkSpeed)
+        val d = scene.camera.moveDirection(s.x / a, s.y / a)
+        move(d * (speed / runSpeed.coerceAtLeast(1e-3f)))
+    }
+
     /** Back to [spawn], still. */
     fun respawn() { position = spawn; coyote = 0f; buffered = 0f; airTime = 0f }
 
@@ -101,11 +120,13 @@ class Player internal constructor(scene: Scene, val character: Character, var sp
     internal fun update(dt: Float) {
         val input = scene.input
         if (controls) {
-            fun any(keys: IntArray) = keys.any { input.isDown(it) }
+            val pad = keys.pad
+            fun any(keys: IntArray) = keys.any { input.isDown(it, pad) }
             val x = (if (any(keys.right)) 1f else 0f) - (if (any(keys.left)) 1f else 0f)
             val z = (if (any(keys.forward)) 1f else 0f) - (if (any(keys.back)) 1f else 0f)
             if (x != 0f || z != 0f) move(scene.camera.moveDirection(x, z), any(keys.walk))
-            if (keys.jump.any { input.pressed(it) }) jump()
+            else keys.stick?.let { which -> input.stick(which, pad)?.let { s -> if (s.amount > 0f) walkWith(s, any(keys.walk)) } }
+            if (keys.jump.any { input.pressed(it, pad) }) jump()
         }
         if (wantJump) buffered = .12f
         coyote = if (character.onGround) .1f else max(0f, coyote - dt)

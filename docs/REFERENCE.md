@@ -165,7 +165,7 @@ A `Node` that walks, runs, jumps, climbs low steps, stands on and pushes things,
 | `runSpeed`, `walkSpeed`, `jumpSpeed` | 4.4 m/s, 1.8 m/s, 8 m/s upwards |
 | `turnSpeed` | how fast it faces where it goes (14 rad/s) |
 | `controls` | true: keys and camera drive it; false: drive it with `move` and `jump` |
-| `keys` | a `PlayerKeys`: `forward`, `back`, `left`, `right`, `jump`, `walk` (arrays of `Key` codes) |
+| `keys` | a `PlayerKeys`: `forward`, `back`, `left`, `right`, `jump` (Space and `Pad.CROSS`), `walk` (arrays of `Key` and `Pad` button codes); `stick` (`Stick.LEFT`; null: none) it walks with, a small tilt walking and a full tilt running; `pad`, the slot of the pad that drives it (−1: any) |
 | `animations` | a `PlayerAnimations`: clip names `idle`, `walk`, `run`, `jump`, `fall`, `land` (after `landAfter` s in the air), `push`, `celebrate`, `wave` (after `idleFor` s still); `null` skips a clip |
 | `sounds` | footsteps, jump and landing sounds |
 | `effects` | dust when it lands on sand or a path, a splash when it falls into water |
@@ -191,6 +191,9 @@ A `Node` that walks, runs, jumps, climbs low steps, stands on and pushes things,
 | `eyeHeight`, `pitch` | first person: eyes above the feet (from the player's height if null); looking up or down (degrees) |
 | `yaw` | turn about the vertical (degrees, 0 looks towards −Z) |
 | `fov`, `near`, `far`, `mouseSensitivity` | 58°, 0.08 m, 200 m, 1 |
+| `lookStick`, `stickSpeed`, `pad` | the pad stick that turns the view (`Stick.RIGHT`; null: none), degrees per second at a full tilt (160, two thirds up and down), the pad by slot (−1: any) |
+| `invertY` | up on the stick or the mouse looks down |
+| `gyroAim`, `gyroSensitivity` | first person: a DualSense's gyroscope turns the view (false), as far as the pad turns (1) |
 | `position`, `forward` | where it is and looks, updated every frame |
 | `lookAt(eye, at)` | fixed camera |
 | `follow(node, mode = THIRD_PERSON)` | |
@@ -202,11 +205,62 @@ A `Node` that walks, runs, jumps, climbs low steps, stands on and pushes things,
 
 | `Input` member | |
 |---|---|
-| `isDown(key)` | held now |
-| `pressed(key)` | went down this frame |
+| `isDown(code)`, `pressed(code)`, `released(code)` | a key or a pad button (on any pad): held now, went down this frame, came up this frame |
 | `axis(negative, positive)` | −1, 0 or 1 |
 | `mouseDelta`, `wheel`, `mouseCaptured` | this frame's mouse movement and wheel; whether the window holds the mouse |
 | `source` | where keys come from: the window, or your `KeySource` (`fun interface KeySource { fun isDown(key: Int): Boolean }`) for tests, replays and bots |
+| `pads`, `pad`, `pad(slot)` | the pads connected, by slot; the first one; the pad of a slot, connected or not |
+| `onPadConnected { pad -> }`, `onPadDisconnected { pad -> }` | when a pad comes or goes (a new scene hears of the pads already there) |
+| `padLights` | a DualSense gets its slot's light bar colour and player LEDs when it connects (true) |
+| `padSource` | where pads come from: `PadSource.system()` (a game with a window), `PadSource.NONE` (without), or your own |
+| `plug(pad)`, `unplug(pad)` | adds or removes a `VirtualPad` |
+| `action(name, vararg codes)` | the `Action` of that name, made if new; with codes, its bindings become them |
+| `axes(name)`, `axes(name, left, right, down, up, stick = null)` | the `Axes` of that name; with keys and a stick, bound to them |
+| `isDown(name)`, `pressed(name)`, `released(name)`, `value(name)` | an action by name (an unknown name throws) |
+| `actions` | every action, in the order made |
+| `firstPressed()` | the key or pad button that went down this frame, or −1 (for rebinding menus) |
+| `Input.codeName(code)` | "SPACE", "CROSS"… |
+
+### `Pad`, `Stick`, `Thumbstick`, `Touch`, `TriggerEffect`
+
+A game controller as the scene sees it this frame. Button codes: `Pad.SOUTH`, `EAST`, `WEST`, `NORTH`, `L1`, `R1`, `L2`, `R2`, `SELECT`, `START`, `HOME`, `L3`, `R3`, `DPAD_UP`, `DPAD_DOWN`, `DPAD_LEFT`, `DPAD_RIGHT`, `TOUCHPAD`, `MUTE`, `FN_LEFT`, `FN_RIGHT`, `PADDLE_LEFT`, `PADDLE_RIGHT`, with the DualSense names `CROSS` (= `SOUTH`), `CIRCLE`, `SQUARE`, `TRIANGLE`, `CREATE` (= `SELECT`), `OPTIONS` (= `START`), `PS` (= `HOME`). `Pad.buttonName(code)`, `Pad.isButton(code)`, `Pad.playerPattern(n)` (the LEDs of player n), `Pad.slotColor(slot)`.
+
+| `Pad` member | |
+|---|---|
+| `slot`, `name`, `kind`, `connection`, `path`, `connected` | player slot from 0; `PadKind.DUALSENSE`, `DUALSENSE_EDGE`, `GENERIC`, `VIRTUAL`; `PadConnection.USB`, `BLUETOOTH`, `OTHER`; the /dev node; false once unplugged |
+| `isDown(button)`, `pressed(button)`, `released(button)`, `buttonsDown()` | |
+| `leftStick`, `rightStick`, `stick(Stick.LEFT)` | a `Thumbstick`: `x` (right), `y` (up), `amount` (0..1), `rawX`, `rawY` |
+| `deadZone`, `fullTilt`, `triggerDeadZone` | radial dead zone (0.1), the tilt counted as full (0.95), the trigger's (0.03) |
+| `trigger(Pad.L2)`, `trigger(Pad.R2)` | how far pulled, 0..1 |
+| `gyro`, `accel`, `hasMotion` | rad/s and m/s² on the pad's axes (x right, y up out of the face, z towards you) |
+| `touch` | two `Touch`: `active`, `id`, `x`, `y` (0..1 from the top left) |
+| `battery`, `batteryState`, `headphones`, `microphone` | 0..1 or −1; `BatteryState.UNKNOWN`, `DISCHARGING`, `CHARGING`, `FULL`, `ERROR` |
+| `rumble(low, high = low, seconds = .25)`, `stopRumble()` | heavy and light motors, 0..1, stopped by the engine when the time is up |
+| `lightbar`, `playerLeds`, `muteLed` | the light bar's `Color`, five LED bits, the mute button's light |
+| `triggerEffect(Pad.L2 or Pad.R2, effect)`, `triggerEffect(trigger)` | sets or reads an adaptive trigger's effect |
+| `canRumble`, `hasLightbar`, `hasAdaptiveTriggers`, `hasTouchpad`, `hasBattery` | what it offers |
+
+`TriggerEffect.OFF`, `resistance(start = 0, force = 1)`, `weapon(start = .3, end = .6, force = 1)` (between 20 % and 90 % of the travel), `vibration(start = 0, amplitude = 1, frequency = 30)`; positions and forces 0..1, frequency in Hz.
+
+### `Action`, `Axes`
+
+| `Action` member | |
+|---|---|
+| `name`, `bindings` | |
+| `bind(vararg codes)`, `rebind(vararg codes)`, `unbind(vararg codes)` | add, replace, remove bindings (keys and pad buttons) |
+| `isDown`, `pressed`, `released`, `value` | held; started this frame; ended this frame; 0..1, a trigger's pull |
+| `pad` | the slot of the pad that counts (−1: any) |
+
+| `Axes` member | |
+|---|---|
+| `x`, `y`, `amount` | right and up, within the unit circle (plus the mouse) |
+| `left`, `right`, `down`, `up`, `bind(l, r, d, u)`, `rebind(l, r, d, u)` | keys or buttons for each direction |
+| `stick`, `pad` | a `Stick`, and which pad (−1: the most pushed) |
+| `mouse` | mouse movement added per pixel (0) |
+
+### `PadSource`, `PadDevice`, `VirtualPad`, `PadScript`
+
+`PadSource` (`devices: List<PadDevice>`, `close()`) gives an `Input` its pads: `PadSource.system()` reads the computer's (DualSense through hidraw, other gamepads through evdev, hot-plugged), `PadSource.NONE` none. `VirtualPad(name, kind, id)` is a pad driven by code: `press`, `release`, `set`, `releaseAll`, `stick(which, x, y)`, `trigger(which, value)`, `motion(gyro, accel)`, `touch(finger, x, y)`, `lift(finger)`, `battery(level, state)`; what the game sent: `rumbleLow`, `rumbleHigh`, `rumbleSeconds`, `rumbles`, `lightbar`, `playerLeds`, `muteLed`, `triggerEffect(trigger)`. `PadScript(text)` drives a `VirtualPad` (`pad`) from a timed script, `attach(scene)` plugs it and plays it in the scene's time (`--pad-script`), `advance(dt)`, `done`.
 
 ### `Hud`
 

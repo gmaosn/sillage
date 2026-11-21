@@ -28,10 +28,14 @@ object Key {
     const val SHIFT = -1
 }
 
-/** Keyboard and mouse, as the scene sees them this frame. */
 /** Where the keys come from: the window, or your own source for tests, replays or a bot. */
 fun interface KeySource { fun isDown(key: Int): Boolean }
 
+/**
+ * Keyboard, mouse and pads, as the scene sees them this frame. Key codes ([Key]) and pad button codes
+ * ([Pad.CROSS]…) work alike in [isDown], [pressed] and [released] (a pad button counts on any pad), and
+ * named [action]s and [axes] gather them under names the game can rebind.
+ */
 class Input internal constructor() {
     /** Where the keys are read each frame: the window in a game; set your own to script the keys (`KeySource { it == Key.B }`). */
     var source: KeySource = KeySource { false }
@@ -45,23 +49,174 @@ class Input internal constructor() {
     /** True while the window holds the mouse (Tab toggles it). */
     var mouseCaptured: Boolean = false
         internal set
+    /** Frames polled so far. */
+    internal var frame = 0L
+        private set
 
-    /** True while [key] is held. */
+    /** True while [key] (a [Key] or [Pad] button code) is held. */
     fun isDown(key: Int): Boolean = when (key) {
         Key.SHIFT -> isDown(Key.LEFT_SHIFT) || isDown(Key.RIGHT_SHIFT)
         in 0 until 256 -> now[key]
-        else -> false
+        else -> Pad.isButton(key) && hub.anyDown(key)
     }
 
     /** True on the frame [key] went down. */
     fun pressed(key: Int): Boolean = when (key) {
         Key.SHIFT -> pressed(Key.LEFT_SHIFT) || pressed(Key.RIGHT_SHIFT)
         in 0 until 256 -> now[key] && !was[key]
-        else -> false
+        else -> Pad.isButton(key) && hub.anyPressed(key)
+    }
+
+    /** True on the frame [key] was let go. */
+    fun released(key: Int): Boolean = when (key) {
+        Key.SHIFT -> released(Key.LEFT_SHIFT) || released(Key.RIGHT_SHIFT)
+        in 0 until 256 -> !now[key] && was[key]
+        else -> Pad.isButton(key) && hub.anyReleased(key)
     }
 
     /** −1, 0 or 1 from two keys: `axis(Key.A, Key.D)`. */
     fun axis(negative: Int, positive: Int): Float = (if (isDown(positive)) 1f else 0f) - (if (isDown(negative)) 1f else 0f)
 
-    internal fun poll() { now.copyInto(was); val d = source; for (k in 0 until 256) now[k] = d.isDown(k) }
+    /** [isDown] for one pad ([slot] ≥ 0) or any (−1). */
+    internal fun isDown(code: Int, slot: Int): Boolean =
+        if (slot >= 0 && Pad.isButton(code)) hub.at(slot)?.isDown(code) ?: false else isDown(code)
+
+    internal fun wasDown(code: Int, slot: Int): Boolean = when {
+        code == Key.SHIFT -> was[Key.LEFT_SHIFT] || was[Key.RIGHT_SHIFT]
+        code in 0 until 256 -> was[code]
+        !Pad.isButton(code) -> false
+        slot >= 0 -> hub.at(slot)?.let { it.was and (1 shl (code - Pad.BUTTON_BASE)) != 0 } ?: false
+        else -> hub.anyWasDown(code)
+    }
+
+    internal fun pressed(code: Int, slot: Int): Boolean =
+        if (slot >= 0 && Pad.isButton(code)) hub.at(slot)?.pressed(code) ?: false else pressed(code)
+
+    /** 0..1 for one input: a trigger's pull, else 1 while held. */
+    internal fun value(code: Int, slot: Int): Float {
+        if (code != Pad.L2 && code != Pad.R2) return if (isDown(code, slot)) 1f else 0f
+        if (slot >= 0) return hub.at(slot)?.trigger(code) ?: 0f
+        var v = 0f
+        for (i in 0 until hub.connected.size) v = maxOf(v, hub.connected[i].trigger(code))
+        return v
+    }
+
+    /** The stick of pad [slot], or the most pushed one of all pads (−1); null without pads. */
+    internal fun stick(which: Stick, slot: Int): Thumbstick? {
+        if (slot >= 0) return hub.at(slot)?.stick(which)
+        var best: Thumbstick? = null
+        for (i in 0 until hub.connected.size) { val s = hub.connected[i].stick(which); if (best == null || s.amount > best.amount) best = s }
+        return best
+    }
+
+    /** The pad whose motion sensors aim: pad [slot], or the first that has them. */
+    internal fun motionPad(slot: Int): Pad? {
+        if (slot >= 0) return hub.at(slot)?.takeIf { it.hasMotion }
+        for (i in 0 until hub.connected.size) if (hub.connected[i].hasMotion) return hub.connected[i]
+        return null
+    }
+
+    // ------------------------------------------------------------------ pads
+
+    internal var hub = PadHub()
+    private var greeted = false
+    private val connectedBlocks = ArrayList<(Pad) -> Unit>()
+    private val disconnectedBlocks = ArrayList<(Pad) -> Unit>()
+
+    /**
+     * Where the pads come from: the computer's ([PadSource.system]) in a game with a window, none
+     * without one. Plug [VirtualPad]s to drive the scene from code.
+     */
+    var padSource: PadSource
+        get() = hub.source
+        set(v) { hub.source = v }
+
+    /** The pads connected now, by slot. */
+    val pads: List<Pad> get() = hub.connected
+    /** The first pad connected (the lowest slot), or null. */
+    val pad: Pad? get() = hub.connected.firstOrNull()
+    /** The pad of [slot], connected or not (a pad unplugged keeps its slot), or null if the slot was never used. */
+    fun pad(slot: Int): Pad? = hub.slots.getOrNull(slot)
+
+    /** Adds a pad driven by code (alongside the real ones). */
+    fun plug(pad: VirtualPad) = hub.plug(pad)
+    fun unplug(pad: VirtualPad) = hub.unplug(pad)
+
+    /** Runs [block] when a pad connects (and, for a new scene, for each pad already there). */
+    fun onPadConnected(block: (Pad) -> Unit) { connectedBlocks.add(block) }
+    /** Runs [block] when a pad is unplugged, switched off or out of range. */
+    fun onPadDisconnected(block: (Pad) -> Unit) { disconnectedBlocks.add(block) }
+
+    /** When true (the default) a DualSense gets its slot's light bar colour and player LEDs when it connects. */
+    var padLights = true
+
+    internal fun fire(p: Pad, connected: Boolean) {
+        val blocks = if (connected) connectedBlocks else disconnectedBlocks
+        for (i in 0 until blocks.size) blocks[i](p)
+    }
+
+    /** Takes the pads of [other] (the scene before), slots and all. */
+    internal fun adoptPads(other: Input) { hub = other.hub }
+
+    // ------------------------------------------------------------------ actions
+
+    private val actionMap = LinkedHashMap<String, Action>()
+    private val axesMap = LinkedHashMap<String, Axes>()
+
+    /**
+     * The action [name], made if new; with [inputs], its bindings become these:
+     * `input.action("jump", Key.SPACE, Pad.CROSS)`, then `input.pressed("jump")` or `jump.pressed`.
+     */
+    fun action(name: String, vararg inputs: Int): Action {
+        val a = actionMap.getOrPut(name) { Action(this, name) }
+        if (inputs.isNotEmpty()) a.rebind(*inputs)
+        return a
+    }
+
+    /** Every action made, in the order they were made (for a settings menu). */
+    val actions: Collection<Action> get() = actionMap.values
+
+    /** The axes [name], made if new (with no binding). */
+    fun axes(name: String): Axes = axesMap.getOrPut(name) { Axes(this, name) }
+
+    /**
+     * The axes [name], bound to four keys or buttons and a stick:
+     * `input.axes("move", Key.A, Key.D, Key.S, Key.W, Stick.LEFT)`, then `move.x`, `move.y`.
+     */
+    fun axes(name: String, left: Int, right: Int, down: Int, up: Int, stick: Stick? = null): Axes =
+        axes(name).apply { rebind(left, right, down, up); this.stick = stick }
+
+    private fun named(name: String) = actionMap[name] ?: throw IllegalArgumentException("No action « $name » (make it with input.action)")
+    fun isDown(action: String): Boolean = named(action).isDown
+    fun pressed(action: String): Boolean = named(action).pressed
+    fun released(action: String): Boolean = named(action).released
+    /** 0..1: see [Action.value]. */
+    fun value(action: String): Float = named(action).value
+
+    /**
+     * The key or pad button that went down this frame (keys first), or −1: what a settings menu waits for
+     * when the player picks a new binding.
+     */
+    fun firstPressed(): Int {
+        for (k in 0 until 256) if (now[k] && !was[k]) return k
+        for (b in 0 until Pad.BUTTON_COUNT) if (hub.anyPressed(Pad.BUTTON_BASE + b)) return Pad.BUTTON_BASE + b
+        return -1
+    }
+
+    internal fun poll() {
+        now.copyInto(was); val d = source; for (k in 0 until 256) now[k] = d.isDown(k)
+        if (!greeted) { greeted = true; for (i in 0 until hub.connected.size) fire(hub.connected[i], true) }
+        hub.poll(this)
+        frame++
+    }
+
+    companion object {
+        private val KEY_NAMES: Map<Int, String> by lazy {
+            Key::class.java.declaredFields.filter { it.type == Int::class.javaPrimitiveType && java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                .associate { it.getInt(null) to it.name }
+        }
+
+        /** A readable name for a key or pad button code: "SPACE", "CROSS"… */
+        fun codeName(code: Int): String = Pad.buttonName(code) ?: KEY_NAMES[code] ?: "#$code"
+    }
 }

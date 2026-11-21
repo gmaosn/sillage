@@ -64,9 +64,12 @@ internal class Runtime(private val title: String, private val args: Array<String
   --no-cull               draw everything, even what the camera cannot see (comparisons)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
-  --validation            Vulkan validation layers""")
+  --validation            Vulkan validation layers
+  --pad-test [--seconds N]   check the pads from the terminal (buttons, sticks, motion, lights, rumble, triggers)
+  --pad-script "0 L 0,1; 1 tap CROSS; 2 R 1,0"   a scripted pad (see PadScript)""")
             return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
         }
+        if ("--pad-test" in args) { padTest(args); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-sounds")?.let { exportSounds(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-textures")?.let { exportTextures(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         val headless = "--headless" in args
@@ -97,6 +100,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             scene.debug.showPhysics = "physics" in wanted; scene.debug.paused = "paused" in wanted
             if ("free" in wanted) scene.debug.freeCamera = true
         }
+        option("--pad-script")?.let { PadScript(it).attach(scene) }
         scene.audio = audio
         val rate = audio?.mixer?.rate ?: 48_000
         val block = FloatArray(2 * 512)
@@ -125,6 +129,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             r.cull = "--no-cull" !in args
             window?.mouseCaptured = true
             scene.input.source = KeySource { k -> window?.isDown(k) ?: false }
+            if (window != null && scene.input.padSource === PadSource.NONE) scene.input.padSource = PadSource.system()
             var last = System.nanoTime()
             var frame = 0; var fps = 60; var fpsFrames = 0; var fpsTime = 0f
             val start = scene.player?.position ?: Vec3.ZERO
@@ -201,6 +206,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 fun install(fresh: Scene) {
                     audio?.mixer?.stopAll()
                     fresh.input.source = scene.input.source
+                    fresh.input.adoptPads(scene.input)
                     fresh.audio = audio
                     r.oublier()
                     if (fresh.lighting.shadows != scene.lighting.shadows) {
@@ -248,6 +254,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 sorted.lastOrNull() ?: 0.0, p?.position ?: Vec3.ZERO, gpu, firstFrame)
         } finally {
             if (dev) DevLink.looping = false
+            scene.input.padSource.close()
             renderer?.close()
             window?.close()
             audio?.close()
