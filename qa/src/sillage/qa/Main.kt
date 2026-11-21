@@ -19,6 +19,7 @@ fun main(args: Array<String>) {
     val groupes = linkedMapOf<String, Qa.() -> Unit>(
         "physique" to { physique() },
         "collisions" to { collisions() },
+        "formes" to { formes() },
         "articulations" to { articulations() },
         "personnage" to { personnage() },
         "rendu" to { rendu() },
@@ -49,6 +50,7 @@ class Qa(val rapide: Boolean, val graine: Long, val refaire: Boolean) {
     val resultats = ArrayList<Resultat>()
     private var groupe = ""
     private val titres = mapOf("physique" to "Physique : invariants", "collisions" to "Collisions et requêtes : comparées à une référence indépendante",
+        "formes" to "Enveloppes convexes et corps composés",
         "articulations" to "Articulations, véhicules, plateformes, collision continue",
         "personnage" to "Personnage : parcours aléatoires et cas limites", "rendu" to "Rendu 3D", "chargeurs" to "Chargeurs : fichiers abîmés", "api" to "API publique : parties réelles",
         "son" to "Son : l'île entendue, hors ligne", "endurance" to "Endurance", "performance" to "Performance")

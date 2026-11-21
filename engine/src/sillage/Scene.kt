@@ -370,7 +370,7 @@ class Scene {
             Box((hi.x - lo.x) / 2, (hi.y - lo.y) / 2, (hi.z - lo.z) / 2)
         }
         val k = node.scale
-        return if (k == 1f) s else when (s) { is Sphere -> Sphere(s.radius * k); is Box -> Box(s.halfX * k, s.halfY * k, s.halfZ * k); is Capsule -> Capsule(s.radius * k, s.halfHeight * k) }
+        return if (k == 1f) s else when (s) { is Sphere -> Sphere(s.radius * k); is Box -> Box(s.halfX * k, s.halfY * k, s.halfZ * k); is Capsule -> Capsule(s.radius * k, s.halfHeight * k); is sillage.physics.ConvexHull -> s.scaled(k); is sillage.physics.Compound -> s.scaled(k) }
     }
 
     /** Offset from a model's origin to the centre of its bounding box (primitives are already centred). */
@@ -465,7 +465,7 @@ class Scene {
     }
 
     internal fun addShadow(node: Node, radius: Float?) {
-        val r = radius ?: shapeOf(node, null).let { s -> when (s) { is Sphere -> s.radius * 1.1f; is Box -> max(s.halfX, s.halfZ) * 1.5f; is Capsule -> s.radius * 1.5f } }
+        val r = radius ?: shapeOf(node, null).let { s -> when (s) { is Sphere -> s.radius * 1.1f; is Box -> max(s.halfX, s.halfZ) * 1.5f; is Capsule -> s.radius * 1.5f; is sillage.physics.ConvexHull -> s.boundingRadius; is sillage.physics.Compound -> s.boundingRadius } }
         val disc = Node(this, shadowMesh).also { it.isShadow = true; it.scale = r }
         all.add(disc); shadows.add(Shadow(disc, node, r))
     }

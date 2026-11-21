@@ -317,7 +317,10 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 
 ### Shapes
 
-`Shape` (sealed): `volume`, `boundingRadius`, `inertia(mass)`. `Sphere(radius)`; `Box(halfX, halfY, halfZ)` with `half(axis)`; `Capsule(radius, halfHeight)` along local Y.
+`Shape` (sealed): `volume`, `boundingRadius`, `inertia(mass)` (principal moments), `principalAxes` (identity but for hulls and compounds), `scaled(factor)`. `Sphere(radius)`; `Box(halfX, halfY, halfZ)` with `half(axis)`; `Capsule(radius, halfHeight)` along local Y.
+
+- `ConvexHull(points: FloatArray, maxVertices = 32)` or `ConvexHull(points: List<Vec3>, maxVertices = 32)`: `centre` (the centre of mass among the points given; the hull is recentred on it), `simplificationError`, `vertexCount`, `faceCount`, `edgeCount`, `vertex(i)`, `face(f)` (vertex indices, counter-clockwise from outside), `faceNormal(f)`, `triangles()`, `contains(point)`. Refuses degenerate points with an `IllegalArgumentException`.
+- `Compound(parts: List<Part>)` or `Compound(vararg parts)`, `Compound.Part(shape, position = ZERO, rotation = IDENTITY, density = 1)`: `centre`, `parts` (about the centre of mass), `contains(point)`.
 
 ### `TriangleMesh`
 

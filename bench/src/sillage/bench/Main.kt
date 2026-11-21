@@ -25,6 +25,9 @@ fun main(args: Array<String>) {
             "solver" -> solverCost(n ?: 3000)
             "doors" -> doors(n ?: 12)
             "ragdolls" -> ragdolls(n ?: 10)
+            "hulls" -> hulls(n ?: 1000)
+            "hullsettle" -> hullSettle(n ?: 300)
+            "rockpit" -> rockPit(n ?: 70)
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -316,5 +319,108 @@ private fun ragdolls(count: Int) {
         val pressedRest = w.contacts().count { c -> c.a != null && (c.a == rest.b || c.b == rest.b) && c.normalImpulse > 0f }
         println("  pantin $k : coups ${"%.1f".format(worst * 1000)} mm ($what) ; repos ${"%.2f".format((rest.anchorA - rest.anchorB).length() * 1000)} mm " +
             "(${rest::class.simpleName} ${rest.b.shape::class.simpleName}, $pressedRest contacts entre membres)")
+    }
+}
+
+/** A crate with bevelled corners as a hull (24 vertices, 26 faces). */
+private fun bevelled(h: Float, b: Float): ConvexHull {
+    val out = ArrayList<Vec3>()
+    for (k in 0 until 8) {
+        val sx = if (k and 1 == 0) -1f else 1f; val sy = if (k and 2 == 0) -1f else 1f; val sz = if (k and 4 == 0) -1f else 1f
+        out += Vec3(sx * h, sy * (h - b), sz * (h - b)); out += Vec3(sx * (h - b), sy * h, sz * (h - b)); out += Vec3(sx * (h - b), sy * (h - b), sz * h)
+    }
+    return ConvexHull(out)
+}
+
+/** A rock: the hull of [points] random points on a squashed sphere, at most [max] vertices. */
+private fun rock(seed: Long, points: Int, max: Int): ConvexHull {
+    val r = java.util.Random(seed)
+    return ConvexHull((0 until points).map {
+        val v = Vec3(r.nextFloat() - .5f, r.nextFloat() - .5f, r.nextFloat() - .5f).normalized()
+        Vec3(v.x * .4f, v.y * .28f, v.z * .35f) * (.8f + .2f * r.nextFloat())
+    }, max)
+}
+
+/**
+ * Hulls against boxes: a pile of [count] bodies settling in a pit, all boxes, all bevelled crates (24 vertices)
+ * or all rocks (16 and 32 vertices), the same places; time per step once settled and the narrow phase per pair.
+ */
+private fun hulls(count: Int) {
+    val kinds = listOf<Pair<String, () -> Shape>>("boîtes" to { Box(.35f, .3f, .3f) }, "caisses biseautées (24 sommets)" to { bevelled(.32f, .06f) },
+        "rochers (16 sommets)" to { rock(1, 60, 16) }, "rochers (32 sommets)" to { rock(1, 60, 32) })
+    for ((name, make) in kinds) {
+        val shape = make()
+        val w = PhysicsWorld(); ground(w, 60f)
+        val side = 14
+        for ((x, z, hx, hz) in listOf(arrayOf(-side * .45f, 0f, .5f, side * .5f), arrayOf(side * .45f, 0f, .5f, side * .5f), arrayOf(0f, -side * .45f, side * .5f, .5f), arrayOf(0f, side * .45f, side * .5f, .5f)))
+            w.add(Box(hx, 4f, hz), Vec3(x, 4f, z), type = BodyType.STATIC)
+        for (n in 0 until count) {
+            val l = n / (side * side); val i = (n / side) % side; val j = n % side
+            w.add(shape, Vec3((i - side / 2) * .85f + .2f * (l % 2), .6f + l * .8f, (j - side / 2) * .85f), Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), n * .37f))
+        }
+        val sleepy = PhysicsWorld().timeToSleep
+        repeat(60 * 5) { w.step(DT) }
+        val asleep = (0 until w.bodyCount).count { w.body(it).isSleeping }
+        println("  $name : $asleep / $count endormis à 5 s (sommeil après ${sleepy} s)")
+        // Awake again, kept awake: the cost of a pile in motion.
+        for (b in 0 until w.bodyCount) if (w.body(b).type == BodyType.DYNAMIC) w.body(b).velocity = w.body(b).velocity
+        w.timeToSleep = 1e9f
+        repeat(60) { w.step(DT) }
+        w.profiling = true; java.util.Arrays.fill(w.phaseNanos, 0L)
+        val t = Timing(); var pairs = 0L; var points = 0L
+        repeat(180) { val t0 = System.nanoTime(); w.step(DT); t.samples.add(System.nanoTime() - t0); pairs += w.pairCount; points += w.contactCount }
+        val lowest = (0 until w.bodyCount).filter { w.body(it).type == BodyType.DYNAMIC }.minOf { w.body(it).position.y }
+        println("  $name : ${"%.0f".format(w.phaseNanos[2].toDouble() / pairs)} ns de phase fine par paire (corps et sol), ${pairs / 180} paires, ${points / 180} points, plus bas ${"%.2f".format(lowest)} m")
+        t.report("    pas, $count corps éveillés")
+    }
+}
+
+/** Diagnostics: how a pile of bevelled hull crates settles, second by second (who stays awake, how fast). */
+private fun hullSettle(count: Int) {
+    val shape = if (System.getProperty("rock") != null) rock(1, 60, 32) else bevelled(.32f, .06f)
+    val w = PhysicsWorld(); ground(w, 60f)
+    val side = if (count > 400) 14 else 10
+    for ((x, z, hx, hz) in listOf(arrayOf(-side * .45f, 0f, .5f, side * .5f), arrayOf(side * .45f, 0f, .5f, side * .5f), arrayOf(0f, -side * .45f, side * .5f, .5f), arrayOf(0f, side * .45f, side * .5f, .5f)))
+        w.add(Box(hx, 4f, hz), Vec3(x, 4f, z), type = BodyType.STATIC)
+    for (n in 0 until count) {
+        val l = n / (side * side); val i = (n / side) % side; val j = n % side
+        w.add(shape, Vec3((i - side / 2) * .85f + .2f * (l % 2), .6f + l * .8f, (j - side / 2) * .85f), Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), n * .37f))
+    }
+    for (sec in 1..12) {
+        repeat(60) { w.step(DT) }
+        val bodies = (0 until w.bodyCount).map { w.body(it) }.filter { it.type == BodyType.DYNAMIC }
+        val awake = bodies.filter { !it.isSleeping }
+        val v = awake.maxOfOrNull { it.velocity.length() } ?: 0f; val om = awake.maxOfOrNull { it.angularVelocity.length() } ?: 0f
+        println("  t=$sec s : ${awake.size} éveillés, v max ${"%.3f".format(v)} m/s, ω max ${"%.3f".format(om)} rad/s, ${w.contactCount} points")
+        if (sec == 12) awake.sortedByDescending { it.velocity.length() + .4f * it.angularVelocity.length() }.take(5).forEach {
+            println("    corps ${it.id} p=${it.position} v=${it.velocity} ω=${it.angularVelocity}")
+        }
+    }
+}
+
+/** Diagnostics: random rocks (hulls of 8 to 58 points, 16 or 32 vertices) dropped in a pit, who is still awake, second by second. */
+private fun rockPit(count: Int) {
+    val r = java.util.Random(11)
+    fun f(a: Float, b: Float) = a + r.nextFloat() * (b - a)
+    val w = PhysicsWorld(); w.add(Box(30f, .5f, 30f), Vec3(0f, -.5f, 0f), type = BodyType.STATIC)
+    for ((x, z) in listOf(3.5f to 0f, -3.5f to 0f, 0f to 3.5f, 0f to -3.5f))
+        w.add(Box(if (x == 0f) 4f else .5f, 1.5f, if (z == 0f) 4f else .5f), Vec3(x, 1.5f, z), type = BodyType.STATIC)
+    val bodies = (0 until count).map { k ->
+        val a = f(.15f, .6f); val b = f(.15f, .6f); val c = f(.15f, .6f)
+        val h = ConvexHull((0 until 8 + r.nextInt(50)).map { val d = Vec3(f(-1f, 1f), f(-1f, 1f), f(-1f, 1f)).normalized(); Vec3(d.x * a, d.y * b, d.z * c) * f(.7f, 1f) }, if (r.nextBoolean()) 16 else 32)
+        val shape: Shape = if (System.getProperty("compounds") != null && k % 3 == 0) Compound((0 until 2 + r.nextInt(3)).map {
+            val d = Vec3(f(-1f, 1f), f(-1f, 1f), f(-1f, 1f)).normalized() * f(0f, .35f)
+            val part: Shape = when (r.nextInt(4)) { 0 -> Sphere(f(.08f, .3f)); 1 -> Box(f(.05f, .3f), f(.05f, .3f), f(.05f, .3f)); 2 -> Capsule(f(.05f, .2f), f(.05f, .3f)); else -> h.scaled(.6f) }
+            Compound.Part(part, d, Quat(f(-1f, 1f), f(-1f, 1f), f(-1f, 1f), f(-1f, 1f)).normalized(), density = f(.5f, 3f))
+        }) else h
+        w.add(shape, Vec3(f(-2.5f, 2.5f), 1f + k * .25f, f(-2.5f, 2.5f)), Quat(f(-1f, 1f), f(-1f, 1f), f(-1f, 1f), f(-1f, 1f)).normalized(), density = f(200f, 2500f), friction = f(.3f, .9f))
+    }
+    for (sec in 1..40) {
+        repeat(60) { w.step(DT) }
+        if (sec % 5 == 0) {
+            val awake = bodies.filter { !it.isSleeping }
+            println("  t=$sec s : ${awake.size} éveillés" + (awake.maxByOrNull { it.velocity.length() + it.shape.boundingRadius * it.angularVelocity.length() }?.let {
+                ", le plus vif v=${"%.3f".format(it.velocity.length())} ω=${"%.3f".format(it.angularVelocity.length())} ${it.shape}" } ?: ""))
+        }
     }
 }

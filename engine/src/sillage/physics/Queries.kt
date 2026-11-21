@@ -27,7 +27,10 @@ internal class RayQuery {
     var hx = 0f; var hy = 0f; var hz = 0f; var nx = 0f; var ny = 0f; var nz = 0f
     val n = FloatArray(12)
     val pose = Pose()
+    val part = Pose()
     val tri = Tri()
+    /** Closest feature of a hull ([pointHull]). */
+    val near = FloatArray(6)
 
     fun keep(t: Float, at: Int, body: Int, material: Material?) {
         best = t; hit = true; this.body = body; this.material = material
@@ -157,16 +160,91 @@ private fun PhysicsWorld.consider(i: Int, r: RayQuery, filter: ((Body) -> Boolea
     if (filter != null && !filter(Body(this, i))) return
     val pose = poseOf(i, r.pose)
     val t = when (shape) {
-        is Sphere -> raySphere(r, pose.px, pose.py, pose.pz, shape.radius + r.radius, 0)
-        is Capsule -> {
-            val h = shape.halfHeight
-            rayCapsule(r, pose.px - pose.yx * h, pose.py - pose.yy * h, pose.pz - pose.yz * h,
-                pose.px + pose.yx * h, pose.py + pose.yy * h, pose.pz + pose.yz * h, shape.radius + r.radius, 0)
+        is Compound -> {
+            // Each part near the ray; the nearest hit.
+            var best = Float.NaN
+            for (j in 0 until shape.count) {
+                val q = r.part.setPart(pose, shape, j)
+                val reachJ = shape.radius[j] + r.radius
+                val qx = q.px - r.ox; val qy = q.py - r.oy; val qz = q.pz - r.oz
+                val mj = qx * r.dx + qy * r.dy + qz * r.dz
+                if (mj < -reachJ || mj > r.best + reachJ) continue
+                val fx = qx - r.dx * mj; val fy = qy - r.dy * mj; val fz = qz - r.dz * mj
+                if (fx * fx + fy * fy + fz * fz > reachJ * reachJ) continue
+                val h = rayShape(r, shape.shapes[j], q, 3)
+                if (!h.isNaN() && (best.isNaN() || h < best)) { best = h; r.n[0] = r.n[3]; r.n[1] = r.n[4]; r.n[2] = r.n[5] }
+            }
+            best
         }
-        is Box -> if (r.radius > 0f) sweepBox(r, pose, shape, r.radius, 0) else rayBox(r, pose, shape.halfX, shape.halfY, shape.halfZ, 0)
+        else -> rayShape(r, shape, pose, 0)
     }
     // Equal distances: the lowest body wins, as when every body is tried in order.
     if (t < r.best || (t == r.best && r.hit && i < r.body)) r.keep(t, 0, i, null)
+}
+
+/** The ray (or sphere sweep) against [shape] at [pose], not a compound: its distance or NaN, the normal at n[at]. */
+private fun rayShape(r: RayQuery, shape: Shape, pose: Pose, at: Int): Float = when (shape) {
+    is Sphere -> raySphere(r, pose.px, pose.py, pose.pz, shape.radius + r.radius, at)
+    is Capsule -> {
+        val h = shape.halfHeight
+        rayCapsule(r, pose.px - pose.yx * h, pose.py - pose.yy * h, pose.pz - pose.yz * h,
+            pose.px + pose.yx * h, pose.py + pose.yy * h, pose.pz + pose.yz * h, shape.radius + r.radius, at)
+    }
+    is Box -> if (r.radius > 0f) sweepBox(r, pose, shape, r.radius, at) else rayBox(r, pose, shape.halfX, shape.halfY, shape.halfZ, at)
+    is ConvexHull -> rayHull(r, pose, shape.poly, r.radius, at)
+    is Compound -> error("compound")
+}
+
+/**
+ * A ray, or a sphere of radius [rad] swept, against a hull: the hull's planes pushed out by the radius
+ * (Cyrus–Beck) tell where a face is hit; where that point is off the face itself, the edges as capsules (the
+ * corners are their ends). Starting inside (or within the radius) gives 0.
+ */
+private fun rayHull(q: RayQuery, pose: Pose, h: Polytope, rad: Float, at: Int): Float {
+    val ox = pose.localX(q.ox, q.oy, q.oz); val oy = pose.localY(q.ox, q.oy, q.oz); val oz = pose.localZ(q.ox, q.oy, q.oz)
+    val dx = q.dx * pose.xx + q.dy * pose.xy + q.dz * pose.xz
+    val dy = q.dx * pose.yx + q.dy * pose.yy + q.dz * pose.yz
+    val dz = q.dx * pose.zx + q.dy * pose.zy + q.dz * pose.zz
+    val pl = h.plane
+    if (rad > 0f && pointHull(h, ox, oy, oz, q.near) <= rad) return backwards(q, at)
+    var t0 = 0f; var t1 = Float.MAX_VALUE; var face = -1
+    for (f in 0 until h.faceCount) {
+        val o = 4 * f
+        val dn = pl[o] * dx + pl[o + 1] * dy + pl[o + 2] * dz
+        val dist = pl[o] * ox + pl[o + 1] * oy + pl[o + 2] * oz - (pl[o + 3] + rad)
+        if (dn == 0f) { if (dist > 0f) return Float.NaN; continue }
+        val t = -dist / dn
+        if (dn < 0f) { if (t > t0) { t0 = t; face = f } } else if (t < t1) t1 = t
+        if (t0 > t1) return Float.NaN
+    }
+    // Origin inside: for a ray, inside the hull; for a sweep, in a corner of the pushed-out planes, off the rounded hull.
+    if (face < 0 && rad <= 0f) return backwards(q, at)
+    val o = 4 * max(face, 0)
+    if (rad > 0f) {
+        // Off the face itself: the first edge capsule met instead.
+        val hx = ox + dx * t0 - pl[o] * rad; val hy = oy + dy * t0 - pl[o + 1] * rad; val hz = oz + dz * t0 - pl[o + 2] * rad
+        var inside = face >= 0
+        if (inside) for (k in h.faceStart[face] until h.faceStart[face + 1]) {
+            val so = 4 * k
+            if (h.side[so] * hx + h.side[so + 1] * hy + h.side[so + 2] * hz - h.side[so + 3] > 1e-5f) { inside = false; break }
+        }
+        if (!inside) {
+            var best = Float.NaN
+            val v = h.v; val n = q.n
+            for (e in 0 until h.edgeCount) {
+                val a = h.edgeV[2 * e]; val b = h.edgeV[2 * e + 1]
+                val hit = rayCapsule(q, pose.worldX(v[3 * a], v[3 * a + 1], v[3 * a + 2]), pose.worldY(v[3 * a], v[3 * a + 1], v[3 * a + 2]),
+                    pose.worldZ(v[3 * a], v[3 * a + 1], v[3 * a + 2]), pose.worldX(v[3 * b], v[3 * b + 1], v[3 * b + 2]),
+                    pose.worldY(v[3 * b], v[3 * b + 1], v[3 * b + 2]), pose.worldZ(v[3 * b], v[3 * b + 1], v[3 * b + 2]), rad, at + 3)
+                if (!hit.isNaN() && (best.isNaN() || hit < best)) { best = hit; n[at] = n[at + 3]; n[at + 1] = n[at + 4]; n[at + 2] = n[at + 5] }
+            }
+            return best
+        }
+    }
+    q.n[at] = pose.xx * pl[o] + pose.yx * pl[o + 1] + pose.zx * pl[o + 2]
+    q.n[at + 1] = pose.xy * pl[o] + pose.yy * pl[o + 1] + pose.zy * pl[o + 2]
+    q.n[at + 2] = pose.xz * pl[o] + pose.yz * pl[o + 1] + pose.zz * pl[o + 2]
+    return t0
 }
 
 /**

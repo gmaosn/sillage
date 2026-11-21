@@ -6,6 +6,8 @@ import sillage.physics.Body
 import sillage.physics.BodyType
 import sillage.physics.Box
 import sillage.physics.Capsule
+import sillage.physics.Compound
+import sillage.physics.ConvexHull
 import sillage.physics.PhysicsWorld
 import sillage.physics.Shape
 import sillage.physics.Sphere
@@ -42,6 +44,9 @@ fun ajouterCorps(w: PhysicsWorld, rnd: Random, n: Int, x: Float, y0: Float, y1: 
     return corps
 }
 
+/** Axes de l'inertie du corps dans le monde (ceux du corps, sauf pour les enveloppes et les corps composés). */
+fun Body.axesPrincipaux(): Array<Vec3> = (rotation * shape.principalAxes).let { q -> arrayOf(q.rotate(Vec3.X), q.rotate(Vec3.Y), q.rotate(Vec3.Z)) }
+
 /** Axes du corps dans le monde. */
 fun Body.axes(): Array<Vec3> = rotation.let { q -> arrayOf(q.rotate(Vec3.X), q.rotate(Vec3.Y), q.rotate(Vec3.Z)) }
 
@@ -52,7 +57,7 @@ fun energie(corps: List<Body>, g: Vec3): Double {
         if (b.type != BodyType.DYNAMIC) continue
         val m = b.mass.toDouble(); val v = b.velocity
         e += .5 * m * (v dot v) - m * (g dot b.position)
-        val i = b.shape.inertia(b.mass); val w = b.angularVelocity; val a = b.axes()
+        val i = b.shape.inertia(b.mass); val w = b.angularVelocity; val a = b.axesPrincipaux()
         e += .5 * (i.x * (w dot a[0]).toDouble().pow(2) + i.y * (w dot a[1]).toDouble().pow(2) + i.z * (w dot a[2]).toDouble().pow(2))
     }
     return e
@@ -71,7 +76,7 @@ fun momentCinetique(corps: List<Body>): DoubleArray {
     for (b in corps) {
         val r = b.position; val pv = b.velocity * b.mass
         val orbital = r cross pv
-        val i = b.shape.inertia(b.mass); val w = b.angularVelocity; val a = b.axes()
+        val i = b.shape.inertia(b.mass); val w = b.angularVelocity; val a = b.axesPrincipaux()
         val propre = a[0] * (i.x * (w dot a[0])) + a[1] * (i.y * (w dot a[1])) + a[2] * (i.z * (w dot a[2]))
         l[0] += (orbital.x + propre.x).toDouble(); l[1] += (orbital.y + propre.y).toDouble(); l[2] += (orbital.z + propre.z).toDouble()
     }
@@ -101,6 +106,8 @@ class Solide(val forme: Shape, val p: Vec3, val q: Quat) {
                 val dx = abs(l.x) - s.halfX; val dy = abs(l.y) - s.halfY; val dz = abs(l.z) - s.halfZ
                 Vec3(max(dx, 0f), max(dy, 0f), max(dz, 0f)).length() + min(max(dx, max(dy, dz)), 0f)
             }
+            is ConvexHull -> distanceEnveloppe(s, l)
+            is Compound -> s.parts.minOf { Solide(it.shape, it.position, it.rotation).distance(l) }
         }
     }
 
@@ -142,9 +149,55 @@ class Solide(val forme: Shape, val p: Vec3, val q: Quat) {
                     }
                 }
             }
+            is ConvexHull -> {
+                // Chaque face en triangles, une grille par triangle selon son aire ; les arêtes tous les centimètres.
+                val tris = s.triangles(); var aire = 0f
+                for (t in 0 until tris.size / 9) aire += triangleAire(tris, t)
+                for (t in 0 until tris.size / 9) {
+                    val a = Vec3(tris[9 * t], tris[9 * t + 1], tris[9 * t + 2]); val b = Vec3(tris[9 * t + 3], tris[9 * t + 4], tris[9 * t + 5])
+                    val c = Vec3(tris[9 * t + 6], tris[9 * t + 7], tris[9 * t + 8])
+                    val k = max(2, sqrt(2 * n * triangleAire(tris, t) / aire).toInt())
+                    for (i in 0..k) for (j in 0..k - i) out.add(monde(a + (b - a) * (i / k.toFloat()) + (c - a) * (j / k.toFloat())))
+                }
+                for (f in 0 until s.faceCount) {
+                    val l = s.face(f)
+                    for (k in l.indices) {
+                        val a = s.vertex(l[k]); val b = s.vertex(l[(k + 1) % l.size])
+                        val m = max(2, ((b - a).length() / .01f).toInt())
+                        for (i in 0..m) out.add(monde(a + (b - a) * (i / m.toFloat())))
+                    }
+                }
+            }
+            is Compound -> for (p in s.parts) {
+                // La surface de chaque partie, sauf ce qui est dans une autre.
+                val part = Solide(p.shape, p.position, p.rotation)
+                val autres = s.parts.filter { it !== p }.map { Solide(it.shape, it.position, it.rotation) }
+                for (x in part.surface(n / s.parts.size + 50)) if (autres.none { it.distance(x) < -1e-4f }) out.add(monde(x))
+            }
         }
         return out
     }
+}
+
+private fun triangleAire(t: FloatArray, k: Int): Float {
+    val a = Vec3(t[9 * k], t[9 * k + 1], t[9 * k + 2]); val b = Vec3(t[9 * k + 3], t[9 * k + 4], t[9 * k + 5]); val c = Vec3(t[9 * k + 6], t[9 * k + 7], t[9 * k + 8])
+    return ((b - a) cross (c - a)).length() / 2
+}
+
+/**
+ * Distance signée exacte d'un point (repère de l'enveloppe) à une enveloppe convexe, écrite à part du moteur :
+ * dedans, la face la plus proche ; dehors, le plus proche des triangles de ses faces (Ericson 5.1.5).
+ */
+fun distanceEnveloppe(h: ConvexHull, p: Vec3): Float {
+    var dedans = -Float.MAX_VALUE
+    for (f in 0 until h.faceCount) dedans = max(dedans, h.faceNormal(f) dot (p - h.vertex(h.face(f)[0])))
+    if (dedans <= 0f) return dedans
+    val t = h.triangles(); var d = Float.MAX_VALUE
+    for (k in 0 until t.size / 9) {
+        val q = pointTriangle(p, Vec3(t[9 * k], t[9 * k + 1], t[9 * k + 2]), Vec3(t[9 * k + 3], t[9 * k + 4], t[9 * k + 5]), Vec3(t[9 * k + 6], t[9 * k + 7], t[9 * k + 8]))
+        d = min(d, (p - q).length())
+    }
+    return d
 }
 
 fun fibonacci(k: Int, n: Int): Vec3 {
@@ -218,6 +271,17 @@ fun Body.plusBas(): Float {
         is Sphere -> p.y - s.radius
         is Capsule -> p.y - abs(rotation.rotate(Vec3.Y).y) * s.halfHeight - s.radius
         is Box -> { val a = axes(); p.y - abs(a[0].y) * s.halfX - abs(a[1].y) * s.halfY - abs(a[2].y) * s.halfZ }
+        is ConvexHull -> (0 until s.vertexCount).minOf { (p + rotation.rotate(s.vertex(it))).y }
+        is Compound -> s.parts.minOf { part ->
+            val q = rotation * part.rotation; val c = p + rotation.rotate(part.position)
+            when (val x = part.shape) {
+                is Sphere -> c.y - x.radius
+                is Capsule -> c.y - abs(q.rotate(Vec3.Y).y) * x.halfHeight - x.radius
+                is Box -> c.y - abs(q.rotate(Vec3.X).y) * x.halfX - abs(q.rotate(Vec3.Y).y) * x.halfY - abs(q.rotate(Vec3.Z).y) * x.halfZ
+                is ConvexHull -> (0 until x.vertexCount).minOf { (c + q.rotate(x.vertex(it))).y }
+                is Compound -> c.y
+            }
+        }
     }
 }
 

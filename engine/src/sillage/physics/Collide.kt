@@ -1,6 +1,7 @@
 package sillage.physics
 
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sign
 import kotlin.math.sqrt
@@ -92,9 +93,9 @@ internal class Sat {
  * It also carries the scratch of the narrow phase: one per thread.
  */
 internal class ContactPoints {
-    val x = FloatArray(MAX); val y = FloatArray(MAX); val z = FloatArray(MAX)
-    val nx = FloatArray(MAX); val ny = FloatArray(MAX); val nz = FloatArray(MAX)
-    val sep = FloatArray(MAX); val id = IntArray(MAX)
+    var x = FloatArray(MAX); var y = FloatArray(MAX); var z = FloatArray(MAX)
+    var nx = FloatArray(MAX); var ny = FloatArray(MAX); var nz = FloatArray(MAX)
+    var sep = FloatArray(MAX); var id = IntArray(MAX)
     var count = 0
 
     internal val range = FloatArray(2)       // a clipped part [from, to] of a segment
@@ -103,12 +104,20 @@ internal class ContactPoints {
     internal val poly = Poly(); internal val spare = Poly()
     internal val sat = Sat()
     internal val tri = Tri()
+    internal val hull = HullScratch()
+    /** Poses of the parts of compounds being collided. */
+    internal val partA = Pose(); internal val partB = Pose()
     private val keep = IntArray(4)
     private val kept = FloatArray(4 * 8); private val keptId = IntArray(4)
 
     fun clear() { count = 0 }
     fun add(px: Float, py: Float, pz: Float, nx: Float, ny: Float, nz: Float, separation: Float, feature: Int) {
-        if (count == MAX) return
+        if (count == x.size) {
+            // Compounds can bring more than 16 points (up to four per pair of parts): grow, once.
+            val c = 2 * count
+            x = x.copyOf(c); y = y.copyOf(c); z = z.copyOf(c); this.nx = this.nx.copyOf(c); this.ny = this.ny.copyOf(c); this.nz = this.nz.copyOf(c)
+            sep = sep.copyOf(c); id = id.copyOf(c)
+        }
         x[count] = px; y[count] = py; z[count] = pz
         this.nx[count] = nx; this.ny[count] = ny; this.nz[count] = nz
         sep[count] = separation; id[count] = feature; count++
@@ -164,13 +173,122 @@ internal class ContactPoints {
         }
     }
 
+    /**
+     * The points from [start] (a compound's, from several of its parts) grouped by normal (within 25°, in
+     * order), each group kept to four with [reduceStable]. A table's four legs on a table each brought four
+     * points a few centimetres apart: sixteen springs fighting over four feet, and a stack of three tables
+     * shivered for ever. One point at each foot, the widest four, hold it as a box's corners do.
+     */
+    fun reduceGroups(start: Int) {
+        if (count - start <= 4) return
+        val n = count - start
+        if (order.size < n) { order = IntArray(2 * n); group = IntArray(2 * n); keptX = FloatArray(16 * n) }
+        for (k in 0 until n) group[k] = -1
+        var groups = 0; var at = 0
+        for (k in 0 until n) {
+            if (group[k] >= 0) continue
+            val i = start + k
+            for (m in k until n) {
+                val j = start + m
+                if (group[m] < 0 && nx[i] * nx[j] + ny[i] * ny[j] + nz[i] * nz[j] > .9f) { group[m] = groups; order[at++] = m }
+            }
+            groups++
+        }
+        if (groups == 1 && n <= 4) return
+        // Lay the points out group after group, then reduce each group in place.
+        for (k in 0 until n) {
+            val i = start + order[k]; val o = 8 * k
+            keptX[o] = x[i]; keptX[o + 1] = y[i]; keptX[o + 2] = z[i]; keptX[o + 3] = nx[i]; keptX[o + 4] = ny[i]; keptX[o + 5] = nz[i]
+            keptX[o + 6] = sep[i]; keptX[o + 7] = Float.fromBits(id[i])
+        }
+        count = start
+        var k = 0
+        while (k < n) {
+            val g = group[order[k]]
+            val from = count
+            while (k < n && group[order[k]] == g) {
+                val o = 8 * k
+                add(keptX[o], keptX[o + 1], keptX[o + 2], keptX[o + 3], keptX[o + 4], keptX[o + 5], keptX[o + 6], keptX[o + 7].toRawBits())
+                k++
+            }
+            reduceStable(from, nx[from], ny[from], nz[from])
+        }
+    }
+    private var order = IntArray(0); private var group = IntArray(0); private var keptX = FloatArray(0)
+
+    /**
+     * Keeps at most four points from [start], for faces of polyhedra lying on each other: of the deepest points
+     * (within a millimetre of the deepest), the one farthest from the touching points' centre; then the touching
+     * point farthest from it; then the two touching points spanning the widest area on each side. When two faces lie flat on each other every
+     * point is as deep as the next and the deepest changes from step to step with the rounding: picked this
+     * way, the same four corners come back each step, the widest ones, and a stack of hulls stands as still as
+     * one of boxes. A choice is changed only for a clearly better point (a millionth of the size), the first
+     * one keeping ties.
+     */
+    fun reduceStable(start: Int, nx: Float, ny: Float, nz: Float) {
+        if (count - start <= 4) return
+        // The points that touch (within 5 mm of the deepest) when there are three or more: a rock also brings
+        // its vertices a little above the ground, which must not take the place of those it stands on.
+        var deepest = Float.MAX_VALUE
+        for (i in start until count) deepest = min(deepest, sep[i])
+        var touching = 0
+        for (i in start until count) if (sep[i] <= deepest + .005f) touching++
+        val band = if (touching >= 3) deepest + .005f else Float.MAX_VALUE
+        var cx = 0f; var cy = 0f; var cz = 0f; var m = 0
+        for (i in start until count) if (sep[i] <= band) { cx += x[i]; cy += y[i]; cz += z[i]; m++ }
+        val inv = 1f / m; cx *= inv; cy *= inv; cz *= inv
+        var size = 0f
+        for (i in start until count) if (sep[i] <= band) size = max(size, abs(x[i] - cx) + abs(y[i] - cy) + abs(z[i] - cz))
+        val eps2 = 1e-6f * size * size
+        var k0 = -1; var best = 0f
+        for (i in start until count) {
+            if (sep[i] > deepest + .001f) continue
+            val dx = x[i] - cx; val dy = y[i] - cy; val dz = z[i] - cz
+            val d = dx * dx + dy * dy + dz * dz
+            if (k0 < 0 || d > best + eps2) { best = d; k0 = i }
+        }
+        val ax = x[k0]; val ay = y[k0]; val az = z[k0]
+        var k1 = k0; var far = 0f
+        for (i in start until count) {
+            if (sep[i] > band) continue
+            val dx = x[i] - ax; val dy = y[i] - ay; val dz = z[i] - az
+            val d = dx * dx + dy * dy + dz * dz
+            if (d > far + eps2) { far = d; k1 = i }
+        }
+        val ex = x[k1] - ax; val ey = y[k1] - ay; val ez = z[k1] - az
+        var k2 = k0; var k3 = k0; var hi = 0f; var lo = 0f
+        for (i in start until count) {
+            if (sep[i] > band) continue
+            val s = area(i, ax, ay, az, ex, ey, ez, nx, ny, nz)
+            if (s > hi + eps2) { k2 = i; hi = s }
+            if (s < lo - eps2) { k3 = i; lo = s }
+        }
+        keep[0] = k0
+        var n = 1
+        if (k1 != k0) keep[n++] = k1
+        if (k2 != k0 && k2 != k1) keep[n++] = k2
+        if (k3 != k0 && k3 != k1 && k3 != k2) keep[n++] = k3
+        for (j in 0 until n) {
+            val i = keep[j]; val o = 8 * j
+            kept[o] = x[i]; kept[o + 1] = y[i]; kept[o + 2] = z[i]
+            kept[o + 3] = this.nx[i]; kept[o + 4] = this.ny[i]; kept[o + 5] = this.nz[i]
+            kept[o + 6] = sep[i]; keptId[j] = id[i]
+        }
+        count = start
+        for (j in 0 until n) {
+            val o = 8 * j
+            add(kept[o], kept[o + 1], kept[o + 2], kept[o + 3], kept[o + 4], kept[o + 5], kept[o + 6], keptId[j])
+        }
+    }
+
     companion object { const val MAX = 16 }
 }
 
-private fun rank(s: Shape) = when (s) { is Sphere -> 0; is Capsule -> 1; is Box -> 2 }
+private fun rank(s: Shape) = when (s) { is Sphere -> 0; is Capsule -> 1; is Box -> 2; is ConvexHull -> 3; is Compound -> 4 }
 
 /** Contacts between two body shapes, normal from A to B. [margin] is the speculative distance. */
 internal fun collide(a: Shape, pa: Pose, b: Shape, pb: Pose, margin: Float, out: ContactPoints) {
+    if (a is Compound || b is Compound) { collideParts(a, pa, b, pb, margin, out); return }
     if (rank(a) > rank(b)) {
         val start = out.count
         collideOrdered(b, pb, a, pa, margin, out)
@@ -191,27 +309,63 @@ private fun collideOrdered(a: Shape, pa: Pose, b: Shape, pb: Pose, margin: Float
                     b.radius, margin, out, 0)
             }
             is Box -> sphereBox(pa.px, pa.py, pa.pz, a.radius, b, pb, margin, out, 0, sphereIsA = true)
+            is ConvexHull -> sphereHull(pa.px, pa.py, pa.pz, a.radius, b.poly, pb, margin, out, 0, sphereIsA = true)
+            is Compound -> error("compound")
         }
         is Capsule -> when (b) {
             is Capsule -> capsuleCapsule(a, pa, b, pb, margin, out)
             is Box -> capsuleBox(a, pa, b, pb, margin, out)
+            is ConvexHull -> capsuleHull(a, pa, b.poly, pb, margin, out)
             else -> error("unordered")
         }
-        is Box -> if (b is Box) boxBox(a, pa, b, pb, margin, out) else error("unordered")
+        is Box -> when (b) {
+            is Box -> boxBox(a, pa, b, pb, margin, out)
+            is ConvexHull -> { val box = out.hull.box; box.setBox(UNIT_BOX, a.halfX, a.halfY, a.halfZ); polytopes(box, pa, b.poly, pb, margin, out) }
+            else -> error("unordered")
+        }
+        is ConvexHull -> if (b is ConvexHull) polytopes(a.poly, pa, b.poly, pb, margin, out) else error("unordered")
+        is Compound -> error("compound")
     }
+}
+
+/**
+ * Contacts when one shape or both are compounds: each pair of parts (bounding spheres apart by more than the
+ * margin are skipped), the parts' indices folded into the feature ids (bits 27–31 for A's, 22–26 for B's).
+ */
+private fun collideParts(a: Shape, pa: Pose, b: Shape, pb: Pose, margin: Float, out: ContactPoints) {
+    val ca = a as? Compound; val cb = b as? Compound
+    val na = ca?.count ?: 1; val nb = cb?.count ?: 1
+    val first = out.count
+    for (i in 0 until na) {
+        val sa = if (ca != null) ca.shapes[i] else a
+        val qa = if (ca != null) out.partA.setPart(pa, ca, i) else pa
+        val ra = sa.boundingRadius
+        for (j in 0 until nb) {
+            val sb = if (cb != null) cb.shapes[j] else b
+            val qb = if (cb != null) out.partB.setPart(pb, cb, j) else pb
+            val reach = ra + sb.boundingRadius + margin
+            val dx = qb.px - qa.px; val dy = qb.py - qa.py; val dz = qb.pz - qa.pz
+            if (dx * dx + dy * dy + dz * dz > reach * reach) continue
+            val start = out.count
+            collide(sa, qa, sb, qb, margin, out)
+            val tag = ((i and 31) shl 27) or ((j and 31) shl 22)
+            for (k in start until out.count) out.id[k] = (out.id[k] and 0x3FFFFF) or tag
+        }
+    }
+    out.reduceGroups(first)
 }
 
 // ------------------------------------------------------------------ primitives
 
 /** Parameter in [0, 1] of the point of segment a→b closest to p. */
-private fun closestParam(px: Float, py: Float, pz: Float, ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float): Float {
+internal fun closestParam(px: Float, py: Float, pz: Float, ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float): Float {
     val abx = bx - ax; val aby = by - ay; val abz = bz - az
     val l = abx * abx + aby * aby + abz * abz
     return if (l < 1e-12f) 0f else ((px - ax) * (abx / l) + (py - ay) * (aby / l) + (pz - az) * (abz / l)).coerceIn(0f, 1f)
 }
 
 /** Closest points between segments p1-q1 and p2-q2 (Ericson 5.1.9): their parameters (s, t) in [r]. */
-private fun segmentParams(p1x: Float, p1y: Float, p1z: Float, q1x: Float, q1y: Float, q1z: Float,
+internal fun segmentParams(p1x: Float, p1y: Float, p1z: Float, q1x: Float, q1y: Float, q1z: Float,
                           p2x: Float, p2y: Float, p2z: Float, q2x: Float, q2y: Float, q2z: Float, r: FloatArray) {
     val d1x = q1x - p1x; val d1y = q1y - p1y; val d1z = q1z - p1z
     val d2x = q2x - p2x; val d2y = q2y - p2y; val d2z = q2z - p2z
@@ -353,7 +507,7 @@ private fun segmentBoxParam(ax: Float, ay: Float, az: Float, bx: Float, by: Floa
  * Narrows the part [r][0]..[r][1] of segment a→b to the inner side of plane (n, d): dot(x, n) ≤ d.
  * False when nothing is left ([r] is then unchanged).
  */
-private fun clipRange(ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float,
+internal fun clipRange(ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float,
                       nx: Float, ny: Float, nz: Float, d: Float, r: FloatArray): Boolean {
     val da = (ax * nx + ay * ny + az * nz) - d; val db = (bx * nx + by * ny + bz * nz) - d
     if (da > 0f && db > 0f) return false
@@ -819,5 +973,19 @@ internal fun collideTriangle(mesh: TriangleMesh, index: Int, b: Shape, pb: Pose,
         is Sphere -> triangleSphere(t, pb.px, pb.py, pb.pz, b.radius, margin, out, 0)
         is Capsule -> triangleCapsule(t, b, pb, margin, out)
         is Box -> triangleBox(t, b, pb, margin, out)
+        is ConvexHull -> triangleHull(t, b.poly, pb, margin, out)
+        is Compound -> {
+            val first = out.count
+            for (i in 0 until b.count) {
+                // Each part near the triangle's plane; its index in the feature ids (bits 22–26).
+                val q = out.partB.setPart(pb, b, i)
+                val h = (q.px - t.ax) * t.nx + (q.py - t.ay) * t.ny + (q.pz - t.az) * t.nz
+                if (h > b.radius[i] + margin || h < -2f * b.radius[i]) continue
+                val start = out.count
+                collideTriangle(mesh, index, b.shapes[i], q, margin, out)
+                for (k in start until out.count) out.id[k] = (out.id[k] and 0x3FFFFF) or ((i and 31) shl 22)
+            }
+            out.reduceGroups(first)
+        }
     }
 }

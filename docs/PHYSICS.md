@@ -1,6 +1,6 @@
 # The physics engine
 
-`sillage.physics` is a rigid-body engine written in Kotlin: boxes, spheres, capsules and static triangle meshes, with friction, bounce, rolling resistance, stacking, sleep, rays, sphere sweeps, trigger zones and a character controller. A `Scene` uses it as `scene.physics`, and the [guide](GUIDE.md) shows the one-line forms (`dynamic()`, `solid()`, `kinematic()`). This page is about the engine itself. It needs nothing from the scene or the renderer, so it also serves for a server, a test or a tool.
+`sillage.physics` is a rigid-body engine written in Kotlin: boxes, spheres, capsules, convex hulls, compound bodies and static triangle meshes, with friction, bounce, rolling resistance, stacking, sleep, rays, sphere sweeps, trigger zones and a character controller. A `Scene` uses it as `scene.physics`, and the [guide](GUIDE.md) shows the one-line forms (`dynamic()`, `solid()`, `kinematic()`). This page is about the engine itself. It needs nothing from the scene or the renderer, so it also serves for a server, a test or a tool.
 
 ## A world in ten lines
 
@@ -29,9 +29,26 @@ Units are metres, seconds and kilograms; Y points up. Positions and velocities l
 | `Sphere(radius)` | | |
 | `Box(halfX, halfY, halfZ)` | **half** extents | `Box(.5f, .5f, .5f)` is a 1 m cube |
 | `Capsule(radius, halfHeight)` | segment from −halfHeight to +halfHeight on local Y, swept by the radius | total height 2·(halfHeight + radius) |
+| `ConvexHull(points, maxVertices = 32)` | the smallest convex shape holding the points | rocks, bevelled crates, the collision volumes of models |
+| `Compound(parts)` | `Compound.Part(shape, position, rotation, density)` each | one body of several shapes: a table, a boat and its keel |
 | `TriangleMesh(triangles, …)` | 9 floats per triangle | static only: terrain, buildings |
 
-A shape is centred on its body's position, which is also its centre of mass. Shapes are immutable and can be shared by many bodies.
+A shape is centred on its body's position, which is also its centre of mass. Shapes are immutable and can be shared by many bodies. `shape.scaled(k)` gives the same shape `k` times larger.
+
+A `ConvexHull` is built from points (a `FloatArray` of x, y, z or a list of `Vec3`) by quickhull, in double precision; triangles that lie in one plane are merged into polygons (a cube gives 6 squares, a cylinder of 2 × 16 points its two discs and 16 sides) and points in the middle of an edge are dropped. It keeps at most `maxVertices` vertices (4 to 255): quickhull adds the point farthest from the hull so far at each round, so when it stops early it has kept those that matter, and `simplificationError` says how far outside the hull the farthest point left out lies. Fewer than four points, points at one place, on a line or in a plane (a hull needs a volume), and values that are not finite are refused with an `IllegalArgumentException` that says which. Its volume, centre of mass and inertia are those of the solid polyhedron, exactly; its inertia is diagonal about `principalAxes` (a turned box given by its corners finds its own axes), which the solver handles. The hull is recentred on its centre of mass: `centre` is where that was among the points, so a body at `position + rotation.rotate(hull.centre)` puts the points where they were given. `vertex(i)`, `face(f)`, `faceNormal(f)`, `triangles()` (to draw it) and `contains(point)` read it.
+
+```kotlin
+val rock = ConvexHull(points)                                   // points around (2, 0, 1), say
+val body = world.add(rock, Vec3(2f, 3f, 1f) + rock.centre)      // the hull's points over where they were
+```
+
+A `Compound` makes one body of several parts: spheres, boxes, capsules and hulls, each placed and turned in the compound's frame, with a density relative to the others (a lead keel of density 10 under a wooden hull of density 1). Its mass is the body's density (or the mass given) times the parts' volumes weighted by their densities; its centre of mass and inertia are those of all the parts together, about principal axes as for a hull. It is recentred like a hull (`centre`, `parts` about the centre of mass); a hull part sits on its own centre of mass, so put it at `hull.centre` to keep its points where they were. Parts may not be compounds, and should not overlap much (their volumes and masses add up). Each pair of parts is collided on its own, then the points with one normal are kept to four (the widest), so a table on four thin legs stands on one point per foot.
+
+```kotlin
+val table = Compound(listOf(Compound.Part(Box(.6f, .03f, .4f), Vec3(0f, .73f, 0f))) +
+    listOf(-1f, 1f).flatMap { x -> listOf(-1f, 1f).map { z -> Compound.Part(Box(.025f, .35f, .025f), Vec3(x * .55f, .35f, z * .35f)) } })
+world.add(table, Vec3(0f, 0f, -3f) + table.centre, density = 600f)
+```
 
 A `TriangleMesh` is a triangle soup with a bounding volume hierarchy. Triangles are **one-sided**: the front is the side from which the corners turn counter-clockwise, the normal being (b − a) × (c − a). Bodies are pushed out towards the front, and a body behind a triangle, inside a closed mesh, is not thrown through it. Degenerate triangles are dropped. Each triangle may have its own `Material`:
 
@@ -222,12 +239,14 @@ The world is not thread-safe: step it and query it from one thread at a time.
 
 On a laptop's efficiency cores (Intel Core Ultra 7): a pile of 1,000 bodies settling takes 2 to 4 ms per step, 10,000 awake bodies in a heap about 22 ms (8 threads), the demo island's physics, character and camera about 0.15 ms per frame. Sleeping bodies cost almost nothing.
 
+**Hulls.** The narrow phase per pair (bodies and ground), measured in a pit of 600 awake bodies: boxes 0.2 µs, bevelled crates of 24 vertices 1.1 µs, rocks of 16 vertices 0.8 µs, of 32 vertices 1.9 µs; a step of those 600 bodies takes 3.6, 5.5, 5.8 and 10.5 ms. Piles of hulls settle and sleep as piles of boxes do.
+
 `profiling = true` fills `phaseNanos` with the time spent per phase (bodies, pairs, contacts, preparation, warm start, solve, relax, sleep). The `bench` module measures pyramids, piles, the solver and thread determinism: `./kotlin run -m bench -- pile 3000`.
 
 ## How it works
 
 - **Broad phase**: a uniform grid. Each body is entered in the cells its bounds overlap, as one sorted array of 64-bit keys. A pair is reported only in the cell holding the lowest corner of the two bounds' overlap, so no pair comes twice. Large bodies are tested apart.
-- **Narrow phase**: one routine per pair of shapes. Spheres and capsules are solved analytically. Boxes use separating axes, then clip the incident face against the reference face (at most four points kept, the deepest and the widest). Capsules against boxes and triangles clip their segment by the face's sides, as Box2D does. Each point has its own normal and a feature id, which matches it with the same point at the next step for warm starting. The code works on plain floats and allocates nothing.
+- **Narrow phase**: one routine per pair of shapes. Spheres and capsules are solved analytically. Convex hulls (and a box against a hull, the box as a polytope) use the separating axis test over the faces of both and the edge pairs that make a face of their Minkowski difference (D. Gregorius's Gauss map test, with edges that face away from the other shape skipped by a bound on their normal cones), with relative tolerances so that small and large hulls choose alike; then the incident face, around the vertex deepest along the reference normal, is clipped by the reference face's sides, its other vertices within 2 cm of the ground are added (a rock with a faceted bottom stands on all of them), and four points are kept: of the touching ones, the one farthest from their centre, the farthest from it, and the two that span the widest area — the same four each step, whatever the rounding, so that hulls stack as still as boxes. Spheres and capsules against a hull use its closest features (the face it is farthest in front of, else the nearest edge), triangles against a hull the triangle's front, the hull's faces and the active triangle edges. Compounds collide part by part. Boxes use separating axes, then clip the incident face against the reference face (at most four points kept, the deepest and the widest). Capsules against boxes and triangles clip their segment by the face's sides, as Box2D does. Each point has its own normal and a feature id, which matches it with the same point at the next step for warm starting. The code works on plain floats and allocates nothing.
 - **Solver**: soft step after Box2D v3 (Erin Catto). Each substep integrates velocities, warm starts, solves contacts as soft springs with a bias, integrates positions, then relaxes without bias; restitution comes last. Friction acts at the centre of each contact patch (two directions plus a twist), not per point, so a crate on a slope slides straight. Contacts within the speculative distance are solved before they touch. A heavy body resting on a light one sees it as at least 1/`supportRatio` of its mass, and the load this hides is given back to the light body's friction: stacks of very different masses hold.
 - **Sleep**: islands of touching bodies, after Box2D v3's rule.
 
@@ -235,5 +254,7 @@ On a laptop's efficiency cores (Intel Core Ultra 7): a pile of 1,000 bodies sett
 
 - Continuous collision sweeps a body's core, not its whole shape: a fast long box can still clip a corner, and a fast spinning one is swept only along its path. Non-bullets are swept only against what does not move.
 - Joints are soft (see Joints): a light body holding a heavy load gives a little, and a limb crushed between a heavy body and the ground parts from its joint for a moment (the contacts have the last word). No gear or pulley joints.
-- There are no convex hulls and no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give.
+- There are no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give (a hull of its points, a compound).
+- Hull against hull costs about the product of their edge counts, after pruning: keep collision hulls to 16–32 vertices. A body balanced on a single vertex of a hull spins on it without friction (a point has no grip about the normal).
+- A tall stack of compounds whose parts touch by small faces settles more slowly than one of boxes.
 - A sphere swept with a radius above 0.5 m looks at every body, not through the grid.

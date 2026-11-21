@@ -164,6 +164,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     internal var rolling = FloatArray(0); private var rollRadius = FloatArray(0)
     /** Spheres look the same however they turn: their contact anchors need not rotate. */
     private var round = BooleanArray(0)
+    /** Bodies whose inertia is diagonal about turned axes (hulls, compounds): their [Shape.principalAxes], x y z w. */
+    private var principal = BooleanArray(0); private var pq = FloatArray(0)
     internal var sleeping = BooleanArray(0); private var sleepClock = FloatArray(0)
     internal var removed = BooleanArray(0)
     internal var bullet = BooleanArray(0)
@@ -216,6 +218,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         friction = friction.copyOf(c); restitution = restitution.copyOf(c)
         linearDamping = linearDamping.copyOf(c); angularDamping = angularDamping.copyOf(c); gravityScale = gravityScale.copyOf(c)
         rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c); round = round.copyOf(c)
+        principal = principal.copyOf(c); pq = pq.copyOf(4 * c)
         sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c); removed = removed.copyOf(c); bullet = bullet.copyOf(c)
         fx = fx.copyOf(c); fy = fy.copyOf(c); fz = fz.copyOf(c)
         tx = tx.copyOf(c); ty = ty.copyOf(c); tz = tz.copyOf(c)
@@ -226,7 +229,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
     /**
      * Adds a body. Its mass comes from [density] (kg/m³) unless [mass] is given; static and
-     * kinematic bodies have infinite mass. Balls and capsules get a little rolling resistance.
+     * kinematic bodies have infinite mass. Balls, capsules and compounds with round parts get a little rolling resistance.
      */
     fun add(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, type: BodyType = BodyType.DYNAMIC,
             density: Float = 1000f, mass: Float? = null, friction: Float = .6f, restitution: Float = 0f,
@@ -242,7 +245,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val q = rotation.normalized(); qx[i] = q.x; qy[i] = q.y; qz[i] = q.z; qw[i] = q.w
         st[i * S + DQW] = 1f
         if (type == BodyType.DYNAMIC) {
-            val m = mass ?: (density * shape.volume)
+            val m = mass ?: (density * shape.massVolume)
             require(m > 0f) { "A dynamic body needs a positive mass" }
             st[i * S + IM] = 1f / m
             val inertia = shape.inertia(m)
@@ -250,8 +253,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
         this.friction[i] = friction; this.restitution[i] = restitution; gravityScale[i] = 1f
         // Les boules et capsules finissent par s'arrêter de rouler (sinon un tas ne s'endort jamais).
-        rollRadius[i] = when (shape) { is Sphere -> shape.radius; is Capsule -> shape.radius; else -> 0f }
+        rollRadius[i] = when (shape) {
+            is Sphere -> shape.radius; is Capsule -> shape.radius
+            // A compound with round parts rolls on them (a dumbbell rolled for ever): its largest round part's radius.
+            is Compound -> { var r = 0f; for (p in shape.shapes) r = max(r, when (p) { is Sphere -> p.radius; is Capsule -> p.radius; else -> 0f }); r }
+            else -> 0f
+        }
         round[i] = shape is Sphere
+        val axes = shape.principalAxes
+        principal[i] = axes != Quat.IDENTITY && type == BodyType.DYNAMIC
+        pq[4 * i] = axes.x; pq[4 * i + 1] = axes.y; pq[4 * i + 2] = axes.z; pq[4 * i + 3] = axes.w
         rolling[i] = rollingResistance ?: if (rollRadius[i] > 0f) .02f else 0f
         return Body(this, i)
     }
@@ -492,7 +503,14 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
     /** World inverse inertia R · diag(invI) · Rᵀ into the body's solver state. */
     internal fun prepareInertia(i: Int) {
-        val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
+        var x = qx[i]; var y = qy[i]; var z = qz[i]; var w = qw[i]
+        if (principal[i]) {
+            // The inertia's own axes: the body's rotation times the shape's principal axes.
+            val ax = pq[4 * i]; val ay = pq[4 * i + 1]; val az = pq[4 * i + 2]; val aw = pq[4 * i + 3]
+            val nx = w * ax + x * aw + y * az - z * ay; val ny = w * ay - x * az + y * aw + z * ax
+            val nz = w * az + x * ay - y * ax + z * aw; val nw = w * aw - x * ax - y * ay - z * az
+            x = nx; y = ny; z = nz; w = nw
+        }
         val r00 = 1 - 2 * (y * y + z * z); val r01 = 2 * (x * y - z * w); val r02 = 2 * (x * z + y * w)
         val r10 = 2 * (x * y + z * w); val r11 = 1 - 2 * (x * x + z * z); val r12 = 2 * (y * z - x * w)
         val r20 = 2 * (x * z - y * w); val r21 = 2 * (y * z + x * w); val r22 = 1 - 2 * (x * x + y * y)
@@ -628,6 +646,14 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 ez = abs(pose.xz) * s.halfX + abs(pose.yz) * s.halfY + abs(pose.zz) * s.halfZ
             }
             is Capsule -> { ex = abs(pose.yx) * s.halfHeight + s.radius; ey = abs(pose.yy) * s.halfHeight + s.radius; ez = abs(pose.yz) * s.halfHeight + s.radius }
+            is ConvexHull, is Compound -> {
+                // The turned box of the shape's own bounds (they need not be centred on the centre of mass).
+                val b = 6 * i
+                localBounds(s, pose, box, b)
+                val m = speculativeDistance + speed(i) * dt
+                box[b] -= m; box[b + 1] -= m; box[b + 2] -= m; box[b + 3] += m; box[b + 4] += m; box[b + 5] += m
+                return
+            }
         }
         val m = speculativeDistance + speed(i) * dt
         ex += m; ey += m; ez += m
@@ -952,6 +978,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         while (k < c.size) {
             val a = c.a[k]; val b = c.b[k]; val o0 = k * C
             var e = k + 1
+            // The parts of a compound share the pair's patches: a table's four legs on the floor are one patch,
+            // its friction at the middle of the four (as a box's at the middle of its face).
             while (e < c.size && c.a[e] == a && c.b[e] == b &&
                 d[e * C + CNX] * d[o0 + CNX] + d[e * C + CNX + 1] * d[o0 + CNX + 1] + d[e * C + CNX + 2] * d[o0 + CNX + 2] > .9f) e++
             // Key for warm starting: the pair (triangle bits cleared for meshes) and the patch's rank in it.
@@ -1120,7 +1148,13 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val a = ilx[i]; val b = ily[i]; val c = ilz[i]
         if (a == b && b == c) return                                   // sphere-like: no gyroscopic torque
         val o = i * S
-        val x = qx[i]; val y = qy[i]; val z = qz[i]; val w = qw[i]
+        var x = qx[i]; var y = qy[i]; var z = qz[i]; var w = qw[i]
+        if (principal[i]) {
+            val ax = pq[4 * i]; val ay = pq[4 * i + 1]; val az = pq[4 * i + 2]; val aw = pq[4 * i + 3]
+            val nx = w * ax + x * aw + y * az - z * ay; val ny = w * ay - x * az + y * aw + z * ax
+            val nz = w * az + x * ay - y * ax + z * aw; val nw = w * aw - x * ax - y * ay - z * az
+            x = nx; y = ny; z = nz; w = nw
+        }
         // ω in body space: Rᵀ ω.
         val wx0 = st[o + 3]; val wy0 = st[o + 4]; val wz0 = st[o + 5]
         val tx = 2f * (-y * wz0 + z * wy0); val ty = 2f * (-z * wx0 + x * wz0); val tz = 2f * (-x * wy0 + y * wx0)
@@ -1574,7 +1608,19 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             val travel = sqrt(dx * dx + dy * dy + dz * dz)
             val ux = dx / travel; val uy = dy / travel; val uz = dz / travel
             val fx = px[i] - dx; val fy = py[i] - dy; val fz = pz[i] - dz
-            val t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, if (bullet[i]) null else still)
+            val targets = if (bullet[i]) null else still
+            val shape = shapes[i]!!
+            var t: Float
+            if (shape is Compound) {
+                // Each part's core from where it was (moved along, not turned), the first hit for the whole body.
+                t = Float.NaN
+                val pose = ccdPose.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
+                for (j in 0 until shape.count) {
+                    val part = ccdPart.setPart(pose, shape, j)
+                    val h = sweepCore(part.px - dx, part.py - dy, part.pz - dz, ux, uy, uz, travel, .5f * coreOf(shape.shapes[j]), i, targets)
+                    if (!h.isNaN() && (t.isNaN() || h < t)) t = h
+                }
+            } else t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, targets)
             if (t.isNaN() || t <= 0f || t >= travel) continue
             val back = max(0f, t - CCD_SLOP)
             px[i] = fx + ux * back; py[i] = fy + uy * back; pz[i] = fz + uz * back
@@ -1587,10 +1633,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     var continuousHits = 0L
         private set
 
-    private fun core(i: Int): Float = .5f * when (val s = shapes[i]!!) {
+    private fun core(i: Int): Float = .5f * coreOf(shapes[i]!!)
+    private val ccdPose = Pose(); private val ccdPart = Pose()
+
+    /** The radius of the largest ball about the centre inside the shape (a compound: its smallest part's). */
+    private fun coreOf(s: Shape): Float = when (s) {
         is Sphere -> s.radius
         is Capsule -> s.radius
         is Box -> min(s.halfX, min(s.halfY, s.halfZ))
+        is ConvexHull -> s.inradius
+        is Compound -> { var c = Float.MAX_VALUE; for (j in 0 until s.count) c = min(c, coreOf(s.shapes[j])); c }
     }
 
     // ------------------------------------------------------------------ sleep

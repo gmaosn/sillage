@@ -5,6 +5,8 @@ import sillage.math.Vec3
 import sillage.physics.BodyType
 import sillage.physics.Box
 import sillage.physics.Capsule
+import sillage.physics.Compound
+import sillage.physics.ConvexHull
 import sillage.physics.PhysicsWorld
 import sillage.physics.Shape
 import sillage.physics.Sphere
@@ -50,7 +52,7 @@ private fun presArete(p: Vec3, t: Tri, eps: Float): Boolean {
 }
 
 private fun Random.formeQa(): Shape = when (nextInt(3)) { 0 -> Sphere(f(.1f, .6f)); 1 -> Box(f(.1f, .6f), f(.1f, .6f), f(.1f, .6f)); else -> Capsule(f(.1f, .35f), f(.1f, .5f)) }
-private fun nom(s: Shape) = when (s) { is Sphere -> "sphère"; is Box -> "boîte"; is Capsule -> "capsule" }
+private fun nom(s: Shape) = when (s) { is Sphere -> "sphère"; is Box -> "boîte"; is Capsule -> "capsule"; is ConvexHull -> "enveloppe"; is Compound -> "composé" }
 
 fun Qa.collisions() {
     val rnd = Random(graine + 100)
@@ -218,7 +220,7 @@ fun Qa.collisions() {
                 pire = min(pire, apres)
                 if (apres < -tol) {
                     restes++
-                    if (System.getenv("QA_DETAIL") != null) println("DETAIL tri ${nom(s)} ${s.let { when (it) { is Box -> "${it.halfX},${it.halfY},${it.halfZ}"; is Capsule -> "${it.radius},${it.halfHeight}"; is Sphere -> "${it.radius}" } }} " +
+                    if (System.getenv("QA_DETAIL") != null) println("DETAIL tri ${nom(s)} ${s.let { when (it) { is Box -> "${it.halfX},${it.halfY},${it.halfZ}"; is Capsule -> "${it.radius},${it.halfHeight}"; is Sphere -> "${it.radius}"; else -> "$it" } }} " +
                         "q=$q p=$p hauteur=${f3(((p - tri.a) dot tri.n))} avant=${mm(d)} s=${mm(pireC.separation)} n=${pireC.normal} apres=${mm(apres)} contacts=${cs.size} tri=${tri.a} ${tri.b} ${tri.c}")
                 }
             }
