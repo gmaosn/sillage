@@ -295,6 +295,7 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `groundBelow(x, z, fromY = 1000, depth = 2000, filter = null)` | a downward ray |
 | `overlaps(shape, position, rotation = IDENTITY, margin = 0, exclude = null)` | `Overlap`s of a shape placed there |
 | `addTrigger(shape, position, rotation = IDENTITY)`, `removeTrigger(trigger)` | trigger zones |
+| `addWater(level, minX = −∞, minZ = −∞, maxX = ∞, maxZ = ∞, density = 1000)`, `removeWater(water)`, `waterList`, `waterEntries` | water volumes; the bodies that went into water during the last step |
 | `gravity`, `substeps`, `contactHertz`, `contactDampingRatio`, `contactSpeed`, `restitutionThreshold`, `speculativeDistance`, `supportRatio`, `sleepLinearSpeed`, `timeToSleep`, `gyroscopic`, `parallel`, `vectorized`, `jointHertz`, `jointDampingRatio`, `continuous` | settings (see PHYSICS.md) |
 | `continuousHits` | bodies put back by continuous collision so far |
 | `lastStepVectorized` | whether the last step solved its contacts on SIMD lanes (`--add-modules jdk.incubator.vector`) |
@@ -313,6 +314,7 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `applyImpulse(impulse, point = position)` | dynamic bodies only |
 | `applyForce(force, point = position)` | during the next step, spread over its substeps |
 | `isBullet` | swept against every body, not only against what does not move |
+| `submergedFraction` | how much of it is under water (0 to 1) |
 | `moveTo(target, dt, targetRotation = null)` | kinematic bodies: velocities that reach the target in `dt` |
 
 ### Shapes
@@ -361,6 +363,10 @@ A `null` in `limits` or `motor` turns them off.
 | `speed`, `wheels`, `wheelsOnGround` | |
 
 `Wheel`: `mount`, `radius`, `travel`, `steered`, `driven`, `handbraked`; after each update `compression`, `onGround`, `contact`, `normal`, `ground`, `load` (N), `slip` (m/s), `spin`, `spinSpeed`, `steer`, `center` and `rotation` (where to draw it).
+
+### `WaterVolume` and `WaterEntry`
+
+Made by `addWater`. `world`, `level`, `minX`, `minZ`, `maxX`, `maxZ` (set with `bounds(minX, minZ, maxX, maxZ)`), `covers(x, z)`, `density`, `linearDrag`, `angularDrag`, `dragCoefficient`, `waveDamping`, `flow`, `enabled`, `onEnter: (WaterEntry) -> Unit`, `onExit: (Body) -> Unit`. `WaterEntry`: `body`, `water`, `point` (on the surface), `verticalSpeed` (just before, negative falling).
 
 ### `Trigger`
 

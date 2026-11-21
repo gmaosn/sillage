@@ -7,6 +7,7 @@ import jdk.incubator.vector.VectorSpecies
 import sillage.math.Quat
 import sillage.math.ValueCandidate
 import sillage.math.Vec3
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.floor
@@ -78,6 +79,8 @@ class Body internal constructor(internal val world: PhysicsWorld, val id: Int) {
     var isBullet: Boolean
         get() = world.bullet[id]
         set(v) { world.bullet[id] = v }
+    /** How much of it is under water (0 to 1), in the last substep: see [WaterVolume]. */
+    val submergedFraction: Float get() = world.wet[id]
     /** Free label for the game (a role, a group, the object it moves…); the engine never reads it. */
     var tag: Any?
         get() = world.tags[id]
@@ -220,6 +223,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         rolling = rolling.copyOf(c); rollRadius = rollRadius.copyOf(c); round = round.copyOf(c)
         principal = principal.copyOf(c); pq = pq.copyOf(4 * c)
         sleeping = sleeping.copyOf(c); sleepClock = sleepClock.copyOf(c); removed = removed.copyOf(c); bullet = bullet.copyOf(c)
+        wet = wet.copyOf(c); wetBefore = wetBefore.copyOf(c); wetIn = wetIn.copyOf(c); entered = entered.copyOf(c); lastWater = lastWater.copyOf(c)
+        wetRest = wetRest.copyOf(c); touched = touched.copyOf(c)
         fx = fx.copyOf(c); fy = fy.copyOf(c); fz = fz.copyOf(c)
         tx = tx.copyOf(c); ty = ty.copyOf(c); tz = tz.copyOf(c)
         q0 = q0.copyOf(4 * c); box = box.copyOf(6 * c)
@@ -238,6 +243,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val i = if (free.size > 0) free.pop() else { if (count == capacity) grow(); count++ }
         // A reused slot starts afresh.
         removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null; poses[i].px = Float.NaN; bullet[i] = false
+        wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
         fx[i] = 0f; fy[i] = 0f; fz[i] = 0f; tx[i] = 0f; ty[i] = 0f; tz[i] = 0f; java.util.Arrays.fill(st, i * S, i * S + S, 0f)
         linearDamping[i] = 0f; angularDamping[i] = 0f
         types[i] = type; shapes[i] = shape
@@ -287,6 +293,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         // Its joints go with it (what they held wakes up).
         if (joints.isNotEmpty()) for (j in joints.filter { it.ia == i || it.ib == i }) removeJoint(j)
         removed[i] = true; types[i] = BodyType.STATIC; sleeping[i] = false; tags[i] = null
+        wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
         queryGrid.valid = false
         java.util.Arrays.fill(st, i * S, i * S + 6, 0f)
         free.add(i)
@@ -541,6 +548,121 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private val found = IntList(); private val stack = IntList()
     private val scratch = ContactPoints()
     internal val triggers = ArrayList<Trigger>()
+
+    // ------------------------------------------------------------------ water
+
+    internal val waters = ArrayList<WaterVolume>()
+    /** Per body: submerged fraction in the last substep, at the end of the step before, its water (−1: none), whether it entered this step. */
+    internal var wet = FloatArray(0); private var wetBefore = FloatArray(0); private var entered = BooleanArray(0)
+    private var wetRest = BooleanArray(0); private var touched = BooleanArray(0)
+    private var wetIn = arrayOfNulls<WaterVolume>(0); private var lastWater = arrayOfNulls<WaterVolume>(0)
+    private val wetList = IntList()                  // this step's bodies in water: body, water
+    private val buoyancyScratch = BuoyancyScratch()
+    private val entries = ArrayList<WaterEntry>()
+    private val exits = ArrayList<Body>(); private val exitWater = ArrayList<WaterVolume>()
+    /** The bodies that touched a water during the last step, coming from out of it (see [WaterEntry]). */
+    val waterEntries: List<WaterEntry> get() = entries
+
+    /** Wakes the sleeping bodies that may be in [w] (its level, bounds or density changed). */
+    internal fun wakeWater(w: WaterVolume) {
+        for (i in 0 until count) if (types[i] == BodyType.DYNAMIC && !removed[i] && sleeping[i] &&
+            (wetIn[i] === w || (box[6 * i + 1] <= w.level + speculativeDistance && w.covers(px[i], pz[i])))) wake(i)
+    }
+
+    /** The awake dynamic bodies reaching below a water's level with their centre in its bounds, for this step's substeps. */
+    private fun findWet() {
+        wetList.clear()
+        for (i in 0 until count) {
+            if (types[i] != BodyType.DYNAMIC || removed[i] || sleeping[i]) continue
+            entered[i] = false
+            var water = -1
+            for (k in waters.indices) {
+                val w = waters[k]
+                if (w.enabled && box[6 * i + 1] < w.level && w.covers(px[i], pz[i])) { water = k; break }
+            }
+            if (water >= 0) { wetList.add(i); wetList.add(water) } else wet[i] = 0f
+            wetIn[i] = if (water >= 0) waters[water] else null
+        }
+    }
+
+    /**
+     * Archimedes in one substep: each body in water pushed up by the weight of the water it displaces, at
+     * the centre of what it displaces, then its velocity relative to the water and its turning damped by the
+     * drags times its submerged fraction (implicitly, as the bodies' own damping: stable at any drag).
+     */
+    private fun buoyancy(h: Float) {
+        val sc = buoyancyScratch; val acc = sc.acc
+        val gx = gravity.x; val gy = gravity.y; val gz = gravity.z
+        var k = 0
+        while (k < wetList.size) {
+            val i = wetList[k]; val w = waters[wetList[k + 1]]; k += 2
+            val shape = shapes[i]!!
+            val pose = sc.pose.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
+            acc[0] = 0f; acc[1] = 0f; acc[2] = 0f; acc[3] = 0f
+            submerged(shape, pose, w.level, sc, acc)
+            val v = acc[0]
+            val f = fractionOf(v, shape.volume)
+            val o = i * S
+            if (f > 0f && wetBefore[i] == 0f && !entered[i]) {
+                entered[i] = true
+                entries.add(WaterEntry(Body(this, i), w, Vec3(acc[1] / v, w.level, acc[3] / v), st[o + 1]))
+            }
+            wet[i] = f
+            if (v <= 0f) { wetRest[i] = false; continue }
+            // Buoyant force −ρ V g at the centre of buoyancy: an impulse for this substep.
+            val m = st[o + IM]
+            val s = -w.density * v * h
+            val jx = s * gx; val jy = s * gy; val jz = s * gz
+            st[o] += jx * m; st[o + 1] += jy * m; st[o + 2] += jz * m
+            val rx = acc[1] / v - px[i]; val ry = acc[2] / v - py[i]; val rz = acc[3] / v - pz[i]
+            // At rest in the water only when the water carries its weight and holds it upright (centre of
+            // buoyancy over the centre of mass): else it may not sleep (it slept at the top of a slow bob).
+            val gl = sqrt(gx * gx + gy * gy + gz * gz)
+            run {
+                val along = if (gl > 0f) (rx * gx + ry * gy + rz * gz) / gl else 0f
+                val ux = if (gl > 0f) rx - along * gx / gl else rx; val uy = if (gl > 0f) ry - along * gy / gl else ry; val uz = if (gl > 0f) rz - along * gz / gl else rz
+                wetRest[i] = abs(w.density * v * m - 1f) <= 1e-3f && ux * ux + uy * uy + uz * uz <= 1e-6f * shape.boundingRadius * shape.boundingRadius
+            }
+            val tx = ry * jz - rz * jy; val ty = rz * jx - rx * jz; val tz = rx * jy - ry * jx
+            val ii = o + I0
+            st[o + 3] += st[ii] * tx + st[ii + 1] * ty + st[ii + 2] * tz
+            st[o + 4] += st[ii + 1] * tx + st[ii + 3] * ty + st[ii + 4] * tz
+            st[o + 5] += st[ii + 2] * tx + st[ii + 4] * ty + st[ii + 5] * tz
+            // Drags, relative to the water's flow: linear (slow motions, the waves a body makes) and quadratic,
+            // ½ ρ C_d A |v| v on the cross-section of a ball of the same volume (a dropped ball stops within a
+            // few tens of centimetres instead of bouncing out of the water), both implicit.
+            val fl = w.flow
+            val ux = st[o] - fl.x; val uy = st[o + 1] - fl.y; val uz = st[o + 2] - fl.z
+            val speed = sqrt(ux * ux + uy * uy + uz * uz)
+            val re = Math.cbrt(.75 * shape.volume / PI).toFloat()
+            val quad = .5f * w.density * w.dragCoefficient * PI.toFloat() * re * re * m * f
+            val ld = 1f / (1f + h * (w.linearDrag * f + quad * speed)); val ad = 1f / (1f + h * w.angularDrag * f)
+            st[o] = fl.x + ux * ld; st[o + 1] = fl.y + uy * ld; st[o + 2] = fl.z + uz * ld
+            st[o + 3] *= ad; st[o + 4] *= ad; st[o + 5] *= ad
+            // The waves a body makes bobbing and rolling at the surface: on its vertical speed and its turning about
+            // horizontal axes, most when half under (as the waterline is widest), nothing once it is all under.
+            if (gl > 0f && w.waveDamping > 0f) {
+                val wd = 1f / (1f + h * w.waveDamping * 4f * f * (1f - f))
+                val nx = gx / gl; val ny = gy / gl; val nz = gz / gl
+                val vn = (st[o] - fl.x) * nx + (st[o + 1] - fl.y) * ny + (st[o + 2] - fl.z) * nz
+                val dv = vn * (wd - 1f)
+                st[o] += dv * nx; st[o + 1] += dv * ny; st[o + 2] += dv * nz
+                val wn = st[o + 3] * nx + st[o + 4] * ny + st[o + 5] * nz
+                st[o + 3] = wn * nx + (st[o + 3] - wn * nx) * wd; st[o + 4] = wn * ny + (st[o + 4] - wn * ny) * wd; st[o + 5] = wn * nz + (st[o + 5] - wn * nz) * wd
+            }
+        }
+    }
+
+    /** End of a step with water: who left the water altogether, and what each body had under water, for the next step. */
+    private fun finishWet() {
+        for (i in 0 until count) {
+            if (types[i] != BodyType.DYNAMIC || removed[i] || sleeping[i]) continue
+            if (wet[i] > 0f) lastWater[i] = wetIn[i]
+            else if (wetBefore[i] > 0f) { val w = lastWater[i]; if (w != null && w in waters) { exits.add(Body(this, i)); exitWater.add(w) } }
+            wetBefore[i] = wet[i]
+        }
+    }
+
     internal val triggerScratch = Touches()
     // Scratch for the queries (single-threaded, not reentrant: a query's filter must not query again).
     internal val queryStack = IntList(); internal val queryFound = IntList(); internal val queryScratch = ContactPoints()
@@ -565,6 +687,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         if (noCollideDirty) rebuildNoCollide()
         prepareBodies(dt)
         if (joints.isNotEmpty()) wakeJoined()
+        entries.clear(); exits.clear(); exitWater.clear()
+        if (waters.isNotEmpty()) findWet() else if (wetList.size > 0) { for (k in 0 until wetList.size step 2) wet[wetList[k]] = 0f; wetList.clear() }
         lap(0)
         findPairs(); lap(1)
         collide(dt); lap(2)
@@ -574,6 +698,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         // Joints before contacts in each pass: the contacts have the last word, nothing sinks into the ground.
         repeat(substeps) {
             integrateVelocities(h)
+            if (wetList.size > 0) buoyancy(h)
             warmStartJoints(); warmStart(); lap(4)
             rigidJoints(h)
             solveJoints(true, h); solve(h, true); lap(5)
@@ -584,6 +709,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         restitute()
         if (continuous) continuous()
         updateSleep(dt); lap(7)
+        if (waters.isNotEmpty() || wetList.size > 0) finishWet()
         for (i in 0 until count) { fx[i] = 0f; fy[i] = 0f; fz[i] = 0f }
         if (torqued) { java.util.Arrays.fill(tx, 0, count, 0f); java.util.Arrays.fill(ty, 0, count, 0f); java.util.Arrays.fill(tz, 0, count, 0f); torqued = false }
         // Les points de ce pas deviennent « précédents » ; l'autre ensemble servira au pas suivant.
@@ -597,6 +723,10 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             events.clear()
             for (k in triggers.indices) triggers[k].check(events)
             for (e in events) e()
+        }
+        if (entries.isNotEmpty() || exits.isNotEmpty()) {
+            for (e in entries.toList()) e.water.onEnter?.invoke(e)
+            for (k in exits.indices) exitWater[k].onExit?.invoke(exits[k])
         }
     }
 
@@ -1664,6 +1794,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             sleepClock[i] = if (v + shapes[i]!!.boundingRadius * w > sleepLinearSpeed) 0f else sleepClock[i] + dt
         }
         val c = points; val d = c.d
+        if (wetList.size > 0) {
+            // A body floating free sleeps only at rest in the water (its weight carried, upright).
+            for (k in 0 until c.size) if (d[k * C + CLN] > 0f) { if (c.a[k] >= 0) touched[c.a[k]] = true; touched[c.b[k]] = true }
+            for (k in 0 until wetList.size step 2) { val i = wetList[k]; if (wet[i] > 0f && !touched[i] && !wetRest[i]) sleepClock[i] = 0f }
+            for (k in 0 until c.size) { if (c.a[k] >= 0) touched[c.a[k]] = false; touched[c.b[k]] = false }
+        }
         for (k in 0 until c.size) {
             if (d[k * C + CLN] <= 0f) continue
             val a = c.a[k]; val b = c.b[k]

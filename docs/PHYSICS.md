@@ -1,6 +1,6 @@
 # The physics engine
 
-`sillage.physics` is a rigid-body engine written in Kotlin: boxes, spheres, capsules, convex hulls, compound bodies and static triangle meshes, with friction, bounce, rolling resistance, stacking, sleep, rays, sphere sweeps, trigger zones and a character controller. A `Scene` uses it as `scene.physics`, and the [guide](GUIDE.md) shows the one-line forms (`dynamic()`, `solid()`, `kinematic()`). This page is about the engine itself. It needs nothing from the scene or the renderer, so it also serves for a server, a test or a tool.
+`sillage.physics` is a rigid-body engine written in Kotlin: boxes, spheres, capsules, convex hulls, compound bodies and static triangle meshes, with friction, bounce, rolling resistance, stacking, sleep, water that floats things, rays, sphere sweeps, trigger zones and a character controller. A `Scene` uses it as `scene.physics`, and the [guide](GUIDE.md) shows the one-line forms (`dynamic()`, `solid()`, `kinematic()`). This page is about the engine itself. It needs nothing from the scene or the renderer, so it also serves for a server, a test or a tool.
 
 ## A world in ten lines
 
@@ -138,6 +138,24 @@ water.onExit = { body -> body.linearDamping = 0f }
 ```
 
 A trigger notices bodies coming in and going out after each step, without touching them. By default it counts every body that is not static, characters included (`filter` changes that). `inside` lists the bodies within; `enabled = false` makes it forget them; `world.removeTrigger(t)` deletes it.
+
+## Water
+
+```kotlin
+val lake = world.addWater(level = 0f)                                   // everywhere below y = 0
+val pool = world.addWater(level = .5f, minX = -4f, minZ = -2f, maxX = 4f, maxZ = 2f)
+pool.flow = Vec3(1f, 0f, 0f)                                            // a current
+lake.onEnter = { e -> println("splash at ${e.point}, ${e.verticalSpeed} m/s") }
+val crate = world.add(Box(.5f, .5f, .5f), Vec3(0f, 3f, 0f), density = 500f)   // floats half under
+```
+
+A `WaterVolume` holds up the dynamic bodies whose centre is within its horizontal bounds: the weight of the water they displace (`density`, 1000 kg/m³) pushes them up at the centre of what they displace (Archimedes), in every substep like gravity, so that a wide boat with a low centre of mass rights itself and a long plank floats flat. The volume under the surface is exact for spheres (a spherical cap), boxes and hulls (the polyhedron cut by the surface); a capsule is summed over 24 slices across its axis, each an exact disc segment, scaled so that the whole capsule is exact; a compound adds up its parts. Nothing is allocated per step.
+
+The water slows what is in it, implicitly (stable at any setting): `linearDrag` (0.5 /s) and `angularDrag` (0.5 /s) times the fraction under water, a quadratic drag ½ ρ C_d A v² with `dragCoefficient` C_d (1) on the cross-section of a ball of the body's volume (what stops a fast body going in: a ball dropped from 2 m does not jump back out), and `waveDamping` (6 /s) for the waves a body makes bobbing and rolling: on its vertical speed and its turning about horizontal axes, most when half under, nothing once all under. A floating crate stops bobbing within a few seconds; one sliding along the water is not slowed by the waves. `flow` carries bodies along. A body floating free falls asleep only at rest in the water: its weight carried and its centre of buoyancy over its centre of mass (else it slept at the top of a slow bob). Changing `level`, `density`, `flow`, `enabled` or the bounds wakes the bodies around.
+
+`body.submergedFraction` says how much of a body is under water (0 to 1). `world.waterEntries` lists the bodies that touched a water during the last step coming from out of it: a `WaterEntry` with the `body`, the `water`, the `point` on the surface above the centre of what first went under, and the `verticalSpeed` just before (negative: falling) — for splashes, sounds and ripples. `onEnter` and `onExit` are called after the step, like a trigger's.
+
+Measured against Archimedes: a cube of density 500 floats with half its volume under water, of 250 a quarter, of 750 three quarters (it settles on its stable side, a corner up, as a real cube that dense does), within 0.2 %; a slab of density 250 sinks by a quarter of its thickness and rests without a tremor; a ball's waterline within 2 mm of the spherical cap's; a box barge rolls at the period its metacentric height gives (1.23 s) within 0.06 s and comes back upright; a hull boat with a lead keel rights itself from 60° of heel; random shapes, densities and poses float with the fraction under water at their density ratio within 0.1 %; a body dropped into still water touches it at the speed of its fall within 1.5 %. Cost: about 1 µs per floating body and step for a ball, 3 µs for a hull of 24 vertices or a capsule (4 substeps).
 
 ## Joints
 

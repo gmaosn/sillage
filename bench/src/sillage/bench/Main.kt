@@ -28,6 +28,7 @@ fun main(args: Array<String>) {
             "hulls" -> hulls(n ?: 1000)
             "hullsettle" -> hullSettle(n ?: 300)
             "rockpit" -> rockPit(n ?: 70)
+            "water" -> water(n ?: 400)
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -421,6 +422,25 @@ private fun rockPit(count: Int) {
             val awake = bodies.filter { !it.isSleeping }
             println("  t=$sec s : ${awake.size} éveillés" + (awake.maxByOrNull { it.velocity.length() + it.shape.boundingRadius * it.angularVelocity.length() }?.let {
                 ", le plus vif v=${"%.3f".format(it.velocity.length())} ω=${"%.3f".format(it.angularVelocity.length())} ${it.shape}" } ?: ""))
+        }
+    }
+}
+
+/** The cost of buoyancy: [count] bodies of each kind floating apart (no contacts), kept awake; time per step and per body. */
+private fun water(count: Int) {
+    val kinds = listOf<Pair<String, Shape>>("boules" to Sphere(.3f), "boîtes" to Box(.3f, .2f, .25f), "capsules" to Capsule(.15f, .3f),
+        "enveloppes (24 sommets)" to bevelled(.3f, .06f), "composés (3 parties)" to Compound(Compound.Part(Box(.3f, .05f, .3f)), Compound.Part(Sphere(.12f), Vec3(0f, .2f, 0f)), Compound.Part(Capsule(.05f, .2f), Vec3(.2f, -.1f, 0f))))
+    for ((name, shape) in kinds) {
+        for (withWater in listOf(false, true)) {
+            val w = PhysicsWorld(gravity = if (withWater) Vec3(0f, -9.81f, 0f) else Vec3.ZERO); w.timeToSleep = 1e9f
+            if (withWater) w.addWater(0f)
+            val side = kotlin.math.sqrt(count.toDouble()).toInt()
+            val bodies = (0 until count).map { k -> w.add(shape, Vec3((k % side) * 1.5f, .1f, (k / side) * 1.5f), Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), k * .3f), density = 500f) }
+            // Kept bobbing: a kick now and then.
+            repeat(60) { w.step(DT) }
+            val t = Timing()
+            repeat(240) { s -> if (s % 60 == 0) for (b in bodies) b.velocity = Vec3(0f, -.5f, 0f); val t0 = System.nanoTime(); w.step(DT); t.samples.add(System.nanoTime() - t0) }
+            t.report("  $name, $count corps, ${if (withWater) "dans l'eau" else "sans eau"}")
         }
     }
 }
