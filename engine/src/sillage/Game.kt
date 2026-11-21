@@ -205,7 +205,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                     scene.hiddenNode, lookAt?.let { Vec3(it[3], it[4], it[5]) } ?: if (free) eye + looking * 12f else scene.camera.focus, scene.lighting, scene.frameExtras(eye))
                 frameTimes.add((System.nanoTime() - frameStart) / 1e6)
                 if (r.gpuMs > 0.0) gpuTimes.add(r.gpuMs)
-                if (frame == 0) firstFrame = java.lang.management.ManagementFactory.getRuntimeMXBean().uptime
+                if (frame == 0) firstFrame = ProcessHandle.current().info().startInstant().map { java.time.Duration.between(it, java.time.Instant.now()).toMillis() }.orElse(0L)
                 frame++
                 if (window != null && frame % 30 == 0) window.title = title
                 // Another scene asked for: build it, free the old meshes on the GPU, keep the window and the sound.

@@ -3,7 +3,6 @@ package sillage
 import sillage.math.Mat4
 import sillage.math.Vec3
 import sillage.vk.*
-import java.awt.image.BufferedImage
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
@@ -20,7 +19,6 @@ import java.nio.file.Path
 import java.util.IdentityHashMap
 import sillage.ui.GlyphAtlas
 import sillage.ui.HUD_FLOATS
-import javax.imageio.ImageIO
 import kotlin.math.sqrt
 
 /** What the renderer needs from a window: instance extensions, a VkSurfaceKHR and the drawable size. */
@@ -1489,13 +1487,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val p=s.allocate(ADDRESS); dev.mapMemory(b.memory,0,b.size,p)
         try {
             val bytes=p.get(ADDRESS,0).reinterpret(b.size)
-            val img=BufferedImage(largeur,hauteur,BufferedImage.TYPE_INT_RGB)
-            for(y in 0 until hauteur) for(x in 0 until largeur) {
-                val i=((y*largeur+x)*4).toLong()
-                img.setRGB(x,y,((bytes.get(JAVA_BYTE,i).toInt() and 255) shl 16) or ((bytes.get(JAVA_BYTE,i+1).toInt() and 255) shl 8) or (bytes.get(JAVA_BYTE,i+2).toInt() and 255))
-            }
-            destination.toAbsolutePath().parent?.let { Files.createDirectories(it) }
-            check(ImageIO.write(img,"png",destination.toFile()))
+            // RGBA as read back, RGB for the file (the engine's own PNG writer: no image library).
+            val all=bytes.toArray(JAVA_BYTE)
+            val rgb=ByteArray(largeur*hauteur*3)
+            for(i in 0 until largeur*hauteur) { rgb[3*i]=all[4*i]; rgb[3*i+1]=all[4*i+1]; rgb[3*i+2]=all[4*i+2] }
+            sillage.io.PngWriter.write(destination,largeur,hauteur,rgb)
             println("SILLAGE_CAPTURE=" + destination.toAbsolutePath())
         } finally { dev.unmapMemory(b.memory) }
     }

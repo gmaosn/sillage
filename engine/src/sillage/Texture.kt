@@ -529,22 +529,23 @@ internal fun exportTextures(dir: java.nio.file.Path) {
         "stone" to 0x9C9A94, "rock" to 0x9A7A58, "plaster" to 0xF0E2BC, "fabric" to 0xF2E8CC, "leaves" to 0x3E8A30, "bark" to 0x8A5A30)
     for (t in Textures.ALL) {
         val px = t.pixels; val s = t.size
-        val raw = java.awt.image.BufferedImage(s, s, java.awt.image.BufferedImage.TYPE_INT_RGB)
-        val preview = java.awt.image.BufferedImage(2 * s, 2 * s, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        val raw = ByteArray(3 * s * s)
+        val preview = ByteArray(3 * 4 * s * s)
+        fun set(img: ByteArray, w: Int, x: Int, y: Int, rgb: Int) { val o = 3 * (y * w + x); img[o] = (rgb ushr 16).toByte(); img[o + 1] = (rgb ushr 8).toByte(); img[o + 2] = rgb.toByte() }
         val tint = Color.hex(tints[t.name] ?: 0x808080)
         fun srgb(v: Float) = (v.coerceIn(0f, 1f).pow(1f / 2.2f) * 255f + .5f).toInt()
         for (y in 0 until s) for (x in 0 until s) {
             val i = 4 * (y * s + x)
             val r = px[i].toInt() and 255; val g = px[i + 1].toInt() and 255; val b = px[i + 2].toInt() and 255
-            raw.setRGB(x, y, (r shl 16) or (g shl 8) or b)
+            set(raw, s, x, y, (r shl 16) or (g shl 8) or b)
             val k = 1f + (r / 127.5f - 1f) * t.strength
             val kg = 1f + (g / 127.5f - 1f) * t.strength; val kb = 1f + (b / 127.5f - 1f) * t.strength
             val rgb = (srgb(tint.r * k) shl 16) or (srgb(tint.g * kg) shl 8) or srgb(tint.b * kb)
-            for (oy in 0..1) for (ox in 0..1) preview.setRGB(x + ox * s, y + oy * s, rgb)
+            for (oy in 0..1) for (ox in 0..1) set(preview, 2 * s, x + ox * s, y + oy * s, rgb)
         }
         val file = t.name.replace(' ', '-')
-        javax.imageio.ImageIO.write(raw, "png", dir.resolve("$file.png").toFile())
-        javax.imageio.ImageIO.write(preview, "png", dir.resolve("$file-preview.png").toFile())
+        sillage.io.PngWriter.write(dir.resolve("$file.png"), s, s, raw)
+        sillage.io.PngWriter.write(dir.resolve("$file-preview.png"), 2 * s, 2 * s, preview)
     }
     println("SILLAGE_TEXTURES ${Textures.ALL.size} textures in $dir")
 }
