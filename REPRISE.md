@@ -48,6 +48,28 @@ Détour demandé le 18 novembre (« animer le personnage, ajouter des détails a
 6. API plus agréable que KorGE : un fichier, 3D sans réglage (caméra, lumière, ciel par défaut), physique en une ligne ; deuxième démo à caisses, tonneaux et ballon. Ajouté par le propriétaire : moteur générique pour d'autres, première personne au choix. **Fait** (voir État).
 7. Passe de performance : mesure du temps réel par image (CPU, GPU), plusieurs images en vol, instancing, zéro allocation par image (JFR), cache AOT, en-têtes compacts, ZGC générationnel, API Vector, essai sur une build Valhalla. **Fait**, phase fine sans allocation comprise (19 novembre, « réécris les collisions »), sauf l'API Vector et l'essai Valhalla (propres au JDK et non à Kotlin : pas sans l'accord du propriétaire, qui a rappelé « pure kotlin »).
 
+## Passe « ergonomie et fonctionnalités » (21 novembre 2026)
+
+Le propriétaire, le 21 novembre, après mes propositions : « Je suis d'accord avec tout, pour la manette, commence par une DualSense de PlayStation 5. Tu peux commencer. N'oublie pas de tout tester. »
+
+Lots (chaque lot : tests unitaires, contrôles `qa`, essai réel sans fenêtre et fenêtré dans un KWin isolé, commit) :
+
+- **E1 `./sillage`** : `new`, `run`, `dev`, `test`, `qa`, `package` (AppImage avec son runtime jlink et le cache AOT) ; plus de `--jvm-args` à recopier.
+- **E2 Débogage en jeu** : volumes, zones, contacts, rayons, corps endormis ; caméra libre ; pause et image par image ; clic sur un objet (nom, corps, matériau).
+- **E3 Mode `dev`** : GLB, PNG, OGG rechargés à l'enregistrement ; puis le code du jeu rechargé (chargeur de classes neuf), caméra et heure gardées.
+- **E4 Blender comme éditeur** : `extras` du glTF, objets `col_*` → volumes, vide `spawn`, lampes `KHR_lights_punctual`, propriétés `sillage` (dynamic, mass…) ; formes convexes et corps composés ; la liste `block` disparaît de la démo.
+- **E5 Scripts et unités** : coroutines de la bibliothèque standard (`script { wait(2) }`, `once`), fondus et interpolations, degrés partout dans l'API publique, tailles entières partout, `Number` partout, `onGround(x, z)`.
+- **F1 Manette** : DualSense d'abord (hidraw : boutons, gâchettes analogiques, gyroscope, accéléromètre, pavé tactile, batterie, barre lumineuse, voyants, vibrations, gâchettes adaptatives ; USB et Bluetooth), manettes génériques par evdev ; actions réaffectables ; joueur et caméra au stick.
+- **F2 L'eau qui porte** : flottaison, traînée, éclaboussures, son de chute ; la barque flotte.
+- **F3 Interface** : polices TTF/OTF du système (lecteur et tramage maison), mise en page, panneaux ajustés, boutons, menus (titre, pause), saisie de texte.
+- **F4 Grands mondes** : élimination hors champ, ombres en cascades, niveaux de détail.
+- **F5 Justesses** : auditeur sur le joueur, normales de Blender en option, cônes et torsion des articulations.
+- **F6 Pi 500** : à essayer sur le vrai Pi du propriétaire (jamais tourné).
+
+Organisation : moi sur E1, E2, E3, E5, puis E4 et F4 ; trois agents dans des worktrees (`~/code/kotlin/sillage-agents/…`, branches `physique`, `manette`, `texte`) : formes convexes, corps composés, flottaison, cônes (physique) ; F1 (manette) ; F3 (texte). Toute tâche lourde passe par `tools/lourd.sh` (6 Go sans échange, 3 places pour tout l'ordinateur).
+
+Point de départ (fc09dbb) : 178 tests verts ; `qa --rapide` 78 contrôles, 1 échec déjà là : « portes à butées sous des coups au hasard », gonds 3,8 mm pour un seuil de 3 mm dans la suite complète (2,6 mm quand le groupe tourne seul : les coups au hasard dépendent des groupes d'avant).
+
 ## État (18 novembre 2026)
 
 Le prototype a été écrit le matin du 18 par Codex sans jamais compiler. Repris : build réparé (bug de précédence `i and 1 == 0` dans `Geometrie.boite`), puis étape 0.
