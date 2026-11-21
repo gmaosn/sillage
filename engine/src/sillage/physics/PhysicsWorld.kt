@@ -323,6 +323,19 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     fun addBall(a: Body?, b: Body, anchor: Vec3, collideConnected: Boolean = false): BallJoint {
         checkJoint(a, b); return keep(BallJoint(this, a, b, anchor, collideConnected))
     }
+    /**
+     * A ball joint at [anchor] whose swing is held in a cone and whose twist is limited (a ragdoll's shoulder,
+     * hip, neck): [axis] (world) is b's bone; b's axis may lean from a's by [swing] radians towards ±[across]
+     * (default: some direction across the axis) and by [swing2] across that, and turn about itself between
+     * [twistLower] and [twistUpper]. See [ConeTwistJoint].
+     */
+    fun addConeTwist(a: Body?, b: Body, anchor: Vec3, axis: Vec3, swing: Float, swing2: Float = swing,
+                     twistLower: Float = -.3f, twistUpper: Float = .3f, across: Vec3? = null, collideConnected: Boolean = false): ConeTwistJoint {
+        checkJoint(a, b); require(axis.lengthSquared() > 1e-12f) { "A cone joint needs an axis" }
+        val j = ConeTwistJoint(this, a, b, anchor, axis, across ?: perpendicular(axis.normalized()), collideConnected)
+        j.limits(swing, swing2, twistLower, twistUpper)
+        return keep(j)
+    }
     /** A hinge at [anchor] turning about [axis] (world): a door, a wheel, a lever. */
     fun addHinge(a: Body?, b: Body, anchor: Vec3, axis: Vec3, collideConnected: Boolean = false): HingeJoint {
         checkJoint(a, b); require(axis.lengthSquared() > 1e-12f) { "A hinge needs an axis" }

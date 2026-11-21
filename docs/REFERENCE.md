@@ -285,7 +285,7 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `remove(body)` | takes a body out; its id may be reused |
 | `body(id)`, `bodyCount`, `liveBodyCount` | |
 | `applyForce(body, force)` | at the centre, during the next step |
-| `addBall(a, b, anchor, collideConnected = false)`, `addHinge(a, b, anchor, axis, …)`, `addSlider(a, b, axis, anchor = b.position, …)`, `addFixed(a, b, anchor = b.position, …)` | joints; `a` null: the world |
+| `addBall(a, b, anchor, collideConnected = false)`, `addConeTwist(a, b, anchor, axis, swing, swing2 = swing, twistLower = −.3, twistUpper = .3, across = null, collideConnected = false)`, `addHinge(a, b, anchor, axis, …)`, `addSlider(a, b, axis, anchor = b.position, …)`, `addFixed(a, b, anchor = b.position, …)` | joints; `a` null: the world |
 | `addDistance(a, anchorA, b, anchorB, length = null, collideConnected = true)`, `addSpring(a, anchorA, b, anchorB, hertz, dampingRatio = .5, length = null)`, `addRope(a, anchorA, b, anchorB, length = null)` | `DistanceJoint`s |
 | `addChain(from, to, links, radius = .03, start = null, end = null, density = 2000, friction = .6)` | capsule links joined by ball joints |
 | `removeJoint(joint)`, `jointList` | |
@@ -338,6 +338,7 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 `Joint` (sealed): `a` (null: the world), `b`, `anchorA`, `anchorB` (where they are now), `collideConnected`, `enabled`, `isRemoved`, `force` (N, during the last step).
 
 - `BallJoint`.
+- `ConeTwistJoint`: `swingAngle`, `twistAngle`; `limits(swing, swing2 = swing, twistLower, twistUpper)` (radians) and the settings read back (`swing`, `swing2`, `twistLower`, `twistUpper`); `friction` (N·m, settable).
 - `HingeJoint`: `angle`, `speed`, `axis`; `limits(lower, upper)`, `motor(speed, maxTorque)`, `spring(hertz, dampingRatio = 1, angle = 0)`; their settings read back (`lowerAngle`, `motorSpeed`, `springHertz`…).
 - `SliderJoint`: `translation`, `speed`, `axis`; `limits(lower, upper)`, `motor(speed, maxForce)`, `spring(hertz, dampingRatio = 1, position = 0)`.
 - `FixedJoint`.

@@ -273,4 +273,139 @@ class JointTest {
         run(w, .25f)
         assertTrue(s.position.x > 8f, "la boule devrait filer : ${s.position}")
     }
+
+    // ---------------------------------------------------------------- cônes et torsion (pantins)
+
+    /** Un bras (capsule de 4 kg) pendu au monde par un cône de [swing] × [swing2] rad, torsion ±0,3 rad. */
+    private fun arm(w: PhysicsWorld, swing: Float, swing2: Float = swing): Pair<Body, ConeTwistJoint> {
+        val arm = w.add(Capsule(.05f, .2f), Vec3(0f, 1.75f, 0f))
+        val j = w.addConeTwist(null, arm, Vec3(0f, 2f, 0f), Vec3(0f, -1f, 0f), swing, swing2, -.3f, .3f, across = Vec3.X)
+        return arm to j
+    }
+
+    @Test fun unConeTientLeBrasSousDesCoupsAuHasard() {
+        val w = PhysicsWorld(); val (body, j) = arm(w, .6f)
+        val rnd = java.util.Random(5)
+        var swingOver = 0f; var twistOver = 0f; var drift = 0f; var vmax = 0f
+        for (k in 0 until 40) {
+            val point = body.position + body.rotation.rotate(Vec3(0f, -.2f + .4f * rnd.nextFloat(), 0f))
+            val dir = Vec3(rnd.nextFloat() - .5f, rnd.nextFloat() - .5f, rnd.nextFloat() - .5f).normalized()
+            body.applyImpulse(dir * (8f * rnd.nextFloat()), point)
+            // Twisted too, about the bone.
+            body.angularVelocity = body.angularVelocity + body.rotation.rotate(Vec3.Y) * (20f * (rnd.nextFloat() - .5f))
+            run(w, .25f) {
+                swingOver = max(swingOver, j.swingAngle - .6f)
+                twistOver = max(twistOver, max(-.3f - j.twistAngle, j.twistAngle - .3f))
+                drift = max(drift, (j.anchorB - Vec3(0f, 2f, 0f)).length())
+                vmax = max(vmax, body.velocity.length())
+            }
+        }
+        assertTrue(swingOver < .03f, "cône dépassé de $swingOver rad")
+        assertTrue(twistOver < .03f, "torsion dépassée de $twistOver rad")
+        assertTrue(drift < .004f, "l'épaule s'écarte de ${drift * 1000} mm")
+        assertTrue(vmax < 20f && body.position.isFinite(), "le bras s'emballe : $vmax m/s")
+    }
+
+    @Test fun unConeElliptiqueAccordeSesDeuxDemiAngles() {
+        for ((push, limit) in listOf(Vec3.X to 1f, Vec3.Z to .3f, Vec3(-1f, 0f, 0f) to 1f)) {
+            val w = PhysicsWorld(gravity = Vec3.ZERO); val (body, j) = arm(w, 1f, .3f)
+            body.applyImpulse(push * 6f, body.position + Vec3(0f, -.2f, 0f))
+            var most = 0f
+            run(w, 1f) { most = max(most, j.swingAngle) }
+            assertEquals(limit, most, .03f, "poussé vers $push, le bras s'arrête à son demi-angle")
+        }
+    }
+
+    @Test fun laTorsionResteDansSesBornes() {
+        val w = PhysicsWorld(gravity = Vec3.ZERO); val (body, j) = arm(w, .6f)
+        for (spin in floatArrayOf(15f, -15f)) {
+            body.angularVelocity = Vec3(0f, -spin, 0f)              // about the bone (pointing down)
+            var lo = 0f; var hi = 0f
+            run(w, 1f) { lo = min(lo, j.twistAngle); hi = max(hi, j.twistAngle) }
+            if (spin > 0f) assertEquals(.3f, hi, .03f, "torsion poussée vers le haut") else assertEquals(-.3f, lo, .03f, "torsion poussée vers le bas")
+            assertTrue(j.swingAngle < .05f, "une torsion pure ne fait pas pencher : ${j.swingAngle}")
+        }
+    }
+
+    @Test fun leFrottementDuneRotuleArreteLeBras() {
+        for (friction in floatArrayOf(0f, 1f)) {
+            val w = PhysicsWorld(gravity = Vec3.ZERO); val (body, j) = arm(w, 2.5f)
+            j.friction = friction
+            body.angularVelocity = Vec3(0f, 0f, 1.5f); body.velocity = Vec3(1.5f * .25f, 0f, 0f)   // swinging about the shoulder
+            run(w, .6f)
+            val spin = body.angularVelocity.length()
+            if (friction > 0f) assertTrue(spin < .05f, "avec frottement, le bras devrait s'arrêter : $spin rad/s")
+            else assertEquals(1.5f, spin, .05f, "sans frottement, le bras continue")
+        }
+    }
+
+    /** Un pantin de 11 corps (tronc, tête, bras et avant-bras, cuisses et jambes), cônes aux épaules, aux hanches et au cou, charnières aux coudes et aux genoux. */
+    private fun ragdoll(w: PhysicsWorld, p: Vec3, turn: Quat = Quat.IDENTITY): List<Body> {
+        fun at(x: Float, y: Float, z: Float = 0f) = p + turn.rotate(Vec3(x, y, z))
+        val down = turn.rotate(Vec3(0f, -1f, 0f)); val up = turn.rotate(Vec3.Y); val side = turn.rotate(Vec3.X)
+        val torso = w.add(Box(.18f, .3f, .1f), at(0f, 1.2f), turn, mass = 30f)
+        val head = w.add(Sphere(.11f), at(0f, 1.65f), turn, mass = 5f)
+        w.addConeTwist(torso, head, at(0f, 1.52f), up, .6f, .4f, -.5f, .5f, across = side)
+        val bodies = arrayListOf(torso, head)
+        for (sx in floatArrayOf(-1f, 1f)) {
+            val upper = w.add(Capsule(.05f, .13f), at(sx * .25f, 1.32f), turn, mass = 2.5f)
+            w.addConeTwist(torso, upper, at(sx * .25f, 1.5f), down, 1.2f, .8f, -.6f, .6f, across = side)
+            val fore = w.add(Capsule(.04f, .12f), at(sx * .25f, .96f), turn, mass = 1.5f)
+            w.addHinge(upper, fore, at(sx * .25f, 1.14f), side).limits(0f, 2.5f)
+            val thigh = w.add(Capsule(.07f, .16f), at(sx * .1f, .67f), turn, mass = 8f)
+            w.addConeTwist(torso, thigh, at(sx * .1f, .9f), down, 1f, .5f, -.4f, .4f, across = side)
+            val shin = w.add(Capsule(.05f, .17f), at(sx * .1f, .22f), turn, mass = 4f)
+            w.addHinge(thigh, shin, at(sx * .1f, .44f), side).limits(-2.4f, 0f)
+            bodies += listOf(upper, fore, thigh, shin)
+        }
+        return bodies
+    }
+
+    /**
+     * Un pantin lâché en tournant, puis frappé au hasard (jusqu'à 8 m/s d'un coup sur un membre). À l'atterrissage,
+     * un bras coincé entre le tronc de 30 kg et le sol s'écarte quelques centièmes de seconde : les contacts ont
+     * le dernier mot sur les articulations (rien ne s'enfonce dans le sol). Ensuite, les articulations tiennent.
+     */
+    @Test fun unPantinTombeEtEncaisseSansExploser() {
+        val w = PhysicsWorld(); ground(w)
+        val rnd = java.util.Random(3)
+        val bodies = ragdoll(w, Vec3(0f, 1.5f, 0f), Quat.axisAngle(Vec3(1f, .3f, .2f).normalized(), 1.1f))
+        bodies[0].angularVelocity = Vec3(3f, -2f, 4f)
+        var vmax = 0f; var fall = 0f; var hits = 0f
+        fun gap() = w.jointList.maxOf { (it.anchorA - it.anchorB).length() }
+        run(w, 3f) { fall = max(fall, gap()) }
+        repeat(20) {
+            val b = bodies[rnd.nextInt(bodies.size)]
+            b.applyImpulse(Vec3(rnd.nextFloat() - .5f, rnd.nextFloat(), rnd.nextFloat() - .5f).normalized() * (b.mass * 8f * rnd.nextFloat()))
+            run(w, .3f) { vmax = max(vmax, bodies.maxOf { it.velocity.length() }); hits = max(hits, gap()) }
+        }
+        run(w, 4f)
+        val rest = gap()
+        val cones = w.jointList.filterIsInstance<ConeTwistJoint>()
+        val over = cones.maxOf { max(it.swingAngle - max(it.swing, it.swing2), max(it.twistLower - it.twistAngle, it.twistAngle - it.twistUpper)) }
+        println("PANTIN atterrissage ${fall * 1000} mm, coups ${hits * 1000} mm, repos ${rest * 1000} mm, vitesse max $vmax m/s, butées dépassées de $over rad")
+        assertTrue(bodies.all { it.position.isFinite() && it.velocity.isFinite() }, "valeurs non finies")
+        assertTrue(vmax < 15f, "le pantin s'emballe : $vmax m/s")
+        assertTrue(fall < .06f, "à l'atterrissage, articulations écartées de ${fall * 1000} mm")
+        assertTrue(hits < .02f, "sous les coups, articulations écartées de ${hits * 1000} mm")
+        assertTrue(rest < .003f, "au repos, articulations écartées de ${rest * 1000} mm")
+        assertTrue(over < .03f, "au repos, une butée dépassée de $over rad")
+        assertTrue(bodies.all { it.position.y > -.05f }, "un membre sous le sol")
+    }
+
+    @Test fun lesPantinsSontDeterministesAvecEtSansFils() {
+        fun pile(parallel: Boolean): PhysicsWorld {
+            val w = PhysicsWorld(); w.parallel = parallel; ground(w, 30f)
+            for (k in 0 until 64) ragdoll(w, Vec3((k % 8) * 1.2f - 4.2f, .2f + (k / 8) * .5f, ((k / 8) % 2) * .6f - .3f),
+                Quat.axisAngle(Vec3.X, -1.5707964f) * Quat.rotationY(k * .7f))
+            return w
+        }
+        val a = pile(false); val b = pile(true); val c = pile(false)
+        var most = 0
+        repeat(150) { a.step(dt); b.step(dt); c.step(dt); most = max(most, a.contactCount) }
+        assertTrue(most > 1024, "trop peu de contacts pour les fils : $most")
+        fun bits(w: PhysicsWorld) = (0 until w.bodyCount).flatMap { val x = w.body(it); listOf(x.position.x, x.position.y, x.position.z, x.rotation.x, x.rotation.y, x.rotation.z, x.rotation.w).map { f -> f.toRawBits() } }
+        assertEquals(bits(a), bits(c), "deux fois la même scène")
+        assertEquals(bits(a), bits(b), "avec et sans fils")
+    }
 }

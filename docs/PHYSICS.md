@@ -144,6 +144,7 @@ A joint ties body `b` to body `a`, or to the world when `a` is null. Anchors and
 | Joint | Holds | Options |
 |---|---|---|
 | `addBall(a, b, anchor)` | the anchors together; the bodies turn freely about it | |
+| `addConeTwist(a, b, anchor, axis, swing, swing2, twistLower, twistUpper, across)` | a ball joint whose axis leans at most `swing` (towards ±`across`) and `swing2` (across that) from a's, an elliptical cone, and twists within limits: ragdolls | `limits(swing, swing2, twistLower, twistUpper)`, `friction` (N·m); `swingAngle`, `twistAngle` |
 | `addHinge(a, b, anchor, axis)` | the anchors together, turning about one axis only | `limits(lower, upper)` (radians), `motor(speed, maxTorque)`, `spring(hertz, dampingRatio, angle)`; `angle`, `speed` |
 | `addSlider(a, b, axis)` | `b` moves along the axis, without turning | `limits(lower, upper)` (m), `motor(speed, maxForce)`, `spring(hertz, dampingRatio, position)`; `translation`, `speed` |
 | `addFixed(a, b)` | the two bodies as one | |
@@ -151,6 +152,17 @@ A joint ties body `b` to body `a`, or to the world when `a` is null. Anchors and
 | `addSpring(…, hertz, dampingRatio, length)` | a spring between the anchors | `limits(min, max)` |
 | `addRope(a, anchorA, b, anchorB, length)` | never farther than the length, slack below it | |
 | `addChain(from, to, links, radius, start, end)` | capsules joined end to end by ball joints | returns the links |
+
+A ragdoll is bodies joined by cone joints at the neck, shoulders and hips and hinges at the elbows and knees:
+
+```kotlin
+val torso = world.add(Box(.18f, .3f, .1f), Vec3(0f, 1.2f, 0f), mass = 30f)
+val arm = world.add(Capsule(.05f, .13f), Vec3(.25f, 1.32f, 0f), mass = 2.5f)
+world.addConeTwist(torso, arm, anchor = Vec3(.25f, 1.5f, 0f), axis = Vec3(0f, -1f, 0f),     // the arm hangs down
+                   swing = 1.2f, swing2 = .8f, twistLower = -.6f, twistUpper = .6f, across = Vec3.X)
+```
+
+The swing is the angle between a's axis and b's (the bone), at most `swing` when b leans towards ±`across` and `swing2` when it leans across that, an ellipse in between; the twist is b's turn about its bone, measured once the swing is undone. Like a hinge's, the limits turn the bodies about the anchor. `friction` resists every turn (a limp body comes to rest). Measured: an arm hit at random for 10 s stays in its cone and its twist range within 0.03 rad, 4 mm from its shoulder; an elliptical cone stops at each of its half-angles within 0.03 rad; ten ragdolls of 11 bodies dropped spinning and struck at random (up to 8 m/s at once on a limb) stay within their limits by 0.07 rad under the hits and 0.01 rad at rest, their joints within 2.3 cm under the hits and 3 mm at rest.
 
 Joined bodies do not collide with each other unless `collideConnected` is true (distance joints and ropes collide by default). `enabled = false` lets go for a while; `world.removeJoint(j)` for good, and removing a body removes its joints. `force` is what the joint held during the last step, in newtons: a game breaks a rope with `if (rope.force > 2000f) world.removeJoint(rope)`. Joined bodies sleep together and wake together, however long the chain.
 
@@ -222,6 +234,6 @@ On a laptop's efficiency cores (Intel Core Ultra 7): a pile of 1,000 bodies sett
 ## Limits
 
 - Continuous collision sweeps a body's core, not its whole shape: a fast long box can still clip a corner, and a fast spinning one is swept only along its path. Non-bullets are swept only against what does not move.
-- Joints are soft (see Joints): a light body holding a heavy load gives a little. No cone or twist limits on ball joints yet (ragdolls swing freely), no gear or pulley joints.
+- Joints are soft (see Joints): a light body holding a heavy load gives a little, and a limb crushed between a heavy body and the ground parts from its joint for a moment (the contacts have the last word). No gear or pulley joints.
 - There are no convex hulls and no moving triangle meshes. A model's dynamic body is its bounding box or a shape you give.
 - A sphere swept with a radius above 0.5 m looks at every body, not through the grid.

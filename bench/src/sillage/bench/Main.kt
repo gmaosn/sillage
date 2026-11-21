@@ -24,6 +24,7 @@ fun main(args: Array<String>) {
             "settle" -> settle(n ?: 1000)
             "solver" -> solverCost(n ?: 3000)
             "doors" -> doors(n ?: 12)
+            "ragdolls" -> ragdolls(n ?: 10)
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -260,3 +261,60 @@ private fun doors(count: Int) {
     println("Portes : pire ${"%.2f".format(worst * 1000)} mm")
 }
 
+
+/** A ragdoll of 11 bodies: cone joints at the neck, shoulders and hips, hinges at the elbows and knees. */
+private fun ragdoll(w: PhysicsWorld, p: Vec3, turn: Quat): List<Body> {
+    fun a(x: Float, y: Float) = p + turn.rotate(Vec3(x, y, 0f))
+    val down = turn.rotate(Vec3(0f, -1f, 0f)); val up = turn.rotate(Vec3.Y); val side = turn.rotate(Vec3.X)
+    val torso = w.add(Box(.18f, .3f, .1f), a(0f, 1.2f), turn, mass = 30f)
+    val head = w.add(Sphere(.11f), a(0f, 1.65f), turn, mass = 5f)
+    w.addConeTwist(torso, head, a(0f, 1.52f), up, .6f, .4f, -.5f, .5f, across = side)
+    val bodies = arrayListOf(torso, head)
+    for (sx in floatArrayOf(-1f, 1f)) {
+        val upper = w.add(Capsule(.05f, .13f), a(sx * .25f, 1.32f), turn, mass = 2.5f)
+        w.addConeTwist(torso, upper, a(sx * .25f, 1.5f), down, 1.2f, .8f, -.6f, .6f, across = side)
+        val fore = w.add(Capsule(.04f, .12f), a(sx * .25f, .96f), turn, mass = 1.5f)
+        w.addHinge(upper, fore, a(sx * .25f, 1.14f), side).limits(0f, 2.5f)
+        val thigh = w.add(Capsule(.07f, .16f), a(sx * .1f, .67f), turn, mass = 8f)
+        w.addConeTwist(torso, thigh, a(sx * .1f, .9f), down, 1f, .5f, -.4f, .4f, across = side)
+        val shin = w.add(Capsule(.05f, .17f), a(sx * .1f, .22f), turn, mass = 4f)
+        w.addHinge(thigh, shin, a(sx * .1f, .44f), side).limits(-2.4f, 0f)
+        bodies += listOf(upper, fore, thigh, shin)
+    }
+    return bodies
+}
+
+/** Diagnostics of ragdolls hit at random: the worst joint gap, and whether a body of that joint was pressed by another body. */
+private fun ragdolls(count: Int) {
+    val rnd = java.util.Random(77)
+    fun f(a: Float, b: Float) = a + rnd.nextFloat() * (b - a)
+    fun dir(): Vec3 { while (true) { val v = Vec3(f(-1f, 1f), f(-1f, 1f), f(-1f, 1f)); val l = v.length(); if (l in .1f..1f) return v / l } }
+    repeat(count) { k ->
+        val w = PhysicsWorld()
+        w.addMesh(TriangleMesh(floatArrayOf(-60f, 0f, -60f, -60f, 0f, 60f, 60f, 0f, 60f, -60f, 0f, -60f, 60f, 0f, 60f, 60f, 0f, -60f)))
+        val bodies = ragdoll(w, Vec3(f(-1f, 1f), f(1f, 3f), f(-1f, 1f)), Quat.axisAngle(dir(), f(0f, 6.28f)))
+        bodies[0].angularVelocity = dir() * f(0f, 6f)
+        repeat(180) { w.step(DT) }
+        var worst = 0f; var what = ""
+        repeat(20) {
+            val b = bodies[rnd.nextInt(bodies.size)]
+            b.applyImpulse(dir() * (b.mass * f(0f, 8f)), b.position + dir() * .05f)
+            repeat(18) {
+                w.step(DT)
+                for (j in w.jointList) {
+                    val g = (j.anchorA - j.anchorB).length()
+                    if (g > worst) {
+                        worst = g
+                        val pressed = w.contacts().filter { c -> c.a != null && (c.a == j.b || c.b == j.b || c.a == j.a || c.b == j.a) && c.normalImpulse > 0f }
+                        what = "${j::class.simpleName} ${j.b.shape::class.simpleName}, ${pressed.size} contacts entre membres (impulsion ${"%.2f".format(pressed.sumOf { it.normalImpulse.toDouble() })})"
+                    }
+                }
+            }
+        }
+        repeat(240) { w.step(DT) }
+        val rest = w.jointList.maxBy { (it.anchorA - it.anchorB).length() }
+        val pressedRest = w.contacts().count { c -> c.a != null && (c.a == rest.b || c.b == rest.b) && c.normalImpulse > 0f }
+        println("  pantin $k : coups ${"%.1f".format(worst * 1000)} mm ($what) ; repos ${"%.2f".format((rest.anchorA - rest.anchorB).length() * 1000)} mm " +
+            "(${rest::class.simpleName} ${rest.b.shape::class.simpleName}, $pressedRest contacts entre membres)")
+    }
+}
