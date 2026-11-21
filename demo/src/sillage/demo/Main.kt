@@ -178,36 +178,43 @@ private fun shellMesh(): Mesh {
 private fun Scene.interfaceAlizes() {
     val ink = Color.hex(0x153D48); val paper = Color.hex(0xFFEDBE); val gold = Color.hex(0xFFCE6E)
     hud.theme.panel = ink; hud.theme.text = paper; hud.theme.accent = gold
+    // Noto Sans, choisie par le propriétaire (21 novembre) : prise parmi les polices de la machine ; sans elle,
+    // la police de pixels du moteur. Un vrai texte français : capitales et minuscules, accents, espaces insécables.
+    hud.font = Font.find("Noto Sans") ?: Font.sans()
+    val bold = Font.find("Noto Sans", bold = true) ?: hud.font
+    val nb = '\u00A0'
     val title = hud.column(0, 46, Hud.Anchor.TOP, spacing = 15, place = Place.CENTER) {
-        text("LES ALIZES", 5, gold).shadow = ink
-        text("UNE ILE, SIX COQUILLAGES", 1.75, paper).shadow = ink
+        text("Les Alizés", 5, gold, bold).shadow = ink
+        // Un contour d'encre fin : lisible sur les palmes comme sur le ciel.
+        text("Une île, six coquillages", 1.9, paper, bold).also { it.shadow = ink; it.outline = ink; it.outlineWidth = .45f }
     }
 
     // Le compteur, et l'heure refaite seulement quand la minute change (le texte est relu à chaque image).
     var minute = -1; var hour = ""
     val counter = hud.column(24, 24, Hud.Anchor.TOP_RIGHT, spacing = 11, place = Place.END) {
         panel(ink, opacity = .72, radius = 8); paddingX = 18f; paddingY = 12f
-        text({ "COQUILLAGES  ${pickups.count { it.collected }} / ${pickups.size}" }, 1.5, paper)
+        text({ "Coquillages${nb}${nb}${pickups.count { it.collected }}${nb}/${nb}${pickups.size}" }, 1.5, paper, bold)
         text({
             val m = ((lighting.time ?: 12f) * 60).toInt()
-            if (m != minute) { minute = m; hour = "HEURE  %02d:%02d".format(m / 60 % 24, m % 60) }
+            if (m != minute) { minute = m; hour = "%d${nb}h${nb}%02d".format(m / 60 % 24, m % 60) }
             hour
         }, 1.25, gold)
     }
 
     val help = hud.column(24, 24, Hud.Anchor.BOTTOM_LEFT, spacing = 7) {
         panel(ink, opacity = .7, radius = 8); paddingX = 18f; paddingY = 12f
-        text("ZQSD / WASD  BOUGER    MAJ  MARCHER    ESPACE  SAUTER    SOURIS  CAMERA", 1.5, paper)
-        text("MOLETTE  ZOOM    V  VUE    T  HEURE    M  SON    R  RECOMMENCER    TAB  SOURIS    ECHAP  PAUSE", 1.25, gold)
+        text("ZQSD${nb}/${nb}WASD bouger   ·   Maj marcher   ·   Espace sauter   ·   Souris caméra", 1.5, paper)
+        text("Molette zoom   ·   V vue   ·   T heure   ·   M son   ·   R recommencer   ·   Tab souris   ·   Échap pause", 1.25, gold)
     }
-    val helpKey = hud.text("H  AIDE", 24, 24, 1.25, paper, Hud.Anchor.BOTTOM_RIGHT)
+    val helpKey = hud.text("H${nb}aide", 24, 24, 1.25, paper, Hud.Anchor.BOTTOM_RIGHT)
     val treasure = hud.column(0, -68, Hud.Anchor.CENTER, spacing = 14, place = Place.CENTER) {
         panel(ink, opacity = .85, radius = 10, padding = 22)
-        text("TRESOR DES ALIZES", 3, gold)
-        text("TOUS LES COQUILLAGES SONT RETROUVES", 1.5, paper)
+        text("Trésor des Alizés", 3, gold, bold)
+        text("Tous les coquillages sont retrouvés", 1.5, paper)
     }
-    hud.mouseHint = "TAB POUR CAPTURER LA SOURIS"
-    hud.pauseMenu("PAUSE", "REPRENDRE", "RECOMMENCER", "SON : OUI" to "SON : NON", "QUITTER")
+    val hint = "Tab pour capturer la souris"
+    hud.mouseHint = hint
+    hud.pauseMenu("Pause", "Reprendre", "Recommencer", "Son${nb}: oui" to "Son${nb}: non", "Quitter")
 
     // Le titre s'efface après quelques secondes, l'aide après quatorze ; H la rappelle ou la range.
     var helpUntil = 14f
@@ -222,6 +229,6 @@ private fun Scene.interfaceAlizes() {
         counter.root.background = ink.mix(Color.hex(0x3D6E7C), Math.round(lighting.night * 16) / 16f)   // la nuit, le panneau se détache du ciel
         val all = pickups.isNotEmpty() && pickups.all { it.collected }
         treasure.visible = all
-        hud.mouseHint = if (all) null else "TAB POUR CAPTURER LA SOURIS"
+        hud.mouseHint = if (all) null else hint
     }
 }
