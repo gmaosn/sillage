@@ -136,7 +136,8 @@ internal class EvdevPad(owner: SystemPads, node: String, fd: Int, val caps: Evde
     @Volatile var grabbed = false
         private set
 
-    override val deviceId: String get() = caps.uniq.lowercase().ifEmpty { caps.phys.ifEmpty { node } }
+    // Its address or serial when it has one (a Bluetooth pad, a DualSense); else what it is and where it is plugged in.
+    override val deviceId: String get() = caps.uniq.lowercase().ifEmpty { "%04x:%04x:%s:%s".format(caps.vendor, caps.product, caps.name, caps.phys.ifEmpty { node }) }
     override val deviceName: String get() = caps.name
     override val deviceKind: PadKind get() = when {
         caps.vendor == DualSense.VENDOR && caps.product == DualSense.PRODUCT -> PadKind.DUALSENSE

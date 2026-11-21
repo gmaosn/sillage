@@ -53,6 +53,9 @@ internal abstract class HardwarePad(protected val owner: SystemPads, val node: S
         private set
     /** Why the thread ended, for messages and tests. */
     @Volatile var endedBecause = ""
+    /** True once the device is gone (nothing more is sent to it). */
+    @Volatile var lost = false
+        protected set
 
     /** The state being built by the reader (the device thread's only). */
     protected val cur = PadState()
@@ -85,7 +88,7 @@ internal abstract class HardwarePad(protected val owner: SystemPads, val node: S
                 endedBecause = "error: " + e
                 owner.say("pad-error:$node", "the pad at $node stopped: $e")
             } finally {
-                try { if (fd >= 0) shutDown(x) } catch (_: Throwable) {}
+                try { if (fd >= 0 && !lost) shutDown(x) } catch (_: Throwable) {}
                 synchronized(lock) { wakeFd = -1 }
                 x.close(w); x.close(fd); fd = -1
                 owner.removed(this)
@@ -97,10 +100,10 @@ internal abstract class HardwarePad(protected val owner: SystemPads, val node: S
         while (running) {
             val timeout = if (rumbling) ((current.rumbleUntil - System.nanoTime()) / 1_000_000L + 1).coerceIn(1L, 1000L).toInt() else 1000
             val r = x.waitReadable(fd, wakeFd, timeout)
-            if (r < 0) { endedBecause = "poll: " + Posix.describe(-r); return }
+            if (r < 0) { endedBecause = "poll: " + Posix.describe(-r); lost = true; return }
             if (r and WOKEN != 0) x.drain(wakeFd)
-            if (r and READABLE != 0) { if (!readReports(x)) return }
-            else if (r and HANGUP != 0) { endedBecause = "device gone"; return }
+            if (r and READABLE != 0) { if (!readReports(x)) { lost = true; return } }
+            else if (r and HANGUP != 0) { endedBecause = "device gone"; lost = true; return }
             flush(x)
         }
         endedBecause = "stopped"
@@ -280,7 +283,7 @@ internal class SystemPads(
                                 "buttons, sticks, triggers and rumble work, but not the light bar, player LEDs, adaptive triggers, motion sensors, touchpad or battery. " +
                                 "Udev rules giving your user access to it bring them back (Steam's 60-steam-input.rules does).")
                         }
-                    } else {
+                    } else if (fd != -Posix.ENOENT) {                     // not there yet: inotify will say when it is
                         say("hidraw-fail:$node", "the DualSense at $node cannot be opened: ${Posix.describe(-fd)}")
                         retryAfter[node] = now + 2000
                     }
@@ -308,7 +311,7 @@ internal class SystemPads(
                 if (fd == -EACCES || fd == -EPERM) { fd = x.open(node, O_RDONLY or O_NONBLOCK or O_CLOEXEC); writable = false }
                 if (fd < 0) {
                     if (fd == -EACCES || fd == -EPERM) { if (stillDenied(node, now)) say("evdev-denied:$node", "the gamepad « ${caps.name} » at $node cannot be read (${Posix.describe(-fd)})") }
-                    else retryAfter[node] = now + 2000
+                    else if (fd != -Posix.ENOENT) retryAfter[node] = now + 2000
                     continue
                 }
                 deniedAt.remove(node)

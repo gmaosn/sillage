@@ -179,21 +179,19 @@ internal object DualSense {
 
     /** The standard button bits from the DualSense's three button bytes (the first holds the d-pad's hat). */
     fun buttons(b0: Int, b1: Int, b2: Int, edge: Boolean): Int {
-        var r = 0
-        fun on(cond: Boolean, code: Int) { if (cond) r = r or (1 shl (code - Pad.BUTTON_BASE)) }
-        on(b0 and 0x10 != 0, Pad.SQUARE); on(b0 and 0x20 != 0, Pad.CROSS); on(b0 and 0x40 != 0, Pad.CIRCLE); on(b0 and 0x80 != 0, Pad.TRIANGLE)
+        // Written without a local function that changes a captured variable: that would allocate a box on every report.
         val hat = b0 and 0x0F
-        on(hat == 7 || hat == 0 || hat == 1, Pad.DPAD_UP); on(hat in 1..3, Pad.DPAD_RIGHT)
-        on(hat in 3..5, Pad.DPAD_DOWN); on(hat in 5..7, Pad.DPAD_LEFT)
-        on(b1 and 0x01 != 0, Pad.L1); on(b1 and 0x02 != 0, Pad.R1); on(b1 and 0x04 != 0, Pad.L2); on(b1 and 0x08 != 0, Pad.R2)
-        on(b1 and 0x10 != 0, Pad.CREATE); on(b1 and 0x20 != 0, Pad.OPTIONS); on(b1 and 0x40 != 0, Pad.L3); on(b1 and 0x80 != 0, Pad.R3)
-        on(b2 and 0x01 != 0, Pad.PS); on(b2 and 0x02 != 0, Pad.TOUCHPAD); on(b2 and 0x04 != 0, Pad.MUTE)
-        if (edge) {
-            on(b2 and 0x10 != 0, Pad.FN_LEFT); on(b2 and 0x20 != 0, Pad.FN_RIGHT)
-            on(b2 and 0x40 != 0, Pad.PADDLE_LEFT); on(b2 and 0x80 != 0, Pad.PADDLE_RIGHT)
-        }
+        var r = bit(b0 and 0x10 != 0, Pad.SQUARE) or bit(b0 and 0x20 != 0, Pad.CROSS) or bit(b0 and 0x40 != 0, Pad.CIRCLE) or bit(b0 and 0x80 != 0, Pad.TRIANGLE) or
+            bit(hat == 7 || hat == 0 || hat == 1, Pad.DPAD_UP) or bit(hat in 1..3, Pad.DPAD_RIGHT) or bit(hat in 3..5, Pad.DPAD_DOWN) or bit(hat in 5..7, Pad.DPAD_LEFT) or
+            bit(b1 and 0x01 != 0, Pad.L1) or bit(b1 and 0x02 != 0, Pad.R1) or bit(b1 and 0x04 != 0, Pad.L2) or bit(b1 and 0x08 != 0, Pad.R2) or
+            bit(b1 and 0x10 != 0, Pad.CREATE) or bit(b1 and 0x20 != 0, Pad.OPTIONS) or bit(b1 and 0x40 != 0, Pad.L3) or bit(b1 and 0x80 != 0, Pad.R3) or
+            bit(b2 and 0x01 != 0, Pad.PS) or bit(b2 and 0x02 != 0, Pad.TOUCHPAD) or bit(b2 and 0x04 != 0, Pad.MUTE)
+        if (edge) r = r or bit(b2 and 0x10 != 0, Pad.FN_LEFT) or bit(b2 and 0x20 != 0, Pad.FN_RIGHT) or
+            bit(b2 and 0x40 != 0, Pad.PADDLE_LEFT) or bit(b2 and 0x80 != 0, Pad.PADDLE_RIGHT)
         return r
     }
+
+    private fun bit(on: Boolean, code: Int) = if (on) 1 shl (code - Pad.BUTTON_BASE) else 0
 
     /** The status byte: level in the low nibble (tenths), charging state in the high one (as the kernel reads it). */
     fun battery(status: Int, into: PadState) {

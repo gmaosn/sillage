@@ -59,7 +59,7 @@ internal class HidrawDualSense(owner: SystemPads, node: String, fd: Int, val inf
     @Volatile var badReports = 0L
     @Volatile var writeErrors = 0L
 
-    override val deviceId: String get() = address ?: info.uniq.lowercase().ifEmpty { node }
+    override val deviceId: String get() = address ?: info.uniq.lowercase().ifEmpty { "%04x:%04x:%s".format(info.vendor, info.product, info.phys.ifEmpty { node }) }
     override val deviceName: String get() = info.name.ifEmpty { "DualSense" }
     override val deviceKind: PadKind get() = if (edge) PadKind.DUALSENSE_EDGE else PadKind.DUALSENSE
     override val deviceConnection: PadConnection get() = when (info.bus) {
@@ -128,7 +128,8 @@ internal class HidrawDualSense(owner: SystemPads, node: String, fd: Int, val inf
         seq = (seq + 1) and 0x0F
         MemorySegment.copy(outBytes, 0, outSeg, JAVA_BYTE, 0, n)
         val r = x.write(fd, outSeg, n)
-        if (r < 0) { writeErrors++; owner.say("write:$node", "cannot send to the DualSense at $node: ${Posix.describe(-r)}") }
+        if (r == -Posix.ENODEV) lost = true
+        else if (r < 0) { writeErrors++; owner.say("write:$node", "cannot send to the DualSense at $node: ${Posix.describe(-r)}") }
     }
 
     override fun shutDown(x: DeviceIo) {
