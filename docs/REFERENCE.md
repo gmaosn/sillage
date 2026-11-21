@@ -365,6 +365,8 @@ Light and air of a scene. Every value can change at any time; turning `shadows` 
 
 `vec(x, y, z)` makes a `Vec3` from any numbers.
 
+`mesh.simplified(keep)`: a lighter copy with about `keep` (0 to 1) of its triangles, for far away (quadric error metrics; borders, colour and texture seams, materials kept; normals made again).
+
 ### Models and animation
 
 `Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy, clips, textures and skins. `read(bytes)` and `readModel(bytes, beside)` do the same from bytes (`beside` gives the bytes of a file the GLB names, an image beside it). Paths are looked up on disk, then in the resources. Cubic-spline curves and morph targets are refused with a message. `KHR_lights_punctual` (Blender's lights) is read.
