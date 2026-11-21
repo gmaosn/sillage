@@ -38,6 +38,9 @@ class Scene {
     /** Sun, shade, sky and haze. Change them while building the scene. */
     val lighting = Lighting()
     val camera = Camera(this)
+    /** Where the sounds are heard from: the followed player's head (default) or the camera. */
+    var listener = Listener.PLAYER
+
     /** Seeing what the engine does: F5 the physics, F6 a free camera, F7 pause, F8 one frame (see [Debug]). */
     val debug = Debug(this)
     /** Milliseconds the last physics step took (shown by [debug]). */
@@ -189,11 +192,14 @@ class Scene {
 
     /**
      * A GLB model (a file path, or a path in the resources). A model with animations keeps its parts
-     * and plays clips with [Node.play]; a model without is drawn as one mesh.
+     * and plays clips with [Node.play]; a model without is drawn as one mesh. [normals]: the engine's soft
+     * normals (default) or the file's ([Normals.FROM_FILE]: Blender's flat faces and sharp edges kept).
+     * Its helper objects (collision volumes, spawn, lamps…: see [Role]) take their place at the first frame.
      */
-    fun model(path: String, at: Vec3 = Vec3.ZERO, scale: Number = 1): Node {
-        val m = models.getOrPut(path) { Glb.loadModel(path) }
-        val node = Node(this, if (m.clips.isEmpty()) flat.getOrPut(path) { m.flatten().also { require(it.triangleCount > 0) { "GLB without triangles: $path" } } } else Mesh.EMPTY)
+    fun model(path: String, at: Vec3 = Vec3.ZERO, scale: Number = 1, normals: Normals = Normals.SMOOTH): Node {
+        val key = if (normals == Normals.SMOOTH) path else "$path|$normals"
+        val m = models.getOrPut(key) { Glb.loadModel(path, normals) }
+        val node = Node(this, if (m.clips.isEmpty()) flat.getOrPut(key) { m.flatten().also { require(it.triangleCount > 0) { "GLB without triangles: $path" } } } else Mesh.EMPTY)
         node.model = m
         node.source = path
         if (m.helpers.isNotEmpty()) helpers.pending.add(node)
@@ -901,4 +907,12 @@ class Pickup internal constructor(val node: Node, internal val zone: Trigger) {
     var onPickup: (Player) -> Unit = {}
     var collected = false
         internal set
+}
+
+/** Where a scene's sounds are heard from (see [Scene.listener]). */
+enum class Listener {
+    /** At the head of the player the camera follows, turned as the camera looks (the camera itself when it follows no player). */
+    PLAYER,
+    /** At the camera, a few metres behind a player in third person. */
+    CAMERA
 }

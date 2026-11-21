@@ -19,6 +19,8 @@ class ModelNode internal constructor(
     internal val triangles: FloatArray,
     /** Per triangle, the texture coordinates of a, b, c (6 floats); empty when the mesh has none. */
     internal val uvs: FloatArray = FloatArray(0),
+    /** Per triangle, the normals of a, b, c as the file gives them (9 floats); empty when it has none. */
+    internal val normals: FloatArray = FloatArray(0),
     /** The skin that deforms its mesh ([Model.skins]), −1: none. */
     val skin: Int = -1,
     /** Per triangle, per vertex 4 joints (indices in the skin) then 4 weights (24 floats); empty without a skin. */
@@ -75,6 +77,14 @@ internal fun roleOf(name: String?, properties: Map<String, Any?>, light: ModelLi
     }
 }
 
+/** Whose normals a model's meshes use (see [Scene.model]). */
+enum class Normals {
+    /** The engine's own, soft: each vertex takes the mean of the faces around it, edges sharper than 55° stay crisp (the default). */
+    SMOOTH,
+    /** The file's, as Blender exported them: flat faces stay flat, edges marked sharp stay sharp, custom normals are kept. A mesh without normals in the file stays soft. */
+    FROM_FILE
+}
+
 /** What a channel animates. */
 enum class ChannelTarget(val components: Int) { TRANSLATION(3), ROTATION(4), SCALE(3) }
 
@@ -104,7 +114,37 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                                  /** Per material, the alpha below which it is cut out (0: opaque). */
                                  internal val cutoffs: FloatArray = FloatArray(0),
                                  /** The skeletons of the model's skinned meshes. */
-                                 val skins: List<Skin> = emptyList()) {
+                                 val skins: List<Skin> = emptyList(),
+                                 /** Whose normals its meshes use: the engine's soft ones, or the file's. */
+                                 val normals: Normals = Normals.SMOOTH) {
+    /**
+     * The normals of [mesh]: the engine's soft ones ([Normals.SMOOTH]), or the file's ([Normals.FROM_FILE]):
+     * triangle t of the mesh came from triangle [keptTri] of node [keptNode], placed by [place] (null: as
+     * is), written a, c, b when [mirrored]. Triangles of a node without normals in the file keep soft ones.
+     */
+    private fun normalsOf(mesh: Mesh, keptNode: List<Int>, keptTri: List<Int>, mirrored: List<Boolean>?, place: (Int) -> Mat4?): Mesh {
+        if (normals == Normals.SMOOTH || keptNode.all { nodes[it].normals.isEmpty() }) return mesh.smooth()
+        val soft by lazy { mesh.smooth().vertices }
+        val inverses = HashMap<Int, Mat4?>()
+        val out = FloatArray(keptNode.size * 9)
+        for (t in keptNode.indices) {
+            val i = keptNode[t]; val k = keptTri[t]; val src = nodes[i].normals
+            if (src.isEmpty()) { for (v in 0..2) for (c in 0..2) out[9 * t + 3 * v + c] = soft[27 * t + 9 * v + 3 + c]; continue }
+            // Normals go through the inverse transpose of the place's 3×3 (right under a stretch).
+            val inv = inverses.getOrPut(i) { place(i)?.inverseAffine() }
+            val flip = mirrored?.get(t) == true
+            for (v in 0..2) {
+                val sv = if (!flip) v else intArrayOf(0, 2, 1)[v]
+                var n = Vec3(src[9 * k + 3 * sv], src[9 * k + 3 * sv + 1], src[9 * k + 3 * sv + 2])
+                if (inv != null) n = Vec3(inv.m00 * n.x + inv.m01 * n.y + inv.m02 * n.z, inv.m10 * n.x + inv.m11 * n.y + inv.m12 * n.z, inv.m20 * n.x + inv.m21 * n.y + inv.m22 * n.z)
+                val l = n.length()
+                if (l > 1e-12f) n = n * (1f / l)
+                out[9 * t + 3 * v] = n.x; out[9 * t + 3 * v + 1] = n.y; out[9 * t + 3 * v + 2] = n.z
+            }
+        }
+        return mesh.withNormals(out)
+    }
+
     /** Nodes that are not drawn as part of the model (helpers: collision volumes, zones, separate objects, spawn), with their children. */
     internal val hidden: BooleanArray = BooleanArray(nodes.size).also { h ->
         fun hide(i: Int) { h[i] = true; for (c in nodes[i].children) hide(c) }
@@ -126,21 +166,23 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
     /** Node [i] and its children as one mesh in node [i]'s space, its scale left out (a separate object: see [Role.DYNAMIC]). */
     fun subtreeMesh(i: Int): Mesh {
         val g = MeshBuilder(); val mats = ArrayList<Int>()
+        val keptNode = ArrayList<Int>(); val keptTri = ArrayList<Int>(); val keptMirrored = ArrayList<Boolean>(); val places = HashMap<Int, Mat4>()
         fun visit(j: Int, m: Mat4) {
             val n = nodes[j]; val t = n.triangles
             val mirrored = m.determinant3x3() < 0
+            places[j] = m
             for (k in t.indices step TRI) {
                 val a = m.transformPoint(Vec3(t[k], t[k + 1], t[k + 2])); val b = m.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
                 val c = m.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
                 val before = g.triangleCount
                 if (mirrored) g.triangle(a, c, b, Color(t[k + 9], t[k + 10], t[k + 11])) else g.triangle(a, b, c, Color(t[k + 9], t[k + 10], t[k + 11]))
-                if (g.triangleCount > before) mats.add(t[k + 12].toInt())
+                if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); keptNode.add(j); keptTri.add(k / TRI); keptMirrored.add(mirrored) }
             }
             for (c in n.children) visit(c, m * nodes[c].local)
         }
         val s = nodes[i].scale
         visit(i, Mat4.trs(Vec3.ZERO, Quat.IDENTITY, s))
-        return g.build().smooth().withMaterials(mats.toIntArray())
+        return normalsOf(g.build(), keptNode, keptTri, keptMirrored) { places[it] }.withMaterials(mats.toIntArray())
     }
 
     /** Each node's place in the model at rest. */
@@ -212,7 +254,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                     Color(t[k + 9], t[k + 10], t[k + 11]))
                 if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); kept.add(k / TRI) }
             }
-            val mesh = g.build().smooth().withMaterials(mats.toIntArray())
+            val mesh = normalsOf(g.build(), List(kept.size) { i }, kept, null) { null }.withMaterials(mats.toIntArray())
             val uvs = nodes[i].uvs
             val textured = imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
             val sw = nodes[i].skinWeights
@@ -246,7 +288,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             for (e in n.children) visit(e, world)
         }
         for (r in roots) visit(r, Mat4.IDENTITY)
-        val mesh = g.build().smooth().withMaterials(mats.toIntArray())
+        val mesh = normalsOf(g.build(), keptNode, keptTri, keptMirrored) { restWorld[it] }.withMaterials(mats.toIntArray())
         // A mirrored triangle was written a, c, b: its texture coordinates too.
         val uv = FloatArray(6)
         imageEffects(IntArray(mats.size) { it }, mats.toIntArray(), { t ->

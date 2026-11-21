@@ -68,6 +68,14 @@ class Mesh(val vertices: FloatArray) {
         require(materials.size == triangleCount) { "One material per triangle" }
         return Mesh(vertices).also { it.materials = materials; it.effects = effects; it.dynamic = dynamic }
     }
+    /** The same triangles with these normals (3 floats per vertex), keeping materials and effects. */
+    internal fun withNormals(normals: FloatArray): Mesh {
+        require(normals.size == vertices.size / 3) { "3 normal floats per vertex" }
+        val v = vertices.copyOf()
+        for (k in 0 until v.size / 9) { v[9 * k + 3] = normals[3 * k]; v[9 * k + 4] = normals[3 * k + 1]; v[9 * k + 5] = normals[3 * k + 2] }
+        return Mesh(v).also { it.materials = materials; it.effects = effects; it.dynamic = dynamic }
+    }
+
     /** A copy of its own (vertices copied, materials and effects shared) whose vertices change every frame. */
     internal fun dynamicCopy(): Mesh = Mesh(vertices.copyOf()).also { it.materials = materials; it.effects = effects; it.dynamic = true }
     /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */

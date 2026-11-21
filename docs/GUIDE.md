@@ -270,6 +270,8 @@ Sounds placed in the world are softer and duller far away, come from their side,
 
 The scene makes its own sounds too: footsteps that follow the walk and run clips and the ground underfoot, jumps and landings, bodies hitting things (louder when harder), a crate scraping as it is pushed. `toggleMute()` turns sound off and on. The mixer runs on its own thread with 48 voices, and plays through ALSA.
 
+The ears are at the head of the player the camera follows, turned as the camera looks: what is near the player sounds near, and left and right follow the view. `listener = Listener.CAMERA` puts them at the camera instead.
+
 ## Time, events, zones
 
 ```kotlin
@@ -371,6 +373,8 @@ Models are glTF binary files (`.glb`), as Blender exports them: meshes with colo
 
 - **Images painted on the model** (`baseColorTexture`): PNG or JPEG, inside the file, in a `data:` URI or as a file beside it, read by the engine's own decoders; the texture coordinates `TEXCOORD_0`; `alphaMode` `MASK` cuts out what is below `alphaCutoff` (leaves, fences, a sign's rounded corners; `BLEND` is drawn as `MASK` at 0.5, without sorting). An image decoded once serves every copy and every scene. Images are scaled to 1024 pixels at most. Without an image, detail textures still come from the material names (see Textures).
 - **Skins** (characters bent by a skeleton): joints, inverse bind matrices, four weights per vertex. The mesh is deformed on the CPU after each pose, then sent to the GPU again (a few thousand vertices cost a fraction of a millisecond); a skinned model plays its clips like any other.
+
+Normals: by default the engine makes its own, soft ones (each vertex takes the mean of the faces around it; edges sharper than 55° stay crisp), which suits the soft toon look. `model(path, normals = Normals.FROM_FILE)` keeps Blender's instead: flat-shaded faces stay flat, edges marked sharp stay sharp, custom normals are kept.
 
 `node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part. Cubic-spline curves and morph targets are refused with a clear message; normal and metal/roughness maps are ignored (the toon look has no use for them).
 

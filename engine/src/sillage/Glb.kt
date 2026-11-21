@@ -22,7 +22,8 @@ object Glb {
         require(it.triangleCount > 0) { "GLB without triangles: $path" } }
 
     /** The model with its hierarchy and animations. */
-    fun loadModel(path: String): Model = readModel(bytes(path)) { uri -> bytes(Path.of(path).resolveSibling(uri).toString()) }
+    fun loadModel(path: String, normals: Normals = Normals.SMOOTH): Model =
+        readModel(bytes(path), { uri -> bytes(Path.of(path).resolveSibling(uri).toString()) }, normals)
 
     /** [load] from the bytes of a file. */
     fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }
@@ -30,7 +31,8 @@ object Glb {
     private fun bytes(path: String): ByteArray = sillage.io.Assets.bytes(path, "GLB")
 
     /** [loadModel] from the bytes of a file; [beside] gives the bytes of a file the GLB names (an image beside it). */
-    fun readModel(bytes: ByteArray, beside: (String) -> ByteArray = { throw IllegalArgumentException("GLB: image file « $it » unavailable") }): Model {
+    fun readModel(bytes: ByteArray, beside: (String) -> ByteArray = { throw IllegalArgumentException("GLB: image file « $it » unavailable") },
+                  normals: Normals = Normals.SMOOTH): Model {
         require(bytes.size >= 20) { "Truncated GLB" }
         val file = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         require(file.int == 0x46546c67 && file.int == 2) { "A glTF 2.0 GLB file is required" }
@@ -149,8 +151,10 @@ object Glb {
          * Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; their
          * texture coordinates (6 floats each); their skin weights (24 floats each: per vertex 4 joints, 4 weights).
          */
-        fun triangles(meshIndex: Int): Triple<FloatArray, FloatArray, FloatArray> {
-            val out = ArrayList<Float>(); val uvOut = ArrayList<Float>(); val skinOut = ArrayList<Float>()
+        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray)
+        fun triangles(meshIndex: Int): Read {
+            val out = ArrayList<Float>(); val uvOut = ArrayList<Float>(); val skinOut = ArrayList<Float>(); val nOut = ArrayList<Float>()
+            var everyNormal = true
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
                 val p = primitive as Json.Obj
@@ -164,6 +168,8 @@ object Glb {
                 require((joints == null) == (weights == null)) { "GLB: JOINTS_0 and WEIGHTS_0 go together" }
                 require(joints == null || (joints.size >= positions.size && weights!!.size >= positions.size)) { "GLB: fewer skin weights than vertices" }
                 val uvs = attributes.int("TEXCOORD_0")?.let { values(it, "VEC2") }
+                val fileNormals = attributes.int("NORMAL")?.let { values(it, "VEC3") }?.takeIf { it.size >= positions.size }
+                if (fileNormals == null) everyNormal = false
                 require(!textured || uvs != null) { "GLB: a textured material needs texture coordinates (TEXCOORD_0)" }
                 require(uvs == null || uvs.size >= positions.size) { "GLB: fewer texture coordinates than vertices" }
                 val colors = attributes.int("COLOR_0")?.let { values(it, requireNotNull(accessors.at(it, "accessor").string("type")) { "GLB: colours without a type" }) }
@@ -187,6 +193,7 @@ object Glb {
                     out.add(vc.r); out.add(vc.g); out.add(vc.b)
                     out.add((p.int("material") ?: -1).toFloat())
                     for (v in intArrayOf(a, b, c)) { uvOut.add(uvs?.get(v)?.get(0) ?: 0f); uvOut.add(uvs?.get(v)?.get(1) ?: 0f) }
+                    if (fileNormals != null) for (v in intArrayOf(a, b, c)) for (j in 0..2) nOut.add(fileNormals[v][j])
                     if (joints != null) for (v in intArrayOf(a, b, c)) {
                         val w = weights!![v]; val sum = w[0] + w[1] + w[2] + w[3]
                         for (k in 0..3) skinOut.add(joints[v][k])
@@ -195,7 +202,8 @@ object Glb {
                     }
                 }
             }
-            return Triple(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray())
+            // Normals from the file only when every primitive of the mesh has them.
+            return Read(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray(), if (everyNormal) nOut.toFloatArray() else FloatArray(0))
         }
 
         val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
@@ -219,7 +227,7 @@ object Glb {
             is Json.Arr -> j.items.map { plain(it) }; is Json.Obj -> j.fields.mapValues { plain(it.value) }
             else -> j.toString()
         }
-        val meshCache = HashMap<Int, Triple<FloatArray, FloatArray, FloatArray>>()
+        val meshCache = HashMap<Int, Read>()
         val nodes = List(nodesJson.size) { i ->
             val node = nodesJson.obj(i)
             val matrix = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats().taille(16, "matrix")) }
@@ -231,10 +239,11 @@ object Glb {
                 rotation = node.arr("rotation")?.floats()?.taille(4, "rotation")?.let { Quat(it[0], it[1], it[2], it[3]).normalized() } ?: Quat.IDENTITY,
                 scale = node.arr("scale")?.floats()?.taille(3, "scale")?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE,
                 matrix = matrix,
-                triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) }.first } ?: FloatArray(0),
-                uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).second } ?: FloatArray(0),
+                triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) }.triangles } ?: FloatArray(0),
+                uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).uvs } ?: FloatArray(0),
+                normals = node.int("mesh")?.let { m -> meshCache.getValue(m).normals } ?: FloatArray(0),
                 skin = node.int("skin")?.also { require(it in 0 until (doc.arr("skins")?.size ?: 0)) { "GLB: node $i uses a missing skin" } } ?: -1,
-                skinWeights = node.int("mesh")?.let { m -> meshCache.getValue(m).third } ?: FloatArray(0),
+                skinWeights = node.int("mesh")?.let { m -> meshCache.getValue(m).skin } ?: FloatArray(0),
                 properties = node.obj("extras")?.fields?.mapValues { plain(it.value) } ?: emptyMap(),
                 light = node.obj("extensions")?.obj("KHR_lights_punctual")?.int("light")?.let { k ->
                     require(k in lights.indices) { "GLB: node $i uses a missing light $k" }; lights[k] },
@@ -285,6 +294,6 @@ object Glb {
             for (t in 0 until n.skinWeights.size / 24) for (v in 0..2) for (k in 0..3)
                 require(n.skinWeights[24 * t + 8 * v + k].toInt() in 0 until count) { "GLB: a vertex names joint ${n.skinWeights[24 * t + 8 * v + k].toInt()} of a skin of $count" }
         }
-        return Model(nodes, racines, clips, materialNames, textures, cutoffs, skins)
+        return Model(nodes, racines, clips, materialNames, textures, cutoffs, skins, normals)
     }
 }

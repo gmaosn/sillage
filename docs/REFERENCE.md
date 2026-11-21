@@ -47,7 +47,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `plane(width = 10, depth = width, color = GRASS, at)` | flat, facing up, not solid |
 | `ground(size = 400, color = GRASS, surface = Material.GRASS, at)` | flat solid floor, its edge lost in the haze |
 | `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests |
-| `model(path, at, scale = 1)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
+| `model(path, at, scale = 1, normals = Normals.SMOOTH)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
 | `mesh(mesh, at)` | a `Mesh` of your own |
 | `chain(from, to, links, radius = .03, color = GREY, start = null, end = null, density = 2000)` | a chain of dynamic capsule nodes joined by ball joints, hanging from `start` (or the world), holding `end`; the links |
 | `player(model = null, at = null, radius = .28, height = 1.8, setup = {})` | a `Player`; without a model, a capsule; without `at`, at a model's `spawn` (or the origin) |
@@ -88,6 +88,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `play(sound, at = null, volume = 1, pitch = 1, range = 60)` | once, in space (heard within `range` m) or everywhere; returns the `Voice`, null when muted |
 | `ambience(sound, at = null, volume = .5, range = 60)` | a loop: waves, wind, a fountain; returns an `Ambience` whose `volume` can change at any time |
 | `reverb` | how the place sounds (a `Reverb`, or null) |
+| `listener` | where sounds are heard from: `Listener.PLAYER` (the followed player's head, turned as the camera looks; default) or `Listener.CAMERA` |
 | `reverbZone(shape, at, reverb, rotation = IDENTITY)` | while the camera is inside, sounds echo as in `reverb` |
 | `toggleMute()` | |
 
@@ -274,6 +275,7 @@ Light and air of a scene. Every value can change at any time; turning `shadows` 
 |---|---|
 | `Model` | `nodes` (`ModelNode`s), `roots`, `clips` (by name), `materials` (names by index), `textures` (each material's image texture or null), `skins`, `order` (parents before children); `flatten()` (rest pose as one mesh, skins included), `surfaces()` (world triangles and their material indices, for collision), `parts()`; `helpers` (nodes whose role is not DRAWN), `restPlace(i)`, `localPoints(i)`, `subtreeMesh(i)`; helpers are neither drawn nor in `surfaces()` |
 | `ModelNode` | `name`, `parent`, `children`, `translation`, `rotation`, `scale`, `matrix` (when given instead of TRS), `local`, `skin` (index in `skins`, −1: none), `properties` (glTF `extras`: Blender's custom properties), `light` (a `ModelLight`: `type`, `color`, `intensity`, `range`, `name`), `role` |
+| `Normals` | `SMOOTH` (the engine's soft normals, default) or `FROM_FILE` (Blender's, as exported) |
 | `Role` | what a node is for in a scene: `DRAWN`, `COLLIDER`, `SPAWN`, `DYNAMIC`, `ZONE`, `PICKUP`, `LAMP` (see the guide, "Blender as the editor") |
 | `Skin` | `joints` (node indices), `inverseBind` (one `Mat4` per joint) |
 | `Clip` | `name`, `channels`, `duration` |

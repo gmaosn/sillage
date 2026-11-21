@@ -112,9 +112,9 @@ internal class SceneSounds(private val scene: Scene) {
 
     fun update(dt: Float) {
         val a = audio ?: return
-        val cam = scene.camera
-        a.listen(cam.position, cam.forward)
-        a.mixer.reverb = reverbAt(cam.position)
+        val (ears, forward) = listenerPlace()
+        a.listen(ears, forward)
+        a.mixer.reverb = reverbAt(ears)
         for (p in pendingAmbience) p.handle.voice?.let { v -> if (p.handle.applied != p.handle.volume) { v.volume(p.handle.volume); p.handle.applied = p.handle.volume } }
         // Sounds that follow what makes them (a gull in flight): their place each frame, so they come and go (Doppler).
         var k = 0
@@ -125,6 +125,19 @@ internal class SceneSounds(private val scene: Scene) {
         }
         for (p in scene.players) if (p.sounds) { val w = walkers.getOrPut(p) { Walker(last = p.position) }; footsteps(a, p, w); jumps(a, p, w, dt); scraping(a, p, w) }
         impacts(a, dt)
+    }
+
+    /**
+     * Where the ears are and where they look: with [Listener.PLAYER] (the default) at the head of the player
+     * the camera follows, turned as the camera looks, so that what is near the player sounds near; with
+     * [Listener.CAMERA], or when the camera follows no player, at the camera.
+     */
+    internal fun listenerPlace(): Pair<Vec3, Vec3> {
+        val cam = scene.camera
+        val p = (cam.target ?: scene.player) as? Player
+        if (scene.listener == Listener.PLAYER && p != null && cam.mode != CameraMode.FIXED)
+            return p.position.plus(0f, p.character.height - .15f, 0f) to cam.forward
+        return cam.position to cam.forward
     }
 
     /** A player's sound: at its feet, heard in full from the usual camera distance. */

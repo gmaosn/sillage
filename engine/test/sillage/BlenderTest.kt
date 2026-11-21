@@ -121,4 +121,36 @@ class BlenderTest {
         s.player!!.position = vec(2, 0, 2); repeat(5) { s.step(1f / 60f) }
         assertEquals(1, picked); assertTrue(s.pickups.single().collected)
     }
+
+    /** A fold of two triangles 30° apart, each with its face's normal in the file (Blender's flat shading). */
+    private fun fold(rotation: String = ""): ByteArray {
+        val a = floatArrayOf(0f, 0f, 0f); val b = floatArrayOf(1f, 0f, 0f); val c = floatArrayOf(0f, 0f, -1f)
+        val d = floatArrayOf(1f, .57735f, -1f)               // the second face rises 30° beyond the edge b–c
+        val n1 = floatArrayOf(0f, 1f, 0f)
+        val u = floatArrayOf(d[0] - b[0], d[1] - b[1], d[2] - b[2]); val w = floatArrayOf(c[0] - b[0], c[1] - b[1], c[2] - b[2])
+        var n2 = floatArrayOf(u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+        val l = kotlin.math.sqrt(n2[0] * n2[0] + n2[1] * n2[1] + n2[2] * n2[2]); n2 = floatArrayOf(n2[0] / l, n2[1] / l, n2[2] / l)
+        val pos = a + b + c + b + d + c
+        val nrm = n1 + n1 + n1 + n2 + n2 + n2
+        val bin = ByteBuffer.allocate((pos.size + nrm.size) * 4).order(ByteOrder.LITTLE_ENDIAN).apply { (pos + nrm).forEach { putFloat(it) } }.array()
+        val json = """{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"fold","mesh":0$rotation}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1}}]}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":6,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":6,"type":"VEC3"}],
+            "bufferViews":[{"buffer":0,"byteLength":72},{"buffer":0,"byteOffset":72,"byteLength":72}],"buffers":[{"byteLength":144}]}"""
+        return glb(json, bin)
+    }
+
+    @Test fun lesNormalesDuFichierSurDemande() {
+        val soft = Glb.readModel(fold()).flatten()
+        val file = Glb.readModel(fold(), normals = Normals.FROM_FILE).flatten()
+        fun normal(m: Mesh, t: Int, v: Int) = Vec3(m.vertices[27 * t + 9 * v + 3], m.vertices[27 * t + 9 * v + 4], m.vertices[27 * t + 9 * v + 5])
+        // Vertex b of the first face: soft, it leans towards the second face; from the file, straight up.
+        assertTrue(normal(soft, 0, 1).y < .99f, "the engine smooths a 30° fold: ${normal(soft, 0, 1)}")
+        assertEquals(1f, normal(file, 0, 1).y, 1e-5f)
+        assertEquals(1f, normal(file, 0, 0).y, 1e-5f)
+        assertTrue(normal(file, 1, 0).y < .9f && kotlin.math.abs(normal(file, 1, 0).length() - 1f) < 1e-4f)
+        // A node turned a quarter about X: up becomes +Z (towards the viewer), the normals turn with it.
+        val turned = Glb.readModel(fold(""","rotation":[0.7071068,0,0,0.7071068]"""), normals = Normals.FROM_FILE).flatten()
+        assertEquals(1f, normal(turned, 0, 1).z, 1e-4f)
+    }
 }
