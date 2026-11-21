@@ -122,6 +122,7 @@ internal const val VK_ACCESS_HOST_READ_BIT = 0x2000
 internal const val VK_SHADER_STAGE_VERTEX_BIT = 0x1
 internal const val VK_SHADER_STAGE_FRAGMENT_BIT = 0x10
 internal const val VK_VERTEX_INPUT_RATE_VERTEX = 0
+internal const val VK_PRIMITIVE_TOPOLOGY_LINE_LIST = 1
 internal const val VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 3
 internal const val VK_POLYGON_MODE_FILL = 0
 internal const val VK_CULL_MODE_NONE = 0

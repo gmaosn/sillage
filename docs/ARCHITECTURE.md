@@ -27,6 +27,7 @@ This page is for those who read or change the engine itself. To make games, star
 ```
 engine/src/sillage/
   Game.kt            game(): options, the loop, RunReport
+  Debug.kt           F5–F8: the physics drawn as lines, the free camera, pause and one frame, the panel
   dev/               ./sillage dev: the host (watches, compiles, reloads), the link with the loop, the error panel
   Scene.kt           the scene: builders, events, the order of a frame's update
   Node.kt Player.kt Camera.kt Input.kt Hud.kt
@@ -74,6 +75,7 @@ Without a window (`--headless`), the same loop draws into an off-screen image wi
 - **Detail textures** (`Texture.kt`, `texture.glsl`). The ready-made textures are painted by Kotlin code (value noise, cells, strokes and dabs, all wrapping around), on the common pool, as soon as they are made; their mean is brought to neutral grey and every smaller level is computed on the CPU. The renderer keeps one array image, a layer per texture (as large as the largest), sent through a staging buffer when new textures appear; until all are painted, the window shows the others neutral for a few frames (without a window, and before a capture, it waits, so that frames are the same from run to run). The fragment shader reads them in the object's own space: from the three axes blended by the normal (`textureGrad` with derivatives taken outside the branches), or along the face, its true normal from screen derivatives, rows level and climbing the slope.
 - **Water**: `Water.kt` lays a grid over the shores, finds the land by rays from above (ground at most 0.9 m above the water counts; a pier's deck does not), computes each vertex's distance to the nearest shore (8SSEDT, then one smoothing pass) and stores it in the vertex colour's red channel. `water.frag` draws the lagoon, the foam, the surf and the crests from that distance, the world position and the time.
 - **Push constants**: 128 bytes (the minimum every device guarantees): view × projection, eye and time, the shadow map's centre and half side, the water's two colours. The scene's descriptor set holds the shadow map, the frame's uniform block and the texture array; the picture's passes have their own sets, two images each.
+- **Debug lines** (`Debug.fill`, `lines.vert`, `lines.frag`, `lines_xray.frag`): segments of two vertices (position, colour, opacity) written after the particles in the frame's instance buffer, drawn at the end of the scene pass twice: first without the depth test and faint (what the scenery hides), then with it. Both pipelines write red, green and blue only, so the alpha (the distance to the eye) and thus the ink lines stay as they were. Nothing is drawn, and nothing costs, while F5 is off.
 - **GPU time** from timestamp queries, when the device supports them.
 
 ## Windows

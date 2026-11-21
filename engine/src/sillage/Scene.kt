@@ -38,6 +38,10 @@ class Scene {
     /** Sun, shade, sky and haze. Change them while building the scene. */
     val lighting = Lighting()
     val camera = Camera(this)
+    /** Seeing what the engine does: F5 the physics, F6 a free camera, F7 pause, F8 one frame (see [Debug]). */
+    val debug = Debug(this)
+    /** Milliseconds the last physics step took (shown by [debug]). */
+    internal var physicsMs = 0f
     val hud = Hud()
     val input = Input()
     /** The sound output (null when muted or without sound). [game] sets it; set it yourself to hear or record a scene run with [step]. */
@@ -172,6 +176,7 @@ class Scene {
         val m = models.getOrPut(path) { Glb.loadModel(path) }
         val node = Node(this, if (m.clips.isEmpty()) flat.getOrPut(path) { m.flatten().also { require(it.triangleCount > 0) { "GLB without triangles: $path" } } } else Mesh.EMPTY)
         node.model = m
+        node.source = path
         if (m.clips.isNotEmpty()) { node.parts = m.parts(); node.animator = Animator(m, node.parts) }
         if (autoTextures) texturesByName(node)
         node.scale = scale.toFloat()
@@ -686,6 +691,7 @@ class Scene {
         }
         extras.lightCount = n
         particles.write(extras, time, night)
+        debug.fill(extras, eye)
         return extras
     }
 
@@ -718,7 +724,9 @@ class Scene {
         val h = dt.coerceIn(1f / 240f, 1f / 30f)
         for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, q) }
         for (n in kinematicNodes) n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation)
+        val physicsStart = System.nanoTime()
         physics.step(h)
+        physicsMs = (System.nanoTime() - physicsStart) / 1e6f
         for (k in 0 until linked.size) { val n = linked[k]; n.body?.let { b -> n.rotation = b.rotation; n.position = b.position - b.rotation.rotate(n.bodyOffset) } }
         for (k in 0 until playerList.size) { val p = playerList[k]; p.forcedClip = forcedPlayerClip; p.update(dt) }
         placeShadows()

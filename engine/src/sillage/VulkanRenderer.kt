@@ -63,7 +63,13 @@ internal class FrameExtras {
     /** Per particle [PARTICLE_FLOATS] floats. */
     var particles = FloatArray(PARTICLE_FLOATS * 256)
     var particleCount = 0
+    /** Debug lines: two vertices per segment, [LINE_FLOATS] floats each (position, colour and opacity). */
+    var lines = FloatArray(LINE_FLOATS * 1024)
+    var lineVertexCount = 0
 }
+
+/** Floats per debug line vertex: position, colour and opacity. */
+internal const val LINE_FLOATS = 7
 
 internal class VulkanRenderer(private val target: SurfaceSource? = null, private val validation: Boolean = false,
                               largeurHorsEcran: Int = 1280, hauteurHorsEcran: Int = 800,
@@ -106,6 +112,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var pipelineOmbre=0L
     private var pipelineWater=0L
     private var pipelineParticles=0L
+    private var pipelineLines=0L
+    private var pipelineLinesXray=0L
     private var pipelineHud=0L
     private var pipelineBright=0L
     private var pipelineDown=0L
@@ -752,14 +760,28 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             "vertexAttributeDescriptionCount" to 2, "pVertexAttributeDescriptions" to attrs)
     }
 
-    /** One graphics pipeline: triangles, no culling, viewport and scissor set when drawing. [blend]: see BLEND_KEEP_ALPHA. */
+    /** Debug lines: per vertex its position, its colour and opacity. */
+    private fun lineInput(s: NativeStack): MemorySegment {
+        val binding=s.struct(VkVertexInputBindingDescription, "binding" to 0, "stride" to LINE_FLOATS*4, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
+        val attrs=s.structs(VkVertexInputAttributeDescription,2)
+        attrs.at(VkVertexInputAttributeDescription,0).put(VkVertexInputAttributeDescription, "binding" to 0, "location" to 0, "format" to VK_FORMAT_R32G32B32_SFLOAT, "offset" to 0)
+        attrs.at(VkVertexInputAttributeDescription,1).put(VkVertexInputAttributeDescription, "binding" to 0, "location" to 1, "format" to VK_FORMAT_R32G32B32A32_SFLOAT, "offset" to 12)
+        return s.struct(VkPipelineVertexInputStateCreateInfo, "vertexBindingDescriptionCount" to 1, "pVertexBindingDescriptions" to binding,
+            "vertexAttributeDescriptionCount" to 2, "pVertexAttributeDescriptions" to attrs)
+    }
+
+    /**
+     * One graphics pipeline: triangles (or [topology]), no culling, viewport and scissor set when drawing.
+     * [blend]: see BLEND_KEEP_ALPHA; [keepAlpha] leaves the image's alpha (the distance to the eye) untouched.
+     */
     private fun make(s: NativeStack, vert: Long, frag: Long?, input: MemorySegment, pass: Long, samples: Int, layout: Long,
-                     depthTest: Boolean, depthWrite: Boolean, blend: IntArray?, bias: Boolean = false): Long {
+                     depthTest: Boolean, depthWrite: Boolean, blend: IntArray?, bias: Boolean = false,
+                     topology: Int = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, keepAlpha: Boolean = false): Long {
         val main=s.allocateFrom("main")
         val stages=s.structs(VkPipelineShaderStageCreateInfo,2)
         stages.at(VkPipelineShaderStageCreateInfo,0).put(VkPipelineShaderStageCreateInfo, "stage" to VK_SHADER_STAGE_VERTEX_BIT, "module" to vert, "pName" to main)
         if(frag!=null) stages.at(VkPipelineShaderStageCreateInfo,1).put(VkPipelineShaderStageCreateInfo, "stage" to VK_SHADER_STAGE_FRAGMENT_BIT, "module" to frag, "pName" to main)
-        val ia=s.struct(VkPipelineInputAssemblyStateCreateInfo, "topology" to VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+        val ia=s.struct(VkPipelineInputAssemblyStateCreateInfo, "topology" to topology)
         val vs=s.struct(VkPipelineViewportStateCreateInfo, "viewportCount" to 1, "scissorCount" to 1)
         val dyn=s.struct(VkPipelineDynamicStateCreateInfo, "dynamicStateCount" to 2, "pDynamicStates" to s.ints(VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR))
         val rs=s.struct(VkPipelineRasterizationStateCreateInfo, "polygonMode" to VK_POLYGON_MODE_FILL, "cullMode" to VK_CULL_MODE_NONE,
@@ -770,7 +792,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val ds=s.struct(VkPipelineDepthStencilStateCreateInfo, "depthTestEnable" to depthTest, "depthWriteEnable" to depthWrite,
             "depthCompareOp" to VK_COMPARE_OP_LESS_OR_EQUAL)
         val ca=s.struct(VkPipelineColorBlendAttachmentState, "colorWriteMask" to
-            (VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or VK_COLOR_COMPONENT_A_BIT))
+            (VK_COLOR_COMPONENT_R_BIT or VK_COLOR_COMPONENT_G_BIT or VK_COLOR_COMPONENT_B_BIT or (if(keepAlpha) 0 else VK_COLOR_COMPONENT_A_BIT)))
         if(blend!=null) ca.put(VkPipelineColorBlendAttachmentState, "blendEnable" to true,
             "srcColorBlendFactor" to blend[0], "dstColorBlendFactor" to blend[1], "colorBlendOp" to VK_BLEND_OP_ADD,
             "srcAlphaBlendFactor" to blend[2], "dstAlphaBlendFactor" to blend[3], "alphaBlendOp" to VK_BLEND_OP_ADD)
@@ -804,6 +826,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             pipelineSky=make(s,m("toon.vert"),m("sky.frag"),scene,renderPass,n,layout,true,false,null)
             pipelineOmbre=make(s,m("toon.vert"),m("ombre.frag"),scene,renderPass,n,layout,true,false,BLEND_KEEP_ALPHA)
             pipelineParticles=make(s,m("particle.vert"),m("particle.frag"),particleInput(s),renderPass,n,layout,true,false,BLEND_PREMULTIPLIED)
+            pipelineLinesXray=make(s,m("lines.vert"),m("lines_xray.frag"),lineInput(s),renderPass,n,layout,false,false,BLEND_KEEP_ALPHA,
+                topology=VK_PRIMITIVE_TOPOLOGY_LINE_LIST,keepAlpha=true)
+            pipelineLines=make(s,m("lines.vert"),m("lines.frag"),lineInput(s),renderPass,n,layout,true,false,BLEND_KEEP_ALPHA,
+                topology=VK_PRIMITIVE_TOPOLOGY_LINE_LIST,keepAlpha=true)
             shadowPipeline=make(s,m("shadow.vert"),null,sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
             pipelineBright=make(s,m("post.vert"),m("bright.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineDown=make(s,m("post.vert"),m("down.frag"),none,postPass,1,postLayout,false,false,null)
@@ -1076,7 +1102,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         if(hud!==f.hudSent) { upload(f.hud!!,hud.vertices); f.hudSent=hud }
         // Instance rows of every batch, side by side, then the particles.
         val particleCount=extras?.particleCount ?: 0
-        var total=PARTICLE_FLOATS*particleCount
+        val lineVertices=extras?.lineVertexCount ?: 0
+        var total=PARTICLE_FLOATS*particleCount+LINE_FLOATS*lineVertices
         for(b in opaque) total+=12*b.count
         for(b in quiet) total+=12*b.count
         for(b in skies) total+=12*b.count
@@ -1093,6 +1120,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         for(b in waters) put(b)
         val particleStart=at
         if(particleCount>0) MemorySegment.copy(extras!!.particles,0,mapped,JAVA_FLOAT,at,PARTICLE_FLOATS*particleCount)
+        val lineStart=particleStart+4L*PARTICLE_FLOATS*particleCount
+        if(lineVertices>0) MemorySegment.copy(extras!!.lines,0,mapped,JAVA_FLOAT,lineStart,LINE_FLOATS*lineVertices)
         // The main light's square: the map's centre (snapped to its texels) and half side, or 0 for no shadows.
         val main=lighting.mainLight()
         val range=if(shadowSize>1 && lighting.shadows && focus!=null) lighting.shadowRange else 0f
@@ -1183,6 +1212,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,particleStart)
                 dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
                 dev.cmdDraw(command,6,particleCount,0,0)
+            }
+            // Debug lines: faint through the scenery first, then plain where they are seen.
+            if(lineVertices>0) {
+                handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,lineStart)
+                dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLinesXray)
+                dev.cmdDraw(command,lineVertices,1,0,0)
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLines)
+                dev.cmdDraw(command,lineVertices,1,0,0)
             }
             dev.cmdEndRenderPass(command)
             // The glow: the bright parts at half size, down the levels, then up again, each adding the level below.
@@ -1298,7 +1336,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
                 frames.clear()
                 if(queries!=0L) dev.destroyQueryPool(queries)
-                for(p in longArrayOf(pipeline,pipelineSky,pipelineOmbre,pipelineWater,pipelineParticles,pipelineHud,pipelineBright,
+                for(p in longArrayOf(pipeline,pipelineSky,pipelineOmbre,pipelineWater,pipelineParticles,pipelineLines,pipelineLinesXray,pipelineHud,pipelineBright,
                         pipelineDown,pipelineUp,pipelineComposite,shadowPipeline)) dev.destroyPipeline(p)
                 dev.destroyPipelineLayout(layout); dev.destroyPipelineLayout(postLayout)
                 dev.destroyDescriptorPool(descriptorPool); dev.destroyDescriptorSetLayout(setLayout); dev.destroyDescriptorSetLayout(postSetLayout)

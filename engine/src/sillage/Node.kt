@@ -35,6 +35,8 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
     /** Parts of an animated model, each drawn with the node's [matrix] times the part's pose. */
     var parts: List<Part> = emptyList()
+    /** The file a model node came from (for messages and the debug panel). */
+    internal var source: String? = null
         internal set
     /** Plays the model's clips; null when the node is not an animated model. */
     var animator: Animator? = null

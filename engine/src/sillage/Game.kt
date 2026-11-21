@@ -60,6 +60,7 @@ internal class Runtime(private val title: String, private val args: Array<String
   --trace [--trace-every N]    print the player's state
   --animation clip        force the player's clip (captures)
   --hour H                start at hour H (0 to 24, see Lighting.time)
+  --debug physics,free,paused   start with the physics drawn (F5), the free camera (F6), paused (F7)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers""")
@@ -90,6 +91,11 @@ internal class Runtime(private val title: String, private val args: Array<String
         val devOverlay = DevOverlay()
         option("--animation")?.let { scene.forcedPlayerClip = it }
         option("--hour")?.let { scene.lighting.time = it.toFloat() }
+        option("--debug")?.split(',')?.map { it.trim() }?.let { wanted ->
+            for (w in wanted) require(w in setOf("physics", "free", "paused")) { "--debug takes physics, free, paused (got $w)" }
+            scene.debug.showPhysics = "physics" in wanted; scene.debug.paused = "paused" in wanted
+            if ("free" in wanted) scene.debug.freeCamera = true
+        }
         scene.audio = audio
         val rate = audio?.mixer?.rate ?: 48_000
         val block = FloatArray(2 * 512)
@@ -137,7 +143,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                     window.poll()
                     val (dx, dy) = window.consumeMouseDelta().let { it[0] to it[1] }
                     scene.input.mouseDelta = dx to dy
-                    if (dx != 0f || dy != 0f) scene.camera.turn(dx, dy)
+                    if (dx != 0f || dy != 0f) { if (scene.debug.freeCamera) scene.debug.turnFree(dx, dy) else scene.camera.turn(dx, dy) }
                     window.consumeScroll().let { scene.input.wheel = it; if (it != 0f) scene.camera.zoom(it) }
                 }
                 val now = System.nanoTime()
@@ -145,6 +151,8 @@ internal class Runtime(private val title: String, private val args: Array<String
                 val dt = if (smoke || headless) 1f / 60f else ((now - last) / 1e9).toFloat().coerceIn(.0001f, .1f)
                 last = now
                 scene.input.poll()
+                scene.debug.handleKeys(scene.input)    // F5 physics, F6 free camera, F7 pause, F8 one frame
+                if (scene.debug.freeCamera) scene.debug.flyFree(scene.input, dt)
                 window?.clearPresses()                 // a tap between two frames counted once
                 scene.input.mouseCaptured = window?.mouseCaptured ?: false
                 if (window != null && scene.input.pressed(Key.TAB)) window.mouseCaptured = !window.mouseCaptured
@@ -155,8 +163,9 @@ internal class Runtime(private val title: String, private val args: Array<String
                     if (route != null) { val (m, jump, walk) = route.follow(p.position, dt); p.move(m, walk); if (jump) p.jump() }
                     else { if (frame == 40) p.jump(); if (frame in 20..110) p.move(scene.camera.moveDirection(1f, 0f)) }
                 }
-                if (!dev) scene.update(dt)
-                else if (!frozen) try { scene.update(dt) } catch (e: Exception) {
+                val runs = scene.debug.runsThisFrame()
+                if (!dev) { if (runs) scene.update(dt) }
+                else if (!frozen && runs) try { scene.update(dt) } catch (e: Exception) {
                     frozen = true
                     DevLink.error = "THE GAME STOPPED\n" + sillage.dev.DevHost.describe(e)
                     System.err.println("SILLAGE_DEV_ERROR " + sillage.dev.DevHost.describe(e)); e.printStackTrace()
@@ -169,15 +178,18 @@ internal class Runtime(private val title: String, private val args: Array<String
                         " ground=" + p.onGround + " on=" + (p.character.groundMaterial?.name ?: p.character.groundBody?.let { "body " + it.id } ?: "-") + " clip=" + p.animator?.current)
                 }
                 if (headless) mixOffline(dt)
-                val view = scene.camera.view(dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0], it[1], it[2]), Vec3(it[3], it[4], it[5])) } ?: v }
-                val eye = lookAt?.let { Vec3(it[0], it[1], it[2]) } ?: scene.camera.position
+                val free = scene.debug.freeCamera
+                val view = scene.camera.view(dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0], it[1], it[2]), Vec3(it[3], it[4], it[5])) } ?: if (free) scene.debug.freeView() else v }
+                val eye = lookAt?.let { Vec3(it[0], it[1], it[2]) } ?: if (free) scene.debug.freePosition else scene.camera.position
+                val looking = lookAt?.let { (Vec3(it[3], it[4], it[5]) - eye).normalized() } ?: if (free) scene.debug.freeForward() else scene.camera.forward
+                scene.debug.panels(eye, looking)
                 val c = scene.camera
                 val projection = Mat4.perspective(Math.toRadians(c.fov.toDouble()).toFloat(), r.largeur.toFloat() / r.hauteur, c.near, c.far)
                 fpsFrames++; fpsTime += dt
                 if (fpsTime >= .5f) { fps = (fpsFrames / fpsTime).roundToInt(); fpsTime = 0f; fpsFrames = 0; scene.fps = fps }
                 val capture = if (frame == frames - 1 || route?.done == true) screenshot else null
                 r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: true), capture, eye, scene.time,
-                    scene.hiddenNode, lookAt?.let { Vec3(it[3], it[4], it[5]) } ?: scene.camera.focus, scene.lighting, scene.frameExtras(eye))
+                    scene.hiddenNode, lookAt?.let { Vec3(it[3], it[4], it[5]) } ?: if (free) eye + looking * 12f else scene.camera.focus, scene.lighting, scene.frameExtras(eye))
                 frameTimes.add((System.nanoTime() - frameStart) / 1e6)
                 if (r.gpuMs > 0.0) gpuTimes.add(r.gpuMs)
                 if (frame == 0) firstFrame = java.lang.management.ManagementFactory.getRuntimeMXBean().uptime

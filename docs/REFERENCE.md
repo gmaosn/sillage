@@ -59,6 +59,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `nodes`, `players`, `player`, `pickups` | the nodes in creation order; the players; the first player (followed by the camera); the pickups |
 | `physics` | the `PhysicsWorld` underneath |
 | `camera`, `lighting`, `hud`, `input` | see below |
+| `debug` | the debugging tools (F5–F8), see `Debug` below |
 | `audio` | the `Audio` output, null when muted; set it to hear or record a scene run with `step` |
 | `time`, `fps` | seconds since the start; frames per second over the last half second |
 | `fallLimit` | a player below this height (−10) respawns |
@@ -120,6 +121,19 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `remove()` | also removes its lamps and emitters |
 
 `Impact` is the sound a body makes when it hits something: `AUTO` (a wooden knock for boxes, a rubber bounce for balls), `WOOD`, `RUBBER`, `SILENT`.
+
+### `Debug`
+
+What `scene.debug` offers; the keys work in every game while `keys` is true.
+
+| Member | |
+|---|---|
+| `keys` | whether F5 (physics), F6 (free camera), F7 (pause), F8 (one frame) do anything (true) |
+| `showPhysics` | shapes, static meshes near the camera, zones, joints, contacts, speeds drawn over the scene, with the figures' bar and the panel about what is under the cross |
+| `showContacts`, `meshRadius` | contacts drawn with the shapes (true); static meshes within this distance of the camera (25 m) |
+| `freeCamera`, `freeSpeed`, `freePosition`, `freeYaw`, `freePitch` | the free camera (the player waits while it flies), its speed in m/s (6, ×4 with Shift), where it is and looks (degrees) |
+| `paused`, `step()` | the game's time stands still; one frame forward |
+| `describe(eye, direction)` | what a ray meets first, in a few lines (node, place and distance, body, surface, mesh) |
 
 ### `Player`
 

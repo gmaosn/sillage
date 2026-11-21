@@ -46,6 +46,19 @@ Tab captures and frees the mouse, Escape quits. Everything after the game's name
 
 A reload builds the game's first scene again: a game that went elsewhere with `goTo` comes back to its first scene.
 
+### Seeing what the engine does
+
+Every game has these keys (a shipped game may turn them off with `debug.keys = false`):
+
+| Key | |
+|---|---|
+| **F5** | the physics drawn over the scene: the bodies' shapes (static blue-grey, moving orange, asleep brown, kinematic violet), the static meshes within 25 m (`debug.meshRadius`), the trigger zones (green), the joints (magenta), the contact points and their normals (yellow), a white line for the speed of what moves. What the scenery hides shows faintly through it. A bar at the top gives the time of the last physics step, the bodies (and how many are awake), the contacts, the nodes and the frame rate; a cross in the middle of the screen and a panel on the left say what is under it: the node (its name, or the model it came from), where and how far, its body (type, shape, mass, speed, friction, bounce, surface) and its mesh. |
+| **F6** | a free camera: WASD or the arrows, Space up, Ctrl down, Shift four times faster, the mouse turns it. The player waits where it is; F6 again comes back to the game's camera. |
+| **F7** | pause: the game's time stands still, the picture, the free camera and F5 go on. |
+| **F8** | one frame forward (it pauses first if needed). |
+
+The same from code: `debug.showPhysics`, `debug.freeCamera`, `debug.paused`, `debug.step()`; and `debug.describe(eye, direction)` gives the panel's lines for any ray. From the command line, `--debug physics,free,paused` starts that way (handy for captures).
+
 | Option | What it does |
 |---|---|
 | `--headless --frames N --capture shot.png` | runs without a window and saves the last frame |
@@ -60,6 +73,7 @@ A reload builds the game's first scene again: a game that went elsewhere with `g
 | `--export-sounds dir` | writes the engine's synthesised sounds as WAV files |
 | `--export-textures dir` | writes the ready-made textures as PNG files (the pattern, and the pattern on a typical colour) |
 | `--validation` | Vulkan validation layers |
+| `--debug physics,free,paused` | starts with the physics drawn, the free camera, or paused (see below) |
 
 `game` returns a `RunReport` (frames drawn, CPU time per frame, GPU time per frame, time to the first frame, player position), which makes scripted checks easy.
 

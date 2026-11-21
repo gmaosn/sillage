@@ -27,6 +27,7 @@ fun main(args: Array<String>) {
         "son" to { son() },
         "endurance" to { endurance() },
         "performance" to { performance() },
+        "outils" to { outils() },
     )
     val choisis = option("--seulement")?.split(',')?.map { it.trim() } ?: groupes.keys.toList()
     for (g in choisis) require(g in groupes) { "Groupe inconnu « $g » (groupes : ${groupes.keys.joinToString()})" }
@@ -51,7 +52,8 @@ class Qa(val rapide: Boolean, val graine: Long, val refaire: Boolean) {
     private val titres = mapOf("physique" to "Physique : invariants", "collisions" to "Collisions et requêtes : comparées à une référence indépendante",
         "articulations" to "Articulations, véhicules, plateformes, collision continue",
         "personnage" to "Personnage : parcours aléatoires et cas limites", "rendu" to "Rendu 3D", "chargeurs" to "Chargeurs : fichiers abîmés", "api" to "API publique : parties réelles",
-        "son" to "Son : l'île entendue, hors ligne", "endurance" to "Endurance", "performance" to "Performance")
+        "son" to "Son : l'île entendue, hors ligne", "endurance" to "Endurance", "performance" to "Performance",
+        "outils" to "Outils du développeur : débogage, rechargement")
 
     /** Nombre de cas tirés au sort : peu en mode rapide. */
     fun cas(rapide: Int, complet: Int) = if (this.rapide) rapide else complet
