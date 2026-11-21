@@ -52,7 +52,9 @@ Détour demandé le 18 novembre (« animer le personnage, ajouter des détails a
 6. API plus agréable que KorGE : un fichier, 3D sans réglage (caméra, lumière, ciel par défaut), physique en une ligne ; deuxième démo à caisses, tonneaux et ballon. Ajouté par le propriétaire : moteur générique pour d'autres, première personne au choix. **Fait** (voir État).
 7. Passe de performance : mesure du temps réel par image (CPU, GPU), plusieurs images en vol, instancing, zéro allocation par image (JFR), cache AOT, en-têtes compacts, ZGC générationnel, API Vector, essai sur une build Valhalla. **Fait**, phase fine sans allocation comprise (19 novembre, « réécris les collisions »), sauf l'API Vector et l'essai Valhalla (propres au JDK et non à Kotlin : pas sans l'accord du propriétaire, qui a rappelé « pure kotlin »).
 
-## Passe « ergonomie et fonctionnalités » (21 novembre 2026)
+## Passe « ergonomie et fonctionnalités » (21 novembre 2026) — terminée (12dd3db)
+
+À faire par le propriétaire : `./sillage pad` avec la vraie DualSense (USB puis Bluetooth) ; choisir la police de la démo (pixels ou Noto Sans) ; essayer sur le Pi 500 ; effacer, Steam fermé, les fichiers Steam de 07:51 (voir l'incident). Reste ouvert : cellules pour éliminer d'un coup les objets immobiles des très grands mondes (CPU).
 
 Le propriétaire, le 21 novembre, après mes propositions : « Je suis d'accord avec tout, pour la manette, commence par une DualSense de PlayStation 5. Tu peux commencer. N'oublie pas de tout tester. »
 
