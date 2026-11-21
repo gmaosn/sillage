@@ -264,18 +264,59 @@ A game controller as the scene sees it this frame. Button codes: `Pad.SOUTH`, `E
 
 ### `Hud`
 
-Texts and panels over the scene, on a canvas 600 units high whose width follows the window's shape. Each element is placed from an `Anchor` (`TOP_LEFT`, `TOP`, `TOP_RIGHT`, `LEFT`, `CENTER`, `RIGHT`, `BOTTOM_LEFT`, `BOTTOM`, `BOTTOM_RIGHT`), its `x` and `y` measured inwards from it.
+Texts, panels, laid-out boxes, buttons, text fields and menus over the scene, on a canvas 600 units high whose width follows the window's shape. Each element is placed from an `Anchor` (`TOP_LEFT`, `TOP`, `TOP_RIGHT`, `LEFT`, `CENTER`, `RIGHT`, `BOTTOM_LEFT`, `BOTTOM`, `BOTTOM_RIGHT`), its `x` and `y` measured inwards from it. The HUD is rebuilt only when what it shows changes.
 
 | Member | |
 |---|---|
-| `text(value, x, y, size = 2, color = WHITE, anchor = TOP_LEFT, align = AUTO)` | a `Hud.Text`; `value` is a `String` or a `() -> String` evaluated every frame; `size` is the height of a font pixel (a letter is 7 high) |
-| `panel(x, y, width, height, color, anchor = TOP_LEFT, opacity = 1)` | a `Hud.Panel`; below 1 the scene shows through |
+| `text(value, x, y, size = 2, color = WHITE, anchor = TOP_LEFT, align = AUTO, font = null, wrap = 0)` | a `Hud.Text`; `value` is a `String` or a `() -> String` evaluated every frame; `size`: capitals are 7 × size high in every font; `wrap`: width at which lines break |
+| `panel(x, y, width, height, color, anchor = TOP_LEFT, opacity = 1, radius = 0)` | a `Hud.Panel`; below 1 the scene shows through |
+| `column(x = 0, y = 0, anchor = TOP_LEFT, spacing = 8, padding = 0, place = START) { … }`, `row(…, spacing = 10, place = CENTER) { … }` | a `Hud.Layout`: boxes that take the size of their content; the block (`Box.() -> Unit`) adds children |
+| `menu(title = null, pauses = true) { … }` | a `Hud.Menu`, closed until `open()`; the block (`Menu.() -> Unit`) adds buttons and the rest |
+| `pauseMenu` | the menu Escape opens (Resume, Restart, Sound, Quit by default); your own `Menu`, or null for Escape to quit |
+| `pauseMenu(title = "PAUSE", resume = "Resume", restart = "Restart", sound = "Sound: on" to "Sound: off", quit = "Quit")` | makes the standard pause menu with these words (null `restart` or `sound`: no such button) and sets it |
+| `pause()`, `quit()` | opens the pause menu; ends the game at the end of the frame |
+| `paused`, `topMenu`, `usesKeys` | a pausing menu is open; the menu on top; the interface has the keyboard (the scene then sees no key) |
+| `font` | the font of texts that name none (`Font.PIXEL` by default) |
+| `theme` | `panel`, `panelOpacity`, `text`, `accent`, `button`, `buttonHover`, `buttonPressed`, `field`, `radius`, `size`, `titleSize`, `font` |
+| `focusedWidget`, `hoveredWidget`, `pointerX`, `pointerY` | the widget with the focus, the one under the pointer, the pointer in canvas units (NaN: none) |
+| `focus(widget)`, `focusNext()`, `focusPrevious()`, `focusToward(dx, dy)`, `activate()`, `cancel()` | what the keys do, for gamepads and scripts |
+| `source` | where the pointer and typed text come from: null for the window, or a `UiSource` (`UiScript` drives it from code) |
 | `remove(element)`, `clear()` | |
 | `showFps` | a frame counter in the top right corner |
 | `mouseHint`, `hintPanelColor`, `hintTextColor` | the line shown while the mouse is free (null: none) |
-| `Hud.textWidth(text, size)` | width in canvas units |
+| `stats` | `rebuilds`, `glyphs` (rasterised), `atlasUploads`, `atlasSize`: what the HUD has cost so far |
+| `Hud.textWidth(text, size)`, `Hud.clipboard` | width in the pixel font, in canvas units; what Ctrl+C put aside |
 
-Elements (`Hud.Element`) have `x`, `y`, `anchor`, `visible`, `opacity` (0 to 1, for see-through panels and fades); a `Text` also `value`, `size`, `color`, `align` (`AUTO`, `LEFT`, `CENTER`, `RIGHT`); a `Panel` `width`, `height`, `color`. The font has capitals, small letters, digits, punctuation and French accents. The HUD is rebuilt only when what it shows changes.
+Elements (`Hud.Element`) have `x`, `y`, `anchor`, `visible`, `opacity` (0 to 1, for see-through panels and fades). A `Text` also has `value`, `size`, `color`, `align` (`AUTO`, `LEFT`, `CENTER`, `RIGHT`), `font`, `wrap`, `shadow` and `outline` (colours, null: none), `outlineWidth`; a `Panel` `width`, `height`, `color`, `radius`. A `Layout` has its `root` box and the builder functions; a `Menu` also `title` (a `Label`), `pauses`, `onBack` (what Escape does; by default `close()`), `veil` (how dark the scene behind is), `isOpen`, `open()`, `close()`, `toggle()`.
+
+Builders (`UiBuilder`, in a `Box` or a `Menu`): `text(value, size = 2, color = null, font = null, wrap = 0)`, `button(label, size = null) { … }` (the label may be a `() -> String`), `field(placeholder = "", width = 260, size = null) { text -> … }`, `row(spacing, padding, place) { … }`, `column(spacing, padding, place) { … }`, `space(size)`. A null colour, size or font is the theme's.
+
+Widgets (`Widget`): `visible`, `opacity`, `width`, `height` (fixed sizes; 0 fits the content), `left`, `top`, `laidWidth`, `laidHeight` (where the last layout put them), `focusable`, `hovered`, `focused`.
+
+| Widget | |
+|---|---|
+| `Box` | `vertical`, `children`, `spacing`, `padding`, `paddingX`, `paddingY`, `place` (`Place.START`, `CENTER`, `END`, `STRETCH`), `background`, `backgroundOpacity`, `radius`, `border`, `borderWidth`, `shadow`; `add`, `remove`, `clear`, `panel(color, opacity = 1, radius = 10, padding = 14)` |
+| `Label` | `size`, `color`, `font`, `wrap`, `align`, `shadow`, `outline`, `outlineWidth`; `set(text)` |
+| `Button` | `label`, `size`, `enabled`, `onClick` |
+| `TextField` | `text`, `placeholder`, `size`, `maxLength`, `caret`, `selection`, `select(start, end)`, `onChange`, `onSubmit` |
+| `Spacer` | `size` |
+
+`UiSource`: `pointerX()`, `pointerY()` (canvas units, NaN: none), `pointerDown()`, `typed()` (characters since the last call; Ctrl+A, C, V, X as the control characters 1, 3, 22, 24). `UiScript` implements it with `x`, `y`, `down`, `pointAt(x, y)`, `type(text)`.
+
+### `Font`
+
+| Member | |
+|---|---|
+| `Font.PIXEL` | the engine's 5 × 7 pixel font |
+| `Font.find(family, bold = false, italic = false)` | the installed face of that family closest to the weight and slant, or null |
+| `Font.sans(bold, italic)`, `Font.serif(…)`, `Font.mono(…)` | a family found on the computer, or `Font.PIXEL` |
+| `Font.load(path, index = 0)` | a font file (.ttf, .otf, .ttc and its `index`-th face) |
+| `Font.families()` | the families installed that the engine reads |
+| `family`, `style`, `weight`, `bold`, `italic`, `path`, `index`, `isPixel` | |
+| `fallbacks` | fonts tried in turn for characters this one lacks (wide-coverage families by default), before an empty box |
+| `has(char)`, `width(text, size)` | whether it draws a code point; a line's width in canvas units, kerned |
+
+TrueType (`glyf`, composite glyphs), OpenType CFF (name- or CID-keyed) and collections are read; variable fonts give their default instance; CFF2 fonts are not read. Kerning comes from GPOS pair adjustment or the `kern` table; there is no complex shaping.
 
 ### `Lighting`
 

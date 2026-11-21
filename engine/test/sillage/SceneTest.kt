@@ -146,7 +146,7 @@ class SceneTest {
         val c = s.hud.mesh(1.6f, 60, true)
         assertNotSame(a, c); assertTrue(c.triangleCount > 0)
         // Minuscules et accents ont leurs glyphes.
-        for (ch in "aàéèçôù!?") assertNotNull(Font.glyph(ch), "glyphe $ch")
+        for (ch in "aàéèçôù!?") assertNotNull(PixelFont.glyph(ch), "glyphe $ch")
     }
 
     // ------------------------------------------------------------------ the demo island

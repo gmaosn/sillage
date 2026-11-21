@@ -32,6 +32,16 @@ internal interface Window : SurfaceSource, AutoCloseable {
     fun consumeScroll(): Float
     /** True once after the drawable size changed. */
     fun consumeResize(): Boolean
+
+    /** Pointer position in pixels of the drawable, NaN when it is outside the window. */
+    val pointerX: Float
+    val pointerY: Float
+    /** True while the left button is held, or if it went down since the last call (a click shorter than a frame still counts). */
+    fun buttonDown(): Boolean
+    /** Characters typed since the last call, through the keyboard layout (see [KeyboardText]). */
+    fun consumeText(): String
+    /** When true (the default), a left click in the window captures the mouse; the interface turns it off over its widgets and menus. */
+    var clickCaptures: Boolean
 }
 
 /**

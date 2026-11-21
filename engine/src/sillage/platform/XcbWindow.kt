@@ -47,7 +47,8 @@ internal object Xcb {
     @JvmField val ROOTS: MethodHandle = PSig.linker.downcallHandle(FunctionDescriptor.of(
         MemoryLayout.structLayout(ADDRESS.withName("data"), JAVA_INT.withName("rem"), JAVA_INT.withName("index")), ADDRESS))
 
-    const val KEY_PRESS = 2; const val KEY_RELEASE = 3; const val BUTTON_PRESS = 4; const val MOTION_NOTIFY = 6
+    const val KEY_PRESS = 2; const val KEY_RELEASE = 3; const val BUTTON_PRESS = 4; const val BUTTON_RELEASE = 5; const val MOTION_NOTIFY = 6
+    const val LEAVE_NOTIFY = 8
     const val FOCUS_IN = 9; const val FOCUS_OUT = 10; const val CONFIGURE_NOTIFY = 22; const val CLIENT_MESSAGE = 33
 }
 
@@ -68,6 +69,11 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     private var resized = false
     private val keys = BooleanArray(KEY_COUNT)
     private val pressed = BooleanArray(KEY_COUNT)          // went down since the game last looked
+    private val text = KeyboardText().also { it.repeats = false }   // le serveur X répète les touches lui-même
+    private var leftDown = false; private var leftPressed = false
+    override var pointerX = Float.NaN; private set
+    override var pointerY = Float.NaN; private set
+    override var clickCaptures = true
 
     override var shouldClose = false; private set
     // Sans gestionnaire de fenêtres (Xvfb), aucun FocusIn n'arrive : la fenêtre est réputée active.
@@ -89,7 +95,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
             val screen = iterator.get(ADDRESS, 0).reinterpret(40)
             val root = screen.get(JAVA_INT, 0); val visual = screen.get(JAVA_INT, 32)
             window = PSig.I_P.invokeExact(Xcb.generateId, conn) as Int
-            val mask = 0x1 or 0x2 or 0x4 or 0x8 or 0x40 or 0x20000 or 0x200000 // touches, boutons, mouvement, structure, focus
+            val mask = 0x1 or 0x2 or 0x4 or 0x8 or 0x20 or 0x40 or 0x20000 or 0x200000 // touches, boutons, sortie, mouvement, structure, focus
             stack.frame { s ->
                 (PSig.I_PBIISSSSSSIIP.invokeExact(Xcb.createWindow, conn, 0.toByte(), window, root, 0.toShort(), 0.toShort(),
                     width.toShort(), height.toShort(), 0.toShort(), 1.toShort(), visual, 0x800 /* CW_EVENT_MASK */, s.ints(mask)) as Int)
@@ -100,6 +106,9 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
                 (PSig.I_PBIIIBIP.invokeExact(Xcb.changeProperty, conn, 0.toByte(), window, protocols, 4 /* ATOM */, 32.toByte(), 1, s.ints(wmDelete)) as Int)
             }
             writeTitle(title)
+            // La disposition du clavier pour le texte tapé : celle du serveur X, sinon celle par défaut.
+            if (!text.keymapX11(conn)) text.keymapNames()
+            println("SILLAGE_CLAVIER " + text.origin)
             (PSig.I_PI.invokeExact(Xcb.mapWindow, conn, window) as Int)
             flush()
         } catch (t: Throwable) { PSig.V_P.invokeExact(Xcb.disconnect, conn); arena.close(); throw t }
@@ -166,21 +175,25 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
                         if (code in 0 until KEY_COUNT) {
                             val down = (ev.get(JAVA_BYTE, 0).toInt() and 0x7f) == Xcb.KEY_PRESS
                             keys[code] = down; if (down) pressed[code] = true
+                            text.key(code, down, System.nanoTime(), tracksModifiers = true)
                         }
                     }
                     Xcb.BUTTON_PRESS -> when (ev.get(JAVA_BYTE, 1).toInt() and 0xff) {
-                        1 -> if (!mouseCaptured) mouseCaptured = true
+                        1 -> { leftDown = true; leftPressed = true; if (!mouseCaptured && clickCaptures) mouseCaptured = true }
                         4 -> scroll += 1f
                         5 -> scroll -= 1f
                     }
-                    Xcb.MOTION_NOTIFY -> if (mouseCaptured && focused) {
+                    Xcb.BUTTON_RELEASE -> if ((ev.get(JAVA_BYTE, 1).toInt() and 0xff) == 1) leftDown = false
+                    Xcb.LEAVE_NOTIFY -> { pointerX = Float.NaN; pointerY = Float.NaN }
+                    Xcb.MOTION_NOTIFY -> if (!mouseCaptured) { pointerX = ev.get(JAVA_SHORT, 24).toFloat(); pointerY = ev.get(JAVA_SHORT, 26).toFloat() }
+                    else if (focused) {
                         val dx = ev.get(JAVA_SHORT, 24) - width / 2; val dy = ev.get(JAVA_SHORT, 26) - height / 2
                         if (skipMotion) skipMotion = false
                         else if (dx != 0 || dy != 0) { mouseDx += dx; mouseDy += dy }
                         if (dx != 0 || dy != 0) warp = true
                     }
                     Xcb.FOCUS_IN -> focused = true
-                    Xcb.FOCUS_OUT -> { focused = false; keys.fill(false); pressed.fill(false) }
+                    Xcb.FOCUS_OUT -> { focused = false; keys.fill(false); pressed.fill(false); text.reset() }
                     Xcb.CONFIGURE_NOTIFY -> {
                         val w = ev.get(JAVA_SHORT, 20).toInt() and 0xffff; val h = ev.get(JAVA_SHORT, 22).toInt() and 0xffff
                         if (w != width || h != height) { width = w; height = h; resized = true }
@@ -203,12 +216,15 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     override fun consumeMouseDelta(): FloatArray { val d = floatArrayOf(mouseDx, mouseDy); mouseDx = 0f; mouseDy = 0f; return d }
     override fun consumeScroll(): Float { val s = scroll; scroll = 0f; return s }
     override fun consumeResize(): Boolean { val r = resized; resized = false; return r }
+    override fun buttonDown(): Boolean { val d = leftDown || leftPressed; leftPressed = false; return d }
+    override fun consumeText(): String = text.take()
 
     private fun flush() { (PSig.I_P.invokeExact(Xcb.flush, conn) as Int) }
 
     override fun close() {
         runCatching { (PSig.I_PI.invokeExact(Xcb.destroyWindow, conn, window) as Int); flush() }
         PSig.V_P.invokeExact(Xcb.disconnect, conn)
+        text.close()
         arena.close()
     }
 }

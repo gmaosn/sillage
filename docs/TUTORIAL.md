@@ -34,7 +34,7 @@ Start it, and leave it running:
 ./sillage dev stargarden
 ```
 
-A window opens on an empty sky. Escape quits. `game` opens the window, runs the loop and gives you a `Scene` to fill: everything inside the braces is a call on that scene. Each time you save `Main.kt`, the game is compiled again and the new scene appears in about a second, the player where it stood: add the steps one by one and watch the garden grow. A mistake shows at the top of the window until the next save fixes it. (`./sillage run stargarden` plays it without reloading.)
+A window opens on an empty sky. Escape opens the pause menu, where Quit ends the game. `game` opens the window, runs the loop and gives you a `Scene` to fill: everything inside the braces is a call on that scene. Each time you save `Main.kt`, the game is compiled again and the new scene appears in about a second, the player where it stood: add the steps one by one and watch the garden grow. A mistake shows at the top of the window until the next save fixes it. (`./sillage run stargarden` plays it without reloading.)
 
 ## 1. A world
 

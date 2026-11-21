@@ -4,7 +4,7 @@ This page is for those who read or change the engine itself. To make games, star
 
 ## Principles
 
-- **Kotlin and nothing else.** No third-party library in the engine or the games (the toolchain brings its own test runner). The engine talks to the system's C libraries (`libvulkan`, `libwayland-client`, `libxcb`, `libasound`, `libc`) through the JDK's Foreign Function & Memory API (`java.lang.foreign`). Within the JDK it uses only the runtime basics: atomics, thread parking, FFM. Assets come from files or from code: models are glTF files made by `tools/create_assets.py`, and sounds are synthesised.
+- **Kotlin and nothing else.** No third-party library in the engine or the games (the toolchain brings its own test runner). The engine talks to the system's C libraries (`libvulkan`, `libwayland-client`, `libxcb`, `libasound`, `libc`; `libxkbcommon` for typed text, optional: without it a US table) through the JDK's Foreign Function & Memory API (`java.lang.foreign`). Within the JDK it uses only the runtime basics: atomics, thread parking, FFM. Assets come from files or from code: models are glTF files made by `tools/create_assets.py`, and sounds are synthesised.
 - **Built with the Kotlin Toolchain** (`./kotlin`), on JDK 25, which the toolchain provides. No Gradle. The `./sillage` script (new, run, dev, test, qa, package) calls the toolchain only to compile, and only when a file changed, then starts the JVM itself on the compiled classes: a run with nothing to build takes under a second instead of nine.
 - **Deterministic physics.** The same inputs give the same bits, whatever the number of threads. Fingerprint tests guard this.
 - **No garbage in hot loops.** The physics step, collision tests, queries, the mixer and frame recording work on arrays and plain numbers. The public types (`Vec3`, `Quat`, `Mat4`, `Color`, `Body`…) are immutable values marked `@ValueCandidate`, ready to become value classes with Valhalla.
@@ -41,7 +41,12 @@ engine/src/sillage/
   SceneSounds.kt     the sounds a scene makes by itself (steps, impacts, scraping)
   VulkanRenderer.kt  the renderer
   vk/                Vulkan through FFM: loader and call handles, C struct layouts, constants
-  platform/          windows: Wayland, X11 (XCB), key codes
+  platform/          windows: Wayland, X11 (XCB), key codes; Xkb.kt (characters from the keyboard's layout, libxkbcommon);
+                     gamepads: hidraw (DualSense reports, calibration, outputs), evdev (generic pads, rumble), inotify hot-plug
+  Pad.kt PadHub.kt PadSource.kt PadScript.kt Action.kt   pads as the game sees them, slots, virtual and scripted pads, actions
+  Hud.kt UiLayout.kt UiFont.kt ui/   the HUD: texts in the pixel font or system fonts (glyph atlas), layout, buttons, menus, fields
+  io/Ttf.kt io/Cff.kt io/FontRaster.kt   TrueType and CFF outlines, exact-coverage rasteriser
+  ModelHelpers.kt    Blender's helper objects (col_…, spawn, lamps, zone_…, pickup_…, dynamic) placed at the first frame
   physics/           the physics engine
   audio/             sounds, synthesis, the mixer, ALSA output
   math/ io/          Vec3, Quat, Mat4; JSON, PNG, JPEG; Assets (where models, images and sounds are found)

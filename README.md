@@ -28,7 +28,10 @@ That is a whole game: a window, a sky, a sun, a lawn, a crate and a ball that ob
 - **Sound**: its own mixer (48 voices, sounds placed in space, Doppler effect, reverberation with presets and zones), its own Ogg Vorbis decoder (the same as libvorbis to 3·10⁻⁷), ALSA output. The engine's own sounds are synthesised: footsteps per surface, jumps, landings, impacts, waves, gulls.
 - **Blender as the editor**: objects named `col_…` become collision volumes, an empty `spawn` the player's start, Blender's lights lamps; custom properties make an object move (`sillage = dynamic`), a zone or a pickup the game finds by name.
 - **Models**: glTF binary files as Blender exports them: hierarchies, node animations, skins (characters bent by a skeleton), images painted on the model (PNG and JPEG read by the engine's own decoders, alpha cut-outs). Material names in Blender set the surface (grass, sand, wood, stone, road, ice) and the detail texture.
-- **Games**: a scene API in one file. Builders, physics in one call, players, pickups, zones, timers, a HUD with a built-in pixel font, several scenes, and runs without a window for tests.
+- **Games**: a scene API in one file. Builders, physics in one call, players, pickups, zones, timers, scripts and tweens, several scenes, and runs without a window for tests.
+- **Interface**: a HUD with a built-in pixel font or the system's fonts (TrueType and OpenType read and rasterised by the engine), rows and columns that size themselves, buttons, menus and a built-in pause menu, text fields fed by the keyboard's real layout (libxkbcommon).
+- **Gamepads**: the PlayStation 5 DualSense in full (sticks, analog triggers, gyroscope, accelerometer, touchpad, battery, lightbar, player lights, rumble, adaptive triggers; USB and Bluetooth) and other pads through evdev; hot-plugging, rebindable actions, the player and the camera on the sticks, menus on the d-pad.
+- **Tools**: `./sillage dev` reloads a game while it runs; F5–F8 show the physics, fly a free camera, pause and step.
 
 No third-party library: the engine depends on the Kotlin standard library and on the system's own C libraries (Vulkan, Wayland, XCB, ALSA, libc).
 
@@ -50,7 +53,7 @@ The `./sillage` command at the root drives everything (it uses the Kotlin Toolch
 ./sillage test                # the engine's tests
 ```
 
-Tab captures and frees the mouse, Escape quits. In the playground, B drops 400 crates. On the island, find the six shells; the day goes by in ten minutes, T makes the hours run.
+Tab captures and frees the mouse, Escape opens the pause menu. In the playground, B drops 400 crates. On the island, find the six shells; the day goes by in ten minutes, T makes the hours run.
 
 | | |
 |---|---|

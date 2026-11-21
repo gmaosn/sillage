@@ -64,7 +64,7 @@ class Input internal constructor() {
     fun pressed(key: Int): Boolean = when (key) {
         Key.SHIFT -> pressed(Key.LEFT_SHIFT) || pressed(Key.RIGHT_SHIFT)
         in 0 until 256 -> now[key] && !was[key]
-        else -> Pad.isButton(key) && hub.anyPressed(key)
+        else -> Pad.isButton(key) && swallowed != frame && hub.anyPressed(key)
     }
 
     /** True on the frame [key] was let go. */
@@ -85,12 +85,17 @@ class Input internal constructor() {
         code == Key.SHIFT -> was[Key.LEFT_SHIFT] || was[Key.RIGHT_SHIFT]
         code in 0 until 256 -> was[code]
         !Pad.isButton(code) -> false
+        swallowed == frame -> true
         slot >= 0 -> hub.at(slot)?.let { it.was and (1 shl (code - Pad.BUTTON_BASE)) != 0 } ?: false
         else -> hub.anyWasDown(code)
     }
 
     internal fun pressed(code: Int, slot: Int): Boolean =
-        if (slot >= 0 && Pad.isButton(code)) hub.at(slot)?.pressed(code) ?: false else pressed(code)
+        if (slot >= 0 && Pad.isButton(code)) swallowed != frame && (hub.at(slot)?.pressed(code) ?: false) else pressed(code)
+
+    /** The frame whose pad presses the interface took (a cross that closed the pause menu must not also jump). */
+    private var swallowed = -1L
+    internal fun swallowPadPresses() { swallowed = frame }
 
     /** 0..1 for one input: a trigger's pull, else 1 while held. */
     internal fun value(code: Int, slot: Int): Float {

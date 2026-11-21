@@ -29,8 +29,8 @@ private class Times {
 }
 
 /**
- * Opens a window and plays the scene built by [setup] until the window closes (or Escape). Tab
- * captures and frees the mouse. [args] are the program's arguments; `--help` lists the options
+ * Opens a window and plays the scene built by [setup] until the window closes (or Quit in the pause menu
+ * that Escape opens, see [Hud.pauseMenu]). Tab captures and frees the mouse. [args] are the program's arguments; `--help` lists the options
  * (running without a window, captures, recordings…).
  */
 fun game(title: String = "Sillage", args: Array<String> = emptyArray(), setup: Scene.() -> Unit): RunReport {
@@ -138,7 +138,6 @@ internal class Runtime(private val title: String, private val args: Array<String
             while (frame < frames && (window == null || !window.shouldClose) && route?.done != true && DevLink.quitCode == null) {
                 if (window != null) {
                     window.poll()
-                    if (window.isDown(Key.ESCAPE)) break
                     if (window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
                     // Paused without focus, but never before the first frame: under Wayland the window only exists after it.
                     if (!window.focused && !smoke && frame > 0) { window.waitEvents(.05); last = System.nanoTime(); continue }
@@ -161,8 +160,12 @@ internal class Runtime(private val title: String, private val args: Array<String
                 scene.debug.handleKeys(scene.input)    // F5 physics, F6 free camera, F7 pause, F8 one frame
                 if (scene.debug.freeCamera) scene.debug.flyFree(scene.input, dt)
                 window?.clearPresses()                 // a tap between two frames counted once
+                // The interface: menus, buttons and fields get the pointer, the keys and the text typed; Escape
+                // opens the pause menu, which stops the game's time and frees the mouse.
+                scene.hud.interact(scene, dt, r.largeur, r.hauteur, window)
+                if (scene.hud.quitting) break
                 scene.input.mouseCaptured = window?.mouseCaptured ?: false
-                if (window != null && scene.input.pressed(Key.TAB)) window.mouseCaptured = !window.mouseCaptured
+                if (window != null && scene.input.pressed(Key.TAB) && !scene.hud.usesKeys) window.mouseCaptured = !window.mouseCaptured
                 // Scripted drivers for checks and recordings.
                 val p = scene.player
                 if (p != null && (route != null || smoke)) {
@@ -170,7 +173,8 @@ internal class Runtime(private val title: String, private val args: Array<String
                     if (route != null) { val (m, jump, walk) = route.follow(p.position, dt); p.move(m, walk); if (jump) p.jump() }
                     else { if (frame == 40) p.jump(); if (frame in 20..110) p.move(scene.camera.moveDirection(1f, 0f)) }
                 }
-                val runs = scene.debug.runsThisFrame()
+                // The pause menu stops the game; the debugging pause (F7) too, but F8 lets one frame through.
+                val runs = !scene.hud.paused && scene.debug.runsThisFrame()
                 if (!dev) { if (runs) scene.update(dt) }
                 else if (!frozen && runs) try { scene.update(dt) } catch (e: Exception) {
                     frozen = true

@@ -33,7 +33,7 @@ A game is a module of the project whose `module.yaml` depends on `//engine`. The
 ./sillage games               # the games of the project
 ```
 
-Tab captures and frees the mouse, Escape quits. Everything after the game's name goes to the game (`./sillage run garden --headless --capture shot.png`); it reaches the engine through `game(title, args)`, and `--help` lists the options. `SILLAGE_JAVA_OPTIONS` adds options for the JVM.
+Tab captures and frees the mouse, Escape opens the pause menu (Quit ends the game). Everything after the game's name goes to the game (`./sillage run garden --headless --capture shot.png`); it reaches the engine through `game(title, args)`, and `--help` lists the options. `SILLAGE_JAVA_OPTIONS` adds options for the JVM.
 
 ### Changing a game while it runs
 
@@ -295,18 +295,76 @@ repeat(60) { s.step(1f / 60f) }
 
 ## The interface
 
-`hud` draws text and panels over the scene with a built-in pixel font (capitals, lowercase, digits, punctuation and French accents). The canvas is 600 units high and as wide as the window's shape (960 for 16:10), so a layout keeps its proportions; anchors keep elements in their corner on any window.
+`hud` draws over the scene: texts, panels, boxes laid out by themselves, buttons, text fields and menus. The canvas is 600 units high and as wide as the window's shape (960 for 16:10), so a layout keeps its proportions; anchors keep elements in their corner on any window. The interface is rebuilt only when what it shows changes, and a still interface costs nothing per frame.
 
 ```kotlin
 var score = 0
-hud.panel(24, 24, 250, 60, Color.hex(0x153D48))
-hud.text({ "Score $score" }, 42, 40, 3)                          // re-evaluated when it changes
+hud.text({ "Score $score" }, 24, 24, 3)                          // re-evaluated every frame, redrawn when it changes
 hud.text("Press R to restart", 24, 24, 1.5, anchor = Hud.Anchor.BOTTOM_RIGHT)
 val banner = hud.text("YOU WIN", 0, 0, 4, Color.YELLOW, Hud.Anchor.CENTER)
 banner.visible = false
 ```
 
-Every element has an `opacity` (1 by default): `hud.panel(…, opacity = .7)` lets the game show through a panel, and changing a text's opacity frame by frame fades it in or out. The interface is rebuilt only when what it shows changes. `hud.showFps` adds a frame counter; `hud.mouseHint` is the line shown while the mouse is free (`null` hides it).
+### Fonts
+
+Texts use the engine's pixel font unless told otherwise: capitals, small letters, digits, punctuation and French accents, in the engine's own look. Any font installed on the computer can be used instead — TrueType, OpenType (CFF outlines too) or a collection — read and rasterised by the engine itself; fonts are never downloaded nor shipped with a game.
+
+```kotlin
+hud.font = Font.sans()                                   // every text: a sans-serif family found on the computer
+val title = Font.find("Noto Serif", bold = true) ?: Font.serif(bold = true)
+hud.text("Les Alizés", 0, 40, 5, Color.YELLOW, Hud.Anchor.TOP, font = title)
+```
+
+`Font.find(family, bold, italic)` returns the installed face of that family closest to the weight and slant asked, or null; `Font.sans()`, `Font.serif()` and `Font.mono()` pick a family that is there (Noto, Source, DejaVu, Liberation…) and fall back to the pixel font, so a game never breaks. `Font.load(path)` reads a file. The fonts are found without fontconfig, in `~/.local/share/fonts`, `~/.fonts` and the `fonts` folders of the system's data directories; `Font.families()` lists them. A character a font lacks is taken from its `fallbacks` (wide-coverage families found on the system), then drawn as an empty box. There is no complex shaping (one character, one glyph), but pairs are kerned.
+
+A text's `size` is its scale in every font: capitals are 7 × size units high, as in the pixel font, so changing fonts moves nothing. Texts break at `'\n'` and, with `wrap = width`, between words. `shadow` (a colour) adds a soft copy below and to the right, `outline` a ring around each letter: both keep a text readable over a bright sky. Glyphs are rasterised once per size into an atlas and drawn at whole pixels, sharp at any scale of the screen.
+
+Every element has an `opacity` (1 by default): `hud.panel(…, opacity = .7)` lets the game show through a panel, and changing a text's opacity frame by frame fades it in or out. `hud.showFps` adds a frame counter; `hud.mouseHint` is the line shown while the mouse is free (`null` hides it).
+
+### Layout
+
+`hud.column` and `hud.row` place boxes from an anchor like any element; they take the size of what they hold, so there are no widths to type by hand.
+
+```kotlin
+val counter = hud.column(24, 24, Hud.Anchor.TOP_RIGHT, spacing = 10, place = Place.END) {
+    panel(Color.hex(0x153D48), opacity = .72, radius = 8)          // a rounded, see-through background
+    text({ "SHELLS ${found} / 6" }, 1.5)
+    row(spacing = 8) { text("TIME", 1.25, Color.YELLOW); text({ clock }, 1.25) }
+}
+counter.opacity = .5                                               // the whole block fades
+```
+
+A `Box` lays its children in a column or a row, `spacing` units apart, `padding` (or `paddingX`, `paddingY`) inside its edge; `place` sets how they sit across it (`START`, `CENTER`, `END`, or `STRETCH` to the box's width). A box with a `background` is a panel: `radius` rounds it, `border` outlines it, `shadow` lifts it off the scene. A widget's `width` and `height` fix its size; after a frame, `left`, `top`, `laidWidth` and `laidHeight` tell where it went.
+
+### Buttons, menus and the pause menu
+
+```kotlin
+val start = hud.menu("MY GAME") {                       // a title screen: closed until opened
+    button("Play") { close() }
+    button("Options") { options.open() }
+    button("Quit") { hud.quit() }
+}
+start.open()
+```
+
+A menu is a panel in the middle of the screen over a veil. While it is open it has the keyboard — arrows move the focus, Tab and Shift+Tab go round, Enter or Space press — and the mouse is free; with `pauses = true` (the default) the game's time and physics stand still. Escape runs its `onBack` (by default it closes). Buttons outside menus work too, with the mouse or once focused. `hud.focusToward(dx, dy)`, `focusNext()`, `focusPrevious()`, `activate()` and `cancel()` are what the keys call, so a gamepad drives the same interface. `button.enabled = false` greys a button out. While the interface has the keyboard (a menu open, a field focused), the game sees no key.
+
+Escape opens the built-in pause menu: Resume, Restart, Sound on and off, Quit. `hud.pauseMenu("PAUSE", "Reprendre", "Recommencer", "Son : oui" to "Son : non", "Quitter")` makes it with other words; `hud.pauseMenu = myMenu` puts your own in its place; `hud.pauseMenu = null` brings back the old behaviour, where Escape quits at once. Runs without a window are not affected.
+
+The look comes from `hud.theme`: `panel`, `text`, `accent` (titles, focus), `button`, `buttonHover`, `buttonPressed`, `field` colours, `radius`, the text `size` of buttons and fields, `titleSize`, and the `font` of laid-out texts (the HUD's font by default).
+
+### Text input
+
+```kotlin
+hud.menu("NEW ISLAND") {
+    text("Its name", 2)
+    field("Type a name…", width = 360) { name -> island = name; close() }   // Enter submits
+}
+```
+
+A text field takes what the player types through the desktop's keyboard layout (libxkbcommon: the compositor's layout under Wayland, the X server's under X11), with dead keys and compose sequences: `^` then `e` gives `ê` on a French keyboard. It has a caret, selection with Shift and the arrows (by word with Ctrl), Home and End, Backspace and Delete, Ctrl+A, Ctrl+C, Ctrl+X and Ctrl+V (a clipboard of the game's own, `Hud.clipboard`), and scrolls when the text is longer than the field. `text`, `select(start, end)`, `maxLength`, `onChange` and `onSubmit` drive it from the game.
+
+The pointer and the text typed come from the window; `hud.source = UiScript()` (or your own `UiSource`) feeds them from code instead, for tests and scripted captures: `script.pointAt(x, y)`, `script.down = true`, `script.type("Été")`.
 
 ## Sound
 

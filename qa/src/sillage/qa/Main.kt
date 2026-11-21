@@ -26,6 +26,7 @@ fun main(args: Array<String>) {
         "api" to { api() },
         "son" to { son() },
         "manette" to { manette() },
+        "interface" to { interfaceUi() },
         "endurance" to { endurance() },
         "performance" to { performance() },
         "outils" to { outils() },
@@ -54,7 +55,8 @@ class Qa(val rapide: Boolean, val graine: Long, val refaire: Boolean) {
     private val titres = mapOf("physique" to "Physique : invariants", "collisions" to "Collisions et requêtes : comparées à une référence indépendante",
         "articulations" to "Articulations, véhicules, plateformes, collision continue",
         "personnage" to "Personnage : parcours aléatoires et cas limites", "rendu" to "Rendu 3D", "chargeurs" to "Chargeurs : fichiers abîmés", "api" to "API publique : parties réelles",
-        "son" to "Son : l'île entendue, hors ligne", "manette" to "Manettes : joueur, caméra, branchements", "endurance" to "Endurance", "performance" to "Performance",
+        "son" to "Son : l'île entendue, hors ligne", "manette" to "Manettes : joueur, caméra, branchements",
+        "interface" to "Interface : polices du système, mise en page, menus, saisie", "endurance" to "Endurance", "performance" to "Performance",
         "outils" to "Outils du développeur : débogage, rechargement",
         "mondes" to "Grands mondes : ce que la caméra ne voit pas")
 
