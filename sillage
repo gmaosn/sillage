@@ -1,0 +1,338 @@
+#!/bin/sh
+# Sillage's own command: make a game, run it, reload it while you change it, ship it.
+#
+#   ./sillage new garden          a new game module garden/
+#   ./sillage run demo            build what changed, then start the game
+#   ./sillage dev demo            start it and reload it each time you save
+#   ./sillage package demo        one AppImage file with the game and its Java runtime
+#
+# It drives the Kotlin Toolchain (./kotlin) for compiling, then starts the JVM itself with the
+# options the engine needs, so that nothing has to be typed by hand.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+artifacts="$root/build/artifacts/CompiledJvmArtifact"
+stamps="$root/build/sillage"
+
+usage() {
+	cat <<'EOF'
+Sillage: make, run and ship games.
+
+  ./sillage new NAME              a new game: NAME/ with a ground, crates, a ball and a player
+  ./sillage run GAME [OPTIONS]    build what changed, then start GAME
+  ./sillage dev GAME [OPTIONS]    start GAME and reload it each time you save (code, models,
+                                  images, sounds), keeping the player and the camera where they are
+  ./sillage test [MODULE]         the tests (of the engine by default)
+  ./sillage qa [OPTIONS]          the quality battery (--rapide, --seulement physique,rendu, ...)
+  ./sillage package GAME          one AppImage file holding GAME and its Java runtime
+  ./sillage games                 the games of this project
+
+OPTIONS are the game's own: ./sillage run GAME --help lists them (--headless, --capture, ...).
+
+Environment:
+  SILLAGE_JAVA_OPTIONS   more options for the JVM (for example -Xmx2g)
+  SILLAGE_SIMD=1         solve large piles of contacts on SIMD lanes (jdk.incubator.vector)
+EOF
+}
+
+die() { echo "sillage: $*" >&2; exit 1; }
+
+# The modules listed in project.yaml.
+modules() { sed -n 's/^ *- *\([A-Za-z0-9_-]*\) *$/\1/p' "$root/project.yaml"; }
+
+# A module's direct dependencies on other modules of the project (the "- //name" lines).
+direct_deps() { sed -n 's|^ *- *//\([A-Za-z0-9_-]*\) *$|\1|p' "$root/$1/module.yaml"; }
+
+# The module and everything it depends on, each once.
+closure() {
+	seen=""
+	todo="$1"
+	while :; do
+		set -- $todo
+		[ $# -eq 0 ] && break
+		m=$1; shift; todo="$*"
+		case " $seen " in *" $m "*) continue ;; esac
+		seen="$seen $m"
+		todo="$todo $(direct_deps "$m")"
+	done
+	echo $seen
+}
+
+main_class() { sed -n 's/^ *mainClass: *\([A-Za-z0-9_.$]*\) *$/\1/p' "$root/$1/module.yaml"; }
+
+is_app() { grep -q '^product: *jvm/app' "$root/$1/module.yaml" 2>/dev/null; }
+
+games() { for m in $(modules); do is_app "$m" && [ "$m" != qa ] && [ "$m" != bench ] && echo "$m"; done; return 0; }
+
+check_game() {
+	[ -n "${1:-}" ] || die "which game? $(games | tr '\n' ' ')"
+	[ -f "$root/$1/module.yaml" ] || die "no module '$1' (games: $(games | tr '\n' ' '))"
+	is_app "$1" || die "'$1' is a library, not a game"
+	[ -n "$(main_class "$1")" ] || die "$1/module.yaml has no mainClass"
+}
+
+# The JDK the toolchain provisioned (the newest 25 or later), else the java on the PATH.
+jdk_home() {
+	d=$(for d in "$root"/.tools/shared/extract.cache/*/jdk-2[5-9]*; do
+		[ -x "$d/bin/java" ] && echo "$(basename "$d") $d"
+	done | sort -V -r | head -n 1 | cut -d' ' -f2-)
+	[ -n "$d" ] && { echo "$d"; return; }
+	j=$(command -v java 2>/dev/null) || die "no JDK: run ./kotlin build once, it downloads one"
+	dirname "$(dirname "$(readlink -f "$j")")"
+}
+
+stdlib_jar() {
+	ls -d "$root"/.tools/shared/.m2.cache/org/jetbrains/kotlin/kotlin-stdlib/*/kotlin-stdlib-[0-9]*.jar 2>/dev/null |
+		grep -v sources | sort -V | tail -n 1
+}
+
+# Compiled classes and resources of a module and its dependencies, then the Kotlin library.
+classpath() {
+	cp=""
+	for m in $(closure "$1"); do
+		for d in "$artifacts/${m}jvm/kotlin-output" "$artifacts/${m}jvm/resources-output"; do
+			[ -d "$d" ] && cp="$cp${cp:+:}$d"
+		done
+	done
+	echo "$cp:$(stdlib_jar)"
+}
+
+# Builds a module (and what it depends on) when one of their files is newer than the last build.
+build() {
+	stamp="$stamps/$1.stamp"
+	if [ -f "$stamp" ] && [ -d "$artifacts/${1}jvm/kotlin-output" ]; then
+		changed=""
+		for m in $(closure "$1"); do
+			for p in "$root/$m/src" "$root/$m/resources" "$root/$m/module.yaml"; do
+				[ -e "$p" ] || continue
+				if [ -n "$(find "$p" -newer "$stamp" -print -quit)" ]; then changed=1; break 2; fi
+			done
+		done
+		[ "$root/project.yaml" -nt "$stamp" ] && changed=1
+		[ -z "$changed" ] && return 0
+	fi
+	mkdir -p "$stamps"
+	touch "$stamp.new"
+	(cd "$root" && ./kotlin build -m "$1") || { rm -f "$stamp.new"; exit 1; }
+	mv "$stamp.new" "$stamp"
+}
+
+java_options() {
+	echo "--enable-native-access=ALL-UNNAMED"
+	[ "${SILLAGE_SIMD:-}" = 1 ] && echo "--add-modules=jdk.incubator.vector"
+	echo "${SILLAGE_JAVA_OPTIONS:-}"
+}
+
+cmd_run() {
+	check_game "${1:-}"; game=$1; shift
+	build "$game"
+	exec "$(jdk_home)/bin/java" $(java_options) -cp "$(classpath "$game")" "$(main_class "$game")" "$@"
+}
+
+cmd_dev() {
+	check_game "${1:-}"; game=$1; shift
+	compiler_jars=""
+	m2="$root/.tools/shared/.m2.cache/org/jetbrains"
+	for j in \
+		"$m2/kotlin/kotlin-compiler-embeddable/*/kotlin-compiler-embeddable-[0-9]*.jar" \
+		"$m2/kotlin/kotlin-stdlib/*/kotlin-stdlib-[0-9]*.jar" \
+		"$m2/kotlin/kotlin-script-runtime/*/kotlin-script-runtime-[0-9]*.jar" \
+		"$m2/kotlin/kotlin-reflect/*/kotlin-reflect-[0-9]*.jar" \
+		"$m2/kotlin/kotlin-daemon-embeddable/*/kotlin-daemon-embeddable-[0-9]*.jar" \
+		"$m2/kotlinx/kotlinx-coroutines-core-jvm/*/kotlinx-coroutines-core-jvm-[0-9]*.jar" \
+		"$m2/annotations/13.0/annotations-13.0.jar"; do
+		f=$(ls -d $j 2>/dev/null | grep -v sources | sort -V | tail -n 1)
+		[ -n "$f" ] || die "the Kotlin compiler is not in .tools (run ./kotlin build once): $j"
+		compiler_jars="$compiler_jars${compiler_jars:+:}$f"
+	done
+	# The engine and the libraries stay loaded; the game's own classes are compiled again and reloaded.
+	# When the engine itself changed, the game stops with code 75: build again and start again.
+	while :; do
+		build "$game"
+		engine_cp=""
+		for m in $(closure "$game"); do
+			[ "$m" = "$game" ] && continue
+			for d in "$artifacts/${m}jvm/kotlin-output" "$artifacts/${m}jvm/resources-output"; do
+				[ -d "$d" ] && engine_cp="$engine_cp${engine_cp:+:}$d"
+			done
+		done
+		engine_cp="$engine_cp:$(stdlib_jar)"
+		set +e
+		"$(jdk_home)/bin/java" $(java_options) --sun-misc-unsafe-memory-access=allow -cp "$engine_cp" sillage.dev.DevKt \
+			--dev-game "$game" \
+			--dev-main "$(main_class "$game")" \
+			--dev-sources "$root/$game/src" \
+			--dev-resources "$root/$game/resources" \
+			--dev-classes "$artifacts/${game}jvm/kotlin-output" \
+			--dev-engine-sources "$(for m in $(closure "$game"); do [ "$m" = "$game" ] || printf '%s:' "$root/$m/src" "$root/$m/resources"; done)" \
+			--dev-compiler "$compiler_jars" \
+			--dev-jdk "$(jdk_home)" \
+			--dev-work "$root/build/dev/$game" \
+			-- "$@"
+		rc=$?
+		set -e
+		[ $rc -eq 75 ] || exit $rc
+		echo "sillage: the engine changed, building it and starting again" >&2
+	done
+}
+
+cmd_new() {
+	name=${1:-}
+	echo "$name" | grep -Eq '^[a-z][a-z0-9]*$' || die "a game's name is lower-case letters and digits, starting with a letter (got '$name')"
+	[ -e "$root/$name" ] && die "$name/ already exists"
+	case " $(modules | tr '\n' ' ') " in *" $name "*) die "project.yaml already lists $name" ;; esac
+	case "$name" in engine|sillage|dev|build|tools|docs) die "'$name' is taken by the engine, choose another name" ;; esac
+	title=$(echo "$name" | sed 's/^./\U&/')
+	mkdir -p "$root/$name/src/$name" "$root/$name/resources/models"
+	cat > "$root/$name/module.yaml" <<EOF
+product: jvm/app
+
+settings:
+  jvm:
+    jdk:
+      version: 25
+    mainClass: $name.MainKt
+
+dependencies:
+  - //engine
+EOF
+	cat > "$root/$name/src/$name/Main.kt" <<EOF
+package $name
+
+import sillage.*
+
+/** $title: a lawn, three crates, a ball and you. Start it with ./sillage dev $name and change it while it runs. */
+fun main(args: Array<String>) { game("$title", args, world) }
+
+val world: Scene.() -> Unit = {
+    ground()
+    for (i in 0 until 3) box(1, at = vec(-2 + 2 * i, .5, -4)).dynamic()   // crates to push
+    sphere(.4, Color.RED, at = vec(2.5, 2, -5)).dynamic(bounce = .6)     // a ball that bounces
+    player(at = vec(0, 0, 2))                                            // WASD, Space, the mouse
+    camera.switchKey = Key.V                                             // V: first person and back
+}
+EOF
+	: > "$root/$name/resources/models/.keep"
+	# The module goes into project.yaml's list, kept in alphabetical order.
+	tmp="$root/project.yaml.new"
+	awk -v new="$name" '
+		/^modules:/ { print; inlist = 1; next }
+		inlist && /^ *- / { sub(/^ *- */, ""); list[++n] = $0; next }
+		inlist { flush(); inlist = 0 }
+		{ print }
+		END { if (inlist) flush() }
+		function flush(   i, j, t) {
+			list[++n] = new
+			for (i = 2; i <= n; i++) for (j = i; j > 1 && list[j - 1] > list[j]; j--) { t = list[j]; list[j] = list[j - 1]; list[j - 1] = t }
+			for (i = 1; i <= n; i++) print "  - " list[i]
+		}' "$root/project.yaml" > "$tmp"
+	mv "$tmp" "$root/project.yaml"
+	echo "New game: $name/src/$name/Main.kt (models go in $name/resources/models)."
+	echo "Start it:  ./sillage dev $name"
+}
+
+cmd_test() {
+	module=${1:-engine}
+	[ $# -gt 0 ] && shift
+	cd "$root" && exec ./kotlin test -m "$module" "$@"
+}
+
+cmd_qa() {
+	build qa
+	exec "$(jdk_home)/bin/java" $(java_options) -Xmx2g -cp "$(classpath qa)" "$(main_class qa)" "$@"
+}
+
+cmd_package() {
+	check_game "${1:-}"; game=$1
+	build "$game"
+	jdk=$(jdk_home)
+	out="$root/build/package/$game"
+	app="$out/$game.AppDir"
+	tools="$root/build/appimage-tools"
+	rm -rf "$out"
+	mkdir -p "$app/usr/lib" "$tools"
+	case $(uname -m) in
+	x86_64) arch=x86_64; tool_sum=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0; runtime_sum=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;;
+	aarch64) arch=aarch64; tool_sum=; runtime_sum=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;;
+	*) die "no AppImage tools for $(uname -m)" ;;
+	esac
+
+	# The game in one jar (the JVM's AOT cache only keeps classes that come from jars), the Kotlin
+	# library beside it.
+	echo "sillage: the game's jar"
+	set --
+	for m in $(closure "$game"); do
+		for d in "$artifacts/${m}jvm/kotlin-output" "$artifacts/${m}jvm/resources-output"; do
+			[ -d "$d" ] && set -- "$@" -C "$d" .
+		done
+	done
+	"$jdk/bin/jar" --create --file "$app/usr/lib/$game.jar" "$@"
+	cp "$(stdlib_jar)" "$app/usr/lib/kotlin-stdlib.jar"
+	cp_rel="usr/lib/$game.jar:usr/lib/kotlin-stdlib.jar"
+
+	# A Java runtime with only the modules the game uses.
+	echo "sillage: a Java runtime for it (jlink)"
+	mods=$("$jdk/bin/jdeps" --multi-release 25 --ignore-missing-deps --print-module-deps \
+		--class-path "$app/usr/lib/kotlin-stdlib.jar" "$app/usr/lib/$game.jar")
+	"$jdk/bin/jlink" --add-modules "$mods" --strip-debug --no-man-pages --no-header-files \
+		--compress=zip-6 --output "$app/usr/runtime"
+
+	# The AOT cache: a run without a window records what the game loads and compiles, so that it
+	# starts faster. The paths are recorded relative to the AppDir, where the game runs from.
+	echo "sillage: training run for the AOT cache (no window, no sound)"
+	main=$(main_class "$game")
+	(cd "$app" && ./usr/runtime/bin/java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=usr/lib/$game.aot \
+		-cp "$cp_rel" "$main" --headless --mute --frames 900 --size 256x256 --capture "$out/icon.png" >"$out/training.log" 2>&1) ||
+		{ cat "$out/training.log" >&2; die "the training run failed (log above)"; }
+
+	cat > "$app/AppRun" <<EOF
+#!/bin/sh
+# Starts $game with its own Java runtime and its AOT cache.
+# The cache was recorded from the AppDir; the JVM finds its jars again wherever the AppImage is
+# mounted, and the game keeps the caller's working directory (for --capture and the like).
+here=\$(dirname "\$(readlink -f "\$0")")
+exec "\$here/usr/runtime/bin/java" --enable-native-access=ALL-UNNAMED -XX:AOTCache="\$here/usr/lib/$game.aot" \\
+	-cp "\$here/usr/lib/$game.jar:\$here/usr/lib/kotlin-stdlib.jar" $main "\$@"
+EOF
+	chmod 755 "$app/AppRun"
+	cat > "$app/$game.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$(echo "$game" | sed 's/^./\U&/')
+Exec=$game
+Icon=$game
+Categories=Game;
+Terminal=false
+EOF
+	cp "$out/icon.png" "$app/$game.png"
+	ln -s "$game.png" "$app/.DirIcon"
+
+	# appimagetool and the type 2 runtime (no libfuse needed), fixed versions, checked, fetched once.
+	if [ ! -f "$tools/appimagetool" ] && [ -f "$HOME/code/odin/aster-odin/build/appimage-tools/appimagetool" ]; then
+		cp "$HOME/code/odin/aster-odin/build/appimage-tools/appimagetool" "$HOME/code/odin/aster-odin/build/appimage-tools/runtime-$arch" "$tools/" 2>/dev/null || true
+	fi
+	[ -f "$tools/appimagetool" ] || curl -fsSL -o "$tools/appimagetool" "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+	[ -f "$tools/runtime-$arch" ] || curl -fsSL -o "$tools/runtime-$arch" "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$arch"
+	{
+		[ -n "$tool_sum" ] && echo "$tool_sum  appimagetool"
+		echo "$runtime_sum  runtime-$arch"
+	} | (cd "$tools" && sha256sum -c --quiet) || die "appimage tools: checksum mismatch in $tools"
+	chmod 755 "$tools/appimagetool"
+	ARCH=$arch "$tools/appimagetool" --no-appstream --runtime-file "$tools/runtime-$arch" "$app" "$out/$game-$arch.AppImage" >"$out/appimagetool.log" 2>&1 ||
+		{ cat "$out/appimagetool.log" >&2; die "appimagetool failed"; }
+	echo "AppImage: $out/$game-$arch.AppImage ($(du -h "$out/$game-$arch.AppImage" | cut -f1))"
+}
+
+command=${1:-help}
+[ $# -gt 0 ] && shift
+case "$command" in
+new) cmd_new "$@" ;;
+run) cmd_run "$@" ;;
+dev) cmd_dev "$@" ;;
+test) cmd_test "$@" ;;
+qa) cmd_qa "$@" ;;
+package) cmd_package "$@" ;;
+games) games ;;
+help|-h|--help) usage ;;
+*) usage >&2; exit 2 ;;
+esac

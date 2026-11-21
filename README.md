@@ -38,13 +38,15 @@ No third-party library: the engine depends on the Kotlin standard library and on
 
 ## Getting started
 
-The project builds with the Kotlin Toolchain through the `./kotlin` script at its root.
+The `./sillage` command at the root drives everything (it uses the Kotlin Toolchain, `./kotlin`, for compiling).
 
 ```
-./kotlin build
-./kotlin run -m playground --jvm-args=--enable-native-access=ALL-UNNAMED     # a playground of shapes
-./kotlin run -m demo --jvm-args=--enable-native-access=ALL-UNNAMED           # the island
-./kotlin test                                                                # the engine's tests
+./sillage run playground      # a playground of shapes
+./sillage run demo            # the island
+./sillage dev demo            # the island, reloaded each time you save a file
+./sillage new mygame          # a game of your own, ready to change
+./sillage package demo        # one AppImage file with the game and its Java runtime
+./sillage test                # the engine's tests
 ```
 
 Tab captures and frees the mouse, Escape quits. In the playground, B drops 400 crates. On the island, find the six shells; the day goes by in ten minutes, T makes the hours run.
@@ -55,7 +57,7 @@ Tab captures and frees the mouse, Escape quits. In the playground, B drops 400 c
 | ![The house under the palms: roof tiles, plaster, stepping stones](docs/images/maison.jpg) | ![The playground: crates of planks, balls, a stone ramp and stars](docs/images/playground.jpg) |
 | ![Sunset over the island: long shadows, warm light, a pink sky](docs/images/coucher.jpg) | ![The island at night: the campfire, the lighthouse lamp, lit windows, stars](docs/images/nuit.jpg) |
 
-A game is a module whose `module.yaml` depends on `//engine`. The [tutorial](docs/TUTORIAL.md) makes one from scratch.
+A game is a module of the project: `./sillage new mygame` makes one, `./sillage dev mygame` plays it and reloads it each time you save (code, models, images, sounds), keeping the player where it is. The [tutorial](docs/TUTORIAL.md) makes one from scratch.
 
 ## Documentation
 

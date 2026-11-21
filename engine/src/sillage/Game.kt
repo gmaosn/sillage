@@ -2,6 +2,8 @@ package sillage
 
 import sillage.audio.Audio
 import sillage.audio.Sound
+import sillage.dev.DevLink
+import sillage.dev.DevOverlay
 import sillage.math.Mat4
 import sillage.math.Vec3
 import sillage.platform.Window
@@ -31,7 +33,11 @@ private class Times {
  * captures and frees the mouse. [args] are the program's arguments; `--help` lists the options
  * (running without a window, captures, recordings…).
  */
-fun game(title: String = "Sillage", args: Array<String> = emptyArray(), setup: Scene.() -> Unit): RunReport = Runtime(title, args, setup).run()
+fun game(title: String = "Sillage", args: Array<String> = emptyArray(), setup: Scene.() -> Unit): RunReport {
+    // Under ./sillage dev, a reloaded game hands its scene to the loop already running.
+    if (DevLink.offer(setup)) return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
+    return Runtime(title, args, setup).run()
+}
 
 internal class Runtime(private val title: String, private val args: Array<String>, private val setup: Scene.() -> Unit) {
     private fun option(flag: String): String? {
@@ -78,6 +84,10 @@ internal class Runtime(private val title: String, private val args: Array<String
             else -> Audio.open(option("--audio-device") ?: "default")
         }
         var scene = Scene().apply(setup)
+        val dev = DevLink.enabled
+        var initial = if (dev) DevLink.Initial(scene) else null
+        var frozen = false                                  // dev: an update failed, the picture waits for a fix
+        val devOverlay = DevOverlay()
         option("--animation")?.let { scene.forcedPlayerClip = it }
         option("--hour")?.let { scene.lighting.time = it.toFloat() }
         scene.audio = audio
@@ -111,7 +121,8 @@ internal class Runtime(private val title: String, private val args: Array<String
             var frame = 0; var fps = 60; var fpsFrames = 0; var fpsTime = 0f
             val start = scene.player?.position ?: Vec3.ZERO
             var highest = start.y; var lowest = start.y; var moved = false
-            while (frame < frames && (window == null || !window.shouldClose) && route?.done != true) {
+            if (dev) DevLink.looping = true
+            while (frame < frames && (window == null || !window.shouldClose) && route?.done != true && DevLink.quitCode == null) {
                 if (window != null) {
                     window.poll()
                     if (window.isDown(Key.ESCAPE)) break
@@ -144,7 +155,13 @@ internal class Runtime(private val title: String, private val args: Array<String
                     if (route != null) { val (m, jump, walk) = route.follow(p.position, dt); p.move(m, walk); if (jump) p.jump() }
                     else { if (frame == 40) p.jump(); if (frame in 20..110) p.move(scene.camera.moveDirection(1f, 0f)) }
                 }
-                scene.update(dt)
+                if (!dev) scene.update(dt)
+                else if (!frozen) try { scene.update(dt) } catch (e: Exception) {
+                    frozen = true
+                    DevLink.error = "THE GAME STOPPED\n" + sillage.dev.DevHost.describe(e)
+                    System.err.println("SILLAGE_DEV_ERROR " + sillage.dev.DevHost.describe(e)); e.printStackTrace()
+                }
+                if (dev) devOverlay.show(scene.hud)
                 if (p != null) {
                     if (p.position.distanceTo(start) > .1f) moved = true
                     highest = max(highest, p.position.y); lowest = min(lowest, p.position.y)
@@ -167,9 +184,8 @@ internal class Runtime(private val title: String, private val args: Array<String
                 frame++
                 if (window != null && frame % 30 == 0) window.title = title
                 // Another scene asked for: build it, free the old meshes on the GPU, keep the window and the sound.
-                scene.next?.let { build ->
+                fun install(fresh: Scene) {
                     audio?.mixer?.stopAll()
-                    val fresh = Scene().apply(build)
                     fresh.input.source = scene.input.source
                     fresh.audio = audio
                     r.oublier()
@@ -177,6 +193,22 @@ internal class Runtime(private val title: String, private val args: Array<String
                         r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting.shadows); renderer = r; r.ouvrir()
                     }
                     scene = fresh
+                }
+                scene.next?.let { build -> install(Scene().apply(build)); if (dev) initial = DevLink.Initial(scene) }
+                // ./sillage dev: a reload brought a new scene; a failure keeps the old one on screen.
+                if (dev) DevLink.take()?.let { build ->
+                    val fresh = try { Scene().apply(build) } catch (e: Exception) {
+                        DevLink.error = "THE SCENE FAILED TO BUILD\n" + sillage.dev.DevHost.describe(e)
+                        System.err.println("SILLAGE_DEV_ERROR " + sillage.dev.DevHost.describe(e)); e.printStackTrace(); null
+                    }
+                    if (fresh != null) {
+                        val freshInitial = DevLink.Initial(fresh)
+                        DevLink.carryOver(scene, initial!!, fresh, freshInitial)
+                        install(fresh); initial = freshInitial
+                        frozen = false; DevLink.error = null; devOverlay.reset()
+                        val ms = if (DevLink.changedAt != 0L) (System.nanoTime() - DevLink.changedAt) / 1_000_000 else -1
+                        println("SILLAGE_DEV_RELOADED " + DevLink.reloadWhat + " in " + ms + " ms, player at " + (scene.player?.position ?: "-"))
+                    }
                 }
             }
             val p = scene.player
@@ -201,6 +233,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             return RunReport(frame, if (sorted.isEmpty()) 0.0 else sorted.average(), sorted.getOrElse((sorted.size * .99).toInt().coerceAtMost(sorted.size - 1)) { 0.0 },
                 sorted.lastOrNull() ?: 0.0, p?.position ?: Vec3.ZERO, gpu, firstFrame)
         } finally {
+            if (dev) DevLink.looping = false
             renderer?.close()
             window?.close()
             audio?.close()

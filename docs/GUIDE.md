@@ -23,13 +23,28 @@ This guide tours the engine by topic. The [tutorial](TUTORIAL.md) builds a first
 
 ## Running
 
-The project builds with the Kotlin Toolchain (`./kotlin`); a game is a module whose `module.yaml` depends on `//engine`.
+A game is a module of the project whose `module.yaml` depends on `//engine`. The `./sillage` command at the project's root makes one, runs it and ships it; it drives the Kotlin Toolchain (`./kotlin`) for compiling, then starts the JVM itself with the options the engine needs.
 
 ```
-./kotlin run -m playground --jvm-args=--enable-native-access=ALL-UNNAMED
+./sillage new garden          # a new game: garden/src/garden/Main.kt, garden/resources/models/
+./sillage run garden          # builds what changed (nothing: under a second), then plays
+./sillage dev garden          # plays, and reloads the game each time you save a file
+./sillage package garden      # build/package/garden/garden-x86_64.AppImage
+./sillage games               # the games of the project
 ```
 
-Tab captures and frees the mouse, Escape quits. The program's arguments reach the engine through `game(title, args)`; `--help` lists them. The useful ones while developing:
+Tab captures and frees the mouse, Escape quits. Everything after the game's name goes to the game (`./sillage run garden --headless --capture shot.png`); it reaches the engine through `game(title, args)`, and `--help` lists the options. `SILLAGE_JAVA_OPTIONS` adds options for the JVM.
+
+### Changing a game while it runs
+
+`./sillage dev GAME` keeps the game on screen while you work on it:
+
+- **Save a Kotlin file of the game**: it is compiled again (about a second: the Kotlin compiler stays warm in the game's JVM) and its scene replaces the one on screen. The player, the camera and the hour stay where they were, unless your change moved the spawn point, the camera's settings or the hour: then the new values win.
+- **Save a model, an image or a sound** in the game's `resources/` folder (from Blender, say): the scene is built again with it, in a fraction of a second. While `dev` runs, files are read from that folder rather than from the build.
+- **A mistake** (a compilation error, an exception while the scene is built or in an `onUpdate`) shows in a panel at the top of the screen; the game waits, and the next save that fixes it carries on. Nothing is lost: the window, the sound and the player stay.
+- **Change the engine itself** (`engine/`): the game stops, the engine is built again and the game starts afresh (a minute or so).
+
+A reload builds the game's first scene again: a game that went elsewhere with `goTo` comes back to its first scene.
 
 | Option | What it does |
 |---|---|
@@ -320,7 +335,7 @@ val s = Scene().apply {
 repeat(120) { s.step(1f / 60f) }
 ```
 
-`step(dt)` reads the keys from `input.source` and advances everything but the drawing. The engine's own tests (`./kotlin test -m engine`) and the quality battery (`./kotlin run -m qa …`) work this way.
+`step(dt)` reads the keys from `input.source` and advances everything but the drawing. The engine's own tests (`./sillage test`) and the quality battery (`./sillage qa`) work this way.
 
 ## Performance
 
@@ -340,17 +355,10 @@ Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo 
 
 ### Shipping a game
 
-`./kotlin package -m mygame -f executable-jar` makes one jar with the engine and the Kotlin library inside. Run it with:
-
 ```
-java --enable-native-access=ALL-UNNAMED -jar mygame-jvm-executable.jar
+./sillage package mygame
 ```
 
-The JDK's AOT cache (JDK 25) makes the start and the first seconds smoother: run the game once to record what it loads and compiles, then ship the cache next to the jar.
+makes `build/package/mygame/mygame-x86_64.AppImage`: one file that holds the game, a Java runtime cut down to the modules the game uses (`jlink`), and an AOT cache. Copy it anywhere and run it; no JDK to install. The cache comes from a training run without a window (900 frames, no sound) made while packaging; on the playground it brings the first frame from about 0.85 to 0.45 s after the start (measured under load). The same run draws the AppImage's icon: a 256 × 256 picture of the game. The AppImage tools (`appimagetool` and the type 2 runtime, which needs no FUSE library) are fetched once at fixed versions and checked against their checksums. The AppImage runs on distributions whose C library is as recent as the one it was packaged on.
 
-```
-java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=mygame.aot -jar mygame-jvm-executable.jar --headless --frames 1200 --mute
-java --enable-native-access=ALL-UNNAMED -XX:AOTCache=mygame.aot -jar mygame-jvm-executable.jar
-```
-
-On the demo island this brings the first frame from about 1.0 to 0.7 s and halves the time of the first frames. The default garbage collector (G1) suits the engine: its pauses are rare once the game runs; ZGC and compact object headers made no measurable difference.
+The options of the game work as usual (`mygame-x86_64.AppImage --mute`), and it keeps the folder it was started from as its working directory.

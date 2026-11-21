@@ -6,22 +6,13 @@ You need the Sillage project (see the [README](../README.md)). A game is a modul
 
 ## 0. A module for the game
 
-Next to `engine/`, make a folder `stargarden/` with a `module.yaml`:
+At the root of the project:
 
-```yaml
-product: jvm/app
-
-settings:
-  jvm:
-    jdk:
-      version: 25
-    mainClass: stargarden.MainKt
-
-dependencies:
-  - //engine
+```
+./sillage new stargarden
 ```
 
-Add `- stargarden` to the `modules` list of `project.yaml`, and create `stargarden/src/stargarden/Main.kt`:
+This makes `stargarden/` (its `module.yaml`, `src/stargarden/Main.kt`, a `resources/models/` folder) and adds it to `project.yaml`. Replace `stargarden/src/stargarden/Main.kt` with:
 
 ```kotlin
 package stargarden
@@ -37,13 +28,13 @@ fun main(args: Array<String>) {
 }
 ```
 
-Run it with:
+Start it, and leave it running:
 
 ```
-./kotlin run -m stargarden --jvm-args=--enable-native-access=ALL-UNNAMED
+./sillage dev stargarden
 ```
 
-A window opens on an empty sky. Escape quits. `game` opens the window, runs the loop and gives you a `Scene` to fill: everything inside the braces is a call on that scene.
+A window opens on an empty sky. Escape quits. `game` opens the window, runs the loop and gives you a `Scene` to fill: everything inside the braces is a call on that scene. Each time you save `Main.kt`, the game is compiled again and the new scene appears in about a second, the player where it stood: add the steps one by one and watch the garden grow. A mistake shows at the top of the window until the next save fixes it. (`./sillage run stargarden` plays it without reloading.)
 
 ## 1. A world
 
@@ -202,7 +193,7 @@ fun main(args: Array<String>) {
 Every game accepts the engine's options. This walks the player to three stars with no window, then saves the last frame:
 
 ```
-./kotlin run -m stargarden --jvm-args=--enable-native-access=ALL-UNNAMED -- \
+./sillage run stargarden \
     --headless --mute --frames 1500 --route "6,0 -4,6 3,-10 p2 5,-10 p6" --capture garden.png
 ```
 

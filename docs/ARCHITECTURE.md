@@ -5,7 +5,7 @@ This page is for those who read or change the engine itself. To make games, star
 ## Principles
 
 - **Kotlin and nothing else.** No third-party library in the engine or the games (the toolchain brings its own test runner). The engine talks to the system's C libraries (`libvulkan`, `libwayland-client`, `libxcb`, `libasound`, `libc`) through the JDK's Foreign Function & Memory API (`java.lang.foreign`). Within the JDK it uses only the runtime basics: atomics, thread parking, FFM. Assets come from files or from code: models are glTF files made by `tools/create_assets.py`, and sounds are synthesised.
-- **Built with the Kotlin Toolchain** (`./kotlin`), on JDK 25, which the toolchain provides. No Gradle.
+- **Built with the Kotlin Toolchain** (`./kotlin`), on JDK 25, which the toolchain provides. No Gradle. The `./sillage` script (new, run, dev, test, qa, package) calls the toolchain only to compile, and only when a file changed, then starts the JVM itself on the compiled classes: a run with nothing to build takes under a second instead of nine.
 - **Deterministic physics.** The same inputs give the same bits, whatever the number of threads. Fingerprint tests guard this.
 - **No garbage in hot loops.** The physics step, collision tests, queries, the mixer and frame recording work on arrays and plain numbers. The public types (`Vec3`, `Quat`, `Mat4`, `Color`, `Body`…) are immutable values marked `@ValueCandidate`, ready to become value classes with Valhalla.
 - **A public API in English**, documented where it is declared (KDoc) and in `docs/`. Many test names and quality-check messages are in French, the authors' language.
@@ -27,6 +27,7 @@ This page is for those who read or change the engine itself. To make games, star
 ```
 engine/src/sillage/
   Game.kt            game(): options, the loop, RunReport
+  dev/               ./sillage dev: the host (watches, compiles, reloads), the link with the loop, the error panel
   Scene.kt           the scene: builders, events, the order of a frame's update
   Node.kt Player.kt Camera.kt Input.kt Hud.kt
   Lighting.kt        light, sky, the hour of the day, wind, the picture's finish
@@ -40,7 +41,7 @@ engine/src/sillage/
   platform/          windows: Wayland, X11 (XCB), key codes
   physics/           the physics engine
   audio/             sounds, synthesis, the mixer, ALSA output
-  math/ io/          Vec3, Quat, Mat4; JSON
+  math/ io/          Vec3, Quat, Mat4; JSON, PNG, JPEG; Assets (where models, images and sounds are found)
 engine/resources/shaders/   scene: toon.vert, toon.frag, water.frag, sky.frag, ombre.frag, particle.vert/.frag, shadow.vert;
                             picture: post.vert, bright.frag, down.frag, up.frag, composite.frag; hud.vert/.frag;
                             shared: frame.glsl, light.glsl, shading.glsl, texture.glsl (+ SPIR-V, tools/shaders.sh)
@@ -102,9 +103,15 @@ The order of floating-point operations is part of the result. In the narrow phas
 | | Command | |
 |---|---|---|
 | Unit tests | `./kotlin test` | maths, JSON, GLB, physics (including realism against textbook formulas, determinism, fingerprints), character, queries, triggers, scene, camera, audio, Wayland tables |
-| Quality battery | `./kotlin run -m qa --jvm-args="--enable-native-access=ALL-UNNAMED -Xmx2g" -- [--rapide] [--seulement group,…]` | 64 checks; report in `build/qa/rapport.md`; speed and allocations against a base recorded on the machine (`qa/reference/performance.txt`), five reference views of the island |
+| Quality battery | `./sillage qa [--rapide] [--seulement group,…]` | 64 checks; report in `build/qa/rapport.md`; speed and allocations against a base recorded on the machine (`qa/reference/performance.txt`), five reference views of the island |
 | Benches | `./kotlin run -m bench -- pile 3000` | |
-| Smoke run | `./kotlin run -m demo --jvm-args=--enable-native-access=ALL-UNNAMED -- --headless --smoke --frames 180 --capture build/smoke.png` | the player walks and jumps; compare the capture with `tools/reference/demo-smoke-180.png` |
+| Smoke run | `./sillage run demo --headless --smoke --frames 180 --capture build/smoke.png` | the player walks and jumps; compare the capture with `tools/reference/demo-smoke-180.png` |
+
+| Dev mode | `tools/essai_dev.sh` (`FENETRE=1` for a real window in an isolated KWin) | a game changed while it runs: code, a compile error, an exception, a model, the engine; the player must stay where it was |
+
+### The dev mode
+
+`./sillage dev` starts `sillage.dev.DevKt` with the engine and the Kotlin library on the class path, and the game's own classes outside it, in a `URLClassLoader` of their own. The Kotlin compiler that the toolchain downloaded (`kotlin-compiler-embeddable`) is loaded in another class loader and called by reflection (`K2JVMCompiler.exec`): nothing in the engine depends on it at compile time, and it is warmed up by one compilation as soon as the game starts. A `WatchService` watches the game's sources and resources and the engine's sources; a burst of events (an editor writing a file in several steps) counts once after 150 ms of quiet. A change of code compiles into `build/dev/GAME/classes-N` and calls the game's `main` again in a new class loader, on a thread of its own; its call to `game()` finds the loop running (`DevLink.offer`) and hands its scene over instead of opening a window. At the end of a frame the loop builds that scene and installs it the way `goTo` does, after `DevLink.carryOver` moved the player, the camera and the hour across, each only if the new code built it the same way as the old (`DevLink.Initial`). A change of resources does the same with the current class loader (`Assets.roots` points at the game's resources folder). A change of the engine ends the loop with code 75, and the script builds and starts again. Exceptions from the game's code (building, updating) are caught only in dev mode: they freeze the picture and show in `DevOverlay`.
 
 Heavy runs are best capped in memory (`systemd-run --user --scope -p MemoryMax=4G …` with `-Xmx2g`). Measure speed on fixed cores (`taskset`) and compare old and new code alternately: a laptop's speed drifts with its load and temperature.
 

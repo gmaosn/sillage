@@ -9,12 +9,16 @@ Choix du propriétaire (18 novembre 2026) : API publique en anglais ; Linux d'ab
 Construire uniquement avec `./kotlin` (Kotlin Toolchain 0.14.0), jamais Gradle. Le JDK 25 du système n'a pas de javac : la toolchain fournit le sien.
 
 ```sh
-./kotlin build
-./kotlin test
-./kotlin run -m demo --jvm-args=--enable-native-access=ALL-UNNAMED -- --headless --smoke --frames 180 --capture build/captures/smoke.png
-./kotlin run -m demo --jvm-args=--enable-native-access=ALL-UNNAMED
-./kotlin run -m playground --jvm-args=--enable-native-access=ALL-UNNAMED
+./sillage run demo                     # construit ce qui a changé (rien : moins d'une seconde), puis joue
+./sillage dev demo                     # joue et recharge à chaque enregistrement (code, modèles, sons ; moteur → redémarrage)
+./sillage run demo --headless --smoke --frames 180 --capture build/captures/smoke.png
+./sillage test                         # tests du moteur (./kotlin test -m engine)
+./sillage qa --rapide                  # contrôle qualité
+./sillage new monjeu ; ./sillage package demo
+./kotlin build                         # la toolchain reste dessous ; jamais Gradle
 ```
+
+Essais du mode dev : `tools/essai_dev.sh` (sans fenêtre) et `FENETRE=1 tools/essai_dev.sh` (vraie fenêtre Wayland dans un KWin isolé, `tools/kwin_isole.sh`, configuration dans build/tmp, jamais ~/.config).
 
 Le moteur est un moteur de jeu générique, pour d'autres que nous (demande du propriétaire, 18 novembre) : rien de propre à l'île dans `engine/`, API publique en anglais documentée. Documentation en anglais (19 novembre, « écris la documentation ») : `README.md` à la racine, `docs/TUTORIAL.md` (un premier jeu en huit étapes, « Star garden »), `docs/GUIDE.md` (tout ce que la scène offre, par thème), `docs/PHYSICS.md` (le moteur physique, seul ou sous une scène), `docs/REFERENCE.md` (toute l'API publique, par paquet), `docs/ARCHITECTURE.md` (comment le moteur est construit, pour qui le modifie). Les exemples ont été compilés et exécutés dans un module temporaire. L'inventaire de l'API publique se refait avec `-Xexplicit-api=warning` ajouté un instant aux `freeCompilerArgs` de `engine/module.yaml` ; les constantes Vulkan sont passées en `internal`. Un jeu = `game("Titre", args) { … }` qui remplit une `Scene`. Deux démos : `demo/` (l'île des Alizés, modèles GLB, en français) et `playground/` (formes seules, en anglais).
 
@@ -67,6 +71,11 @@ Lots (chaque lot : tests unitaires, contrôles `qa`, essai réel sans fenêtre e
 - **F6 Pi 500** : à essayer sur le vrai Pi du propriétaire (jamais tourné).
 
 Organisation : moi sur E1, E2, E3, E5, puis E4 et F4 ; trois agents dans des worktrees (`~/code/kotlin/sillage-agents/…`, branches `physique`, `manette`, `texte`) : formes convexes, corps composés, flottaison, cônes (physique) ; F1 (manette) ; F3 (texte). Toute tâche lourde passe par `tools/lourd.sh` (6 Go sans échange, 3 places pour tout l'ordinateur).
+
+État :
+- **E1 fait** : `./sillage` (new, run, dev, test, qa, package, games) ; `run` sans rien à construire 0,8 s au lieu de 9 s (`./kotlin run` refait les jars) ; `package` : jar unique + runtime jlink (java.base, java.desktop à cause d'ImageIO, java.management à cause de ManagementFactory, jdk.incubator.vector) + cache AOT d'un essai de 900 images sans fenêtre, qui donne aussi l'icône ; AppImage du terrain de jeu 45 Mo, première image 0,85 → 0,45 s, le cache est accepté quel que soit le dossier de montage (substitution du plus long préfixe commun, vérifié par -Xlog:class+path). Outils AppImage repris d'Aster (mêmes versions, mêmes sommes). À faire : écrire les PNG sans ImageIO et la mesure de démarrage sans java.management, pour un runtime plus petit.
+- **E3 fait** : `./sillage dev` ; compilateur Kotlin de la toolchain (kotlin-compiler-embeddable) chargé à part et appelé par réflexion, gardé chaud : rechargement du code en 0,5 à 1,1 s de l'enregistrement à l'écran, ressources 0,16 s ; erreurs (compilation, construction, mise à jour) dans un panneau en haut, le jeu attend ; changement du moteur → code 75 → le script reconstruit et relance. Tests : `DevTest` (5), `tools/essai_dev.sh` sans fenêtre et en fenêtre, tout passe.
+- Mesure : le contrôle « tas de 3 000 caisses » échoue sous la charge actuelle (3 à 4 ms pour une base de 2,2) avec ou sans ces changements (comparé en alternance avec un worktree de 6845ea5, `~/code/kotlin/sillage-agents/base`).
 
 Point de départ (fc09dbb) : 178 tests verts ; `qa --rapide` 78 contrôles, 1 échec déjà là : « portes à butées sous des coups au hasard », gonds 3,8 mm pour un seuil de 3 mm dans la suite complète (2,6 mm quand le groupe tourne seul : les coups au hasard dépendent des groupes d'avant).
 

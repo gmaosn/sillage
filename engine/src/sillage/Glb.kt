@@ -6,7 +6,6 @@ import sillage.math.Quat
 import sillage.math.Vec3
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -14,7 +13,8 @@ import java.nio.file.Path
  * colours, the material names, the base colour textures (PNG or JPEG, in the file, in a data URI or
  * beside it; alpha masks), skins (joints, inverse bind matrices, four weights per vertex) and the node
  * animations (translation, rotation, scale; linear or step). Cubic-spline curves and morph targets are
- * refused with a message that says so. A path is looked up on disk first, then in the classpath resources.
+ * refused with a message that says so. A path is looked up as a file, then in [sillage.io.Assets.roots], then in the
+ * classpath resources.
  */
 object Glb {
     /** The model in its rest pose as one mesh (static scenery). */
@@ -27,9 +27,7 @@ object Glb {
     /** [load] from the bytes of a file. */
     fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }
 
-    private fun bytes(path: String): ByteArray =
-        if (Files.exists(Path.of(path))) Files.readAllBytes(Path.of(path))
-        else Glb::class.java.getResourceAsStream("/" + path)?.use { it.readAllBytes() } ?: error("GLB not found (file or resource): " + path)
+    private fun bytes(path: String): ByteArray = sillage.io.Assets.bytes(path, "GLB")
 
     /** [loadModel] from the bytes of a file; [beside] gives the bytes of a file the GLB names (an image beside it). */
     fun readModel(bytes: ByteArray, beside: (String) -> ByteArray = { throw IllegalArgumentException("GLB: image file « $it » unavailable") }): Model {
