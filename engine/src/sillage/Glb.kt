@@ -48,8 +48,9 @@ object Glb {
             }
         }
         val doc = requireNotNull(json) { "Missing JSON chunk" }
-        val required = doc.arr("extensionsRequired")
-        require(required == null || required.size == 0) { "Unsupported required GLB extensions: " + required }
+        val required = doc.arr("extensionsRequired")?.map { (it as? Json.Str)?.value ?: it.toString() }.orEmpty()
+            .filter { it != "KHR_lights_punctual" }
+        require(required.isEmpty()) { "Unsupported required GLB extensions: " + required }
         val buffers = doc.arr("buffers")
         val buffer: ByteBuffer = if (buffers == null || buffers.size == 0) ByteBuffer.allocate(0) else {
             require(buffers.size == 1 && !buffers.obj(0).has("uri")) { "The GLB must embed its buffer" }
@@ -205,6 +206,19 @@ object Glb {
             require(parents[c] < 0 && c != i) { "Cycle or shared node in the GLB hierarchy" }
             parents[c] = i
         }
+        // Lamps (KHR_lights_punctual, as Blender exports its lights) and custom properties (extras).
+        val lightsJson = doc.obj("extensions")?.obj("KHR_lights_punctual")?.arr("lights")
+        val lights = List(lightsJson?.size ?: 0) { k ->
+            val l = lightsJson!!.obj(k)
+            val c = l.arr("color")?.floats()?.taille(3, "light color") ?: floatArrayOf(1f, 1f, 1f)
+            ModelLight(l.string("type") ?: "point", Color(c[0], c[1], c[2]), l.float("intensity") ?: 1f,
+                l.float("range"), l.string("name"))
+        }
+        fun plain(j: Json): Any? = when (j) {
+            is Json.Str -> j.value; is Json.Num -> j.toDouble(); is Json.Bool -> j.value; is Json.Null -> null
+            is Json.Arr -> j.items.map { plain(it) }; is Json.Obj -> j.fields.mapValues { plain(it.value) }
+            else -> j.toString()
+        }
         val meshCache = HashMap<Int, Triple<FloatArray, FloatArray, FloatArray>>()
         val nodes = List(nodesJson.size) { i ->
             val node = nodesJson.obj(i)
@@ -221,6 +235,9 @@ object Glb {
                 uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).second } ?: FloatArray(0),
                 skin = node.int("skin")?.also { require(it in 0 until (doc.arr("skins")?.size ?: 0)) { "GLB: node $i uses a missing skin" } } ?: -1,
                 skinWeights = node.int("mesh")?.let { m -> meshCache.getValue(m).third } ?: FloatArray(0),
+                properties = node.obj("extras")?.fields?.mapValues { plain(it.value) } ?: emptyMap(),
+                light = node.obj("extensions")?.obj("KHR_lights_punctual")?.int("light")?.let { k ->
+                    require(k in lights.indices) { "GLB: node $i uses a missing light $k" }; lights[k] },
             )
         }
         val scenes = doc.arr("scenes")

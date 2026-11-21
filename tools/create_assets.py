@@ -174,9 +174,14 @@ def turn_keys(duration, turns, sign=1, per_turn=8):
 class Asset:
     def __init__(self): self.nodes = []; self.anims = {}
 
-    def node(self, name, mesh=None, parent=None, t=(0, 0, 0), r=(0, 0, 0, 1), s=(1, 1, 1)):
-        self.nodes.append({'name': name, 'mesh': mesh, 'parent': parent, 't': t, 'r': r, 's': s})
+    def node(self, name, mesh=None, parent=None, t=(0, 0, 0), r=(0, 0, 0, 1), s=(1, 1, 1), extras=None, light=None):
+        """Un nœud ; extras : propriétés personnalisées (comme celles de Blender) ; light : une lampe KHR_lights_punctual."""
+        self.nodes.append({'name': name, 'mesh': mesh, 'parent': parent, 't': t, 'r': r, 's': s, 'extras': extras, 'light': light})
         return len(self.nodes) - 1
+
+    def collider(self, name, x, y, z, width, height, depth, parent=None, **extras):
+        """Un volume de collision invisible, comme dans Blender : un vide « col_… » (cube de côté 2) mis à l'échelle."""
+        return self.node('col_' + name, None, parent, t=(x, y, z), s=(width / 2, height / 2, depth / 2), extras=extras or None)
 
     def channel(self, anim, node, path, times, values):
         assert len(times) == len(values), (anim, node, path)
@@ -200,9 +205,13 @@ class Asset:
                  'min': [min(r[i] for r in rows) for i in range(width)], 'max': [max(r[i] for r in rows) for i in range(width)]}
             accessors.append(a); return len(accessors) - 1
 
-        nodes = []; triangles = 0
+        nodes = []; triangles = 0; lights = []
         for nd in self.nodes:
             j = {'name': nd['name']}
+            if nd.get('extras'): j['extras'] = nd['extras']
+            if nd.get('light'):
+                lights.append(nd['light'])
+                j['extensions'] = {'KHR_lights_punctual': {'light': len(lights) - 1}}
             if tuple(nd['t']) != (0, 0, 0): j['translation'] = list(nd['t'])
             if tuple(nd['r']) != (0, 0, 0, 1): j['rotation'] = list(nd['r'])
             if tuple(nd['s']) != (1, 1, 1): j['scale'] = list(nd['s'])
@@ -232,6 +241,9 @@ class Asset:
                'nodes': nodes, 'meshes': meshes, 'materials': materials,
                'buffers': [{'byteLength': len(binary)}], 'bufferViews': views, 'accessors': accessors}
         if animations: doc['animations'] = animations
+        if lights:
+            doc['extensionsUsed'] = ['KHR_lights_punctual']
+            doc['extensions'] = {'KHR_lights_punctual': {'lights': lights}}
         text = json.dumps(doc, separators=(',', ':')).encode(); text += b' ' * ((-len(text)) % 4)
         binary.extend(b'\0' * ((-len(binary)) % 4))
         size = 12 + 8 + len(text) + 8 + len(binary)
@@ -435,7 +447,39 @@ for k in range(5):
     a = k * TAU / 5 + 1.0
     v.sphere(fx + math.cos(a) * .13, fy + .05, fz + math.sin(a) * .13, .08, .05, .07, 'braise', 6, 3)
 v.tube((fx - .35, fy + .14, fz + 1.25), (fx + .75, fy + .14, fz + 1.05), .15, .15, 'bois', 9)
-single(v, 'village.glb')
+village = Asset()
+village.node('village', v)
+# Ce que Blender sait dire sans code (docs/GUIDE.md, « Blender as the editor ») : les volumes de collision
+# (des vides « col_… » mis à l'échelle), le départ du marin, les lampes qui s'allument le soir.
+# Volumes : centre en x, z ; base (le sol par défaut) ; largeur, hauteur, profondeur.
+def block(name, x, z, width, height, depth, base=None, thin=False):
+    y = (ground(x, z) if base is None else base) + height / 2
+    if thin: village.collider(name, x, y, z, width, height, depth, camera=False)
+    else: village.collider(name, x, y, z, width, height, depth)
+# L'avant-toit est à 1,65 m : le marin (1,8 m) ne passe pas dessous, la maison va jusqu'au bord du toit.
+block('maison', -3, -2, 3.4, 1.65, 3.0, base=1.45)
+block('cheminee', -2, -2.6, .5, 1.5, .5, base=3.2)
+block('phare', 4, -3, 1.4, 4.5, 1.4, base=2.7)
+for k, (x, z) in enumerate([(-5, -1), (-6, 3), (6, 1), (1, -5), (-3, -4)]):
+    block(f'palmier{k}', x, z, .4, 3, .4, base=1.45, thin=True)
+for k, (x, z) in enumerate([(-1.25, -1.5), (-1.2, -2.15)]): block(f'tonneau{k}', x, z, .55, .75, .55, thin=True)
+block('caisses', -1.3, -2.9, .55, .95, .55, thin=True)
+block('petite_caisse', -.75, -3, .4, .4, .4, thin=True)
+block('banc', -4, -.35, 1, .45, .34, thin=True)
+block('chateau_de_sable', 4.6, 8.4, .9, .45, .9, thin=True)
+for k, (x, z) in enumerate([(-2, -4.25), (5.5, -4.6), (2.6, 1.3), (-.3, -3.7), (-6.4, -1.8), (6.6, .1)]):
+    block(f'buisson{k}', x, z, .9, .65, .8, thin=True)
+block('lanterne', -.85, 12.35, .2, 1.8, .2, base=1.09, thin=True)
+block('feu', fx, fz, .95, .5, .95, thin=True)
+block('enseigne', -3.55, 7.0, 1.7, 1.9, .25, thin=True)
+# Le marin part d'ici (il tombe sur l'herbe).
+village.node('spawn', None, t=(-1, 2.2, 4))
+# Les lampes de la nuit : intensité et portée données telles quelles (propriétés), la couleur par la lampe.
+village.node('lampe_ponton', None, t=(-.85, 2.5, 12.35), extras={'intensity': 1.6, 'radius': 6, 'night': True, 'flicker': .15},
+             light={'type': 'point', 'color': [1.0, 0xC8 / 255, 0x70 / 255], 'intensity': 58.0, 'range': 6})
+village.node('lampe_fenetres', None, t=(-3, 2.4, -.3), extras={'intensity': 1.2, 'radius': 5, 'night': True},
+             light={'type': 'point', 'color': [1.0, 0xB0 / 255, 0x60 / 255], 'intensity': 43.4, 'range': 5})
+village.save('village.glb')
 
 
 # ---------------------------------------------------------------- marin
@@ -689,6 +733,10 @@ boat.cone(0, .45, .2, .08, .08, .04, 'blanc', 8)
 bnode = port.node('bateau', boat, None, t=(-4, .16, 10.7))
 flag = Mesh(); flag.face([(0, 0, 0), (0, -.25, 0), (.45, -.12, 0)], 'corail', (0, 0, 1))
 fnode = port.node('drapeau', flag, bnode, t=(0, 3.62, .2))
+# La barque se visite : son pont elliptique en deux boîtes et son mât, enfants du bateau, tanguent avec lui.
+port.collider('pont', 0, -.04, 0, 1.4, .5, 1.5, bnode, surface='wood')
+port.collider('pont_long', 0, -.04, 0, .84, .5, 2.8, bnode, surface='wood')
+port.node('col_capsule_mat', None, bnode, t=(0, 1.85, .2), s=(.07, 1.82, .07), extras={'camera': False, 'surface': 'wood'})
 times = keys(12, 97)
 port.channel('vie', bnode, 'translation', times, [(-4, .16 + .05 * math.sin(TAU * t / 4), 10.7) for t in times])
 port.channel('vie', bnode, 'rotation', times, [qeuler(x=.03 * math.sin(TAU * t / 4 + 1), z=.05 * math.sin(TAU * t / 6)) for t in times])

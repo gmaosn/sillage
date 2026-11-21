@@ -4,10 +4,7 @@ import sillage.*
 import sillage.audio.Reverb
 import sillage.audio.Sound
 import sillage.audio.Sounds
-import sillage.math.Quat
 import sillage.math.Vec3
-import sillage.physics.Box
-import sillage.physics.Capsule
 import sillage.physics.Sphere
 import kotlin.math.*
 
@@ -32,38 +29,20 @@ val island: Scene.() -> Unit = {
     // Le drapeau du phare : une toile à squelette (quatre os), qui flotte dans le sens du vent.
     model("models/drapeau.glb", at = vec(4, 7.12, -3)).rotate(y = -28).play("flotter")
     // L'enseigne du ponton : une image peinte (PNG dans le GLB), coins arrondis par découpe alpha.
-    model("models/enseigne.glb", at = vec(-3.55, groundHeight(-3.55, 7.0), 7.0)).rotate(y = 160)
-    block(-3.55f, 7.0f, 1.7f, 1.9f, .25f, thin = true)
+    model("models/enseigne.glb").rotate(y = 160).onGround(-3.55, 7.0)
     val sky = model("models/ciel.glb").play("vol")
     sky.castsShadow = false                          // nuages et mouettes : trop haut pour une ombre nette
-    // La barque se visite et tangue avec la houle : son pont elliptique en deux boîtes, son mât.
-    port.collider(Box(.7f, .25f, .75f), vec(0, -.04, 0), part = "bateau")
-    port.collider(Box(.42f, .25f, 1.4f), vec(0, -.04, 0), part = "bateau")
-    port.collider(Capsule(.07f, 1.75f), vec(0, 1.85, .2), part = "bateau", blocksCamera = false)
+    // Les volumes de collision (maison, phare, palmiers, tonneaux, buissons, le pont et le mât de la barque
+    // qui tangue avec elle), le départ du marin et les lampes du soir sont dans les modèles, comme Blender
+    // les y mettrait : des objets « col_… », un vide « spawn », des lampes (tools/create_assets.py).
 
-    // Volumes de collision du village (le modèle est d'un seul tenant) : x, z, largeur, hauteur, profondeur.
-    // L'avant-toit est à 1,65 m : le marin (1,8 m) ne passe pas dessous, la maison va jusqu'au bord du toit.
-    block(-3f, -2f, 3.4f, 1.65f, 3.0f, base = 1.45f)                       // maison
-    block(-2f, -2.6f, .5f, 1.5f, .5f, base = 3.2f)                         // cheminée
-    block(4f, -3f, 1.4f, 4.5f, 1.4f, base = 2.7f)                          // phare
-    for ((x, z) in listOf(-5f to -1f, -6f to 3f, 6f to 1f, 1f to -5f, -3f to -4f))
-        block(x, z, .4f, 3f, .4f, base = 1.45f, thin = true)               // palmiers
-    for ((x, z) in listOf(-1.25f to -1.5f, -1.2f to -2.15f)) block(x, z, .55f, .75f, .55f, thin = true)   // tonneaux
-    block(-1.3f, -2.9f, .55f, .95f, .55f, thin = true)                     // caisses empilées
-    block(-.75f, -3f, .4f, .4f, .4f, thin = true)                          // petite caisse
-    block(-4f, -.35f, 1f, .45f, .34f, thin = true)                         // banc
-    block(4.6f, 8.4f, .9f, .45f, .9f, thin = true)                         // château de sable
-    for ((x, z) in listOf(-2f to -4.25f, 5.5f to -4.6f, 2.6f to 1.3f, -.3f to -3.7f, -6.4f to -1.8f, 6.6f to .1f))
-        block(x, z, .9f, .65f, .8f, thin = true)                           // buissons
-    block(-.85f, 12.35f, .2f, 1.8f, .2f, base = 1.09f, thin = true)        // lanterne du ponton
-
-    player("models/marin.glb", at = vec(-1, 2.2, 4)) { runSpeed = 4.4f; jumpSpeed = 8f }
+    player("models/marin.glb") { runSpeed = 4.4f; jumpSpeed = 8f }
 
     // Six coquillages à ramasser : ils tournent sur eux-mêmes et brillent au-dessus du sol.
     val shell = shellMesh()
     for ((k, xz) in listOf(-4f to 4f, 3f to 4f, 7f to -2f, -7f to -3f, 2f to -6f, -1.8f to 9.3f).withIndex()) {
         val (x, z) = xz
-        val at = vec(x, groundHeight(x, z) + .65f, z)
+        val at = groundAt(x, z) + vec(0, .65, 0)
         pickup(mesh(shell, at = at).rotate(y = k * 57).spin(63)) {
             burst(Particles.SPARKLE, at, 28)
             println("Coquillages : ${pickups.count { it.collected }}/${pickups.size}")
@@ -111,16 +90,13 @@ private fun Scene.lightsAndLife(village: Node, port: Node) {
     village.glow(warm, "lampe", intensity = 5, atNight = true)
     port.glow(Color.hex(0xFFE9B0), "lampe", intensity = 7, atNight = true)
     village.glow(Color.hex(0xFF6A1E), "braise", intensity = 3.5)
-    light(warm, intensity = 1.6, radius = 6, at = vec(-.85, 2.5, 12.35), onlyAtNight = true, flicker = .15)    // lanterne du ponton
-    light(Color.hex(0xFFB060), intensity = 1.2, radius = 5, at = vec(-3, 2.4, -.3), onlyAtNight = true)        // fenêtres de la maison
 
     // Le feu de camp : toujours allumé, sa lumière compte surtout le soir.
-    val fire = vec(8, groundHeight(8, 2.4), 2.4)
+    val fire = groundAt(8, 2.4)
     val glow = light(Color.hex(0xFF9440), intensity = 1.6, radius = 7, at = fire + vec(0, .55, 0), flicker = 1)
     emit(Particles.FIRE, at = fire + vec(0, .1, 0), rate = 70)
     emit(Particles.SPARKS, at = fire + vec(0, .25, 0), rate = 5)
     emit(Particles.SMOKE, at = fire + vec(0, .75, 0), rate = 4)
-    block(8f, 2.4f, .95f, .5f, .95f, thin = true)
     emit(Particles.SMOKE, at = vec(-2.0, 4.75, -2.6), rate = 3.5)                     // cheminée
 
     // La guitare du feu de camp, à la nuit tombante : un fichier Ogg Vorbis (tools/create_music.py) lu par le
@@ -139,14 +115,10 @@ private fun Scene.lightsAndLife(village: Node, port: Node) {
     }
 }
 
-/** Un volume de collision invisible posé sur le terrain (ou à la hauteur [base]). */
-private fun Scene.block(x: Float, z: Float, width: Float, height: Float, depth: Float, base: Float? = null, thin: Boolean = false) =
-    collider(Box(width / 2, height / 2, depth / 2), vec(x, (base ?: groundHeight(x, z)) + height / 2, z), blocksCamera = !thin)
-
 /** Une caisse de [size] mètres posée sur le sol (ou [lift] mètres au-dessus), qu'on peut pousser. */
 private fun Scene.crate(x: Float, z: Float, lift: Float = 0f, size: Float = .7f, yaw: Float = 0f) =
-    model("models/caisse.glb", at = vec(x, groundHeight(x, z) + size / 2 + lift + .01f, z), scale = size)
-        .rotate(y = yaw).dynamic(mass = 40f * size * size * size, friction = .7)
+    model("models/caisse.glb", scale = size).rotate(y = yaw).onGround(x, z, lift + .005f)
+        .dynamic(mass = 40f * size * size * size, friction = .7)
 
 /**
  * Une bascule : une planche sur une charnière, au sommet d'un chevalet ; elle penche sous le marin, butée
@@ -154,7 +126,7 @@ private fun Scene.crate(x: Float, z: Float, lift: Float = 0f, size: Float = .7f,
  */
 private fun Scene.seeSaw(x: Float, z: Float, yaw: Float = 0f) {
     val ground = groundHeight(x, z)
-    val turn = Quat.rotationY(yaw * PI.toFloat() / 180f)
+    val turn = rotation(y = yaw)
     val pivot = vec(x, ground + .45f, z)
     box(.3, .42, .34, Color.hex(0x8A5A3C), round = .03, at = vec(x, ground + .21f, z)).rotate(y = yaw).solid()
     val plank = box(3.0, .07, .36, Color.hex(0xC98B4E), round = .02, at = pivot + vec(0, .045, 0)).rotate(y = yaw)
@@ -163,18 +135,18 @@ private fun Scene.seeSaw(x: Float, z: Float, yaw: Float = 0f) {
         cylinder(.035, .32, Color.hex(0x6E4A30), at = pivot + turn.rotate(vec(side * 1.25f, .24f, 0)))
             .dynamic(density = 700, impact = Impact.SILENT).glue(plank)
     // Pivot un peu décentré : au repos, elle penche d'un côté, un bout sur le sable, comme une vraie.
-    plank.hinge(pivot + turn.rotate(vec(.08, 0, 0)), turn.rotate(Vec3.Z)).limits(-.3f, .3f)
+    plank.hinge(pivot + turn.rotate(vec(.08, 0, 0)), turn.rotate(Vec3.Z), min = -17, max = 17)
 }
 
 /** Une balançoire : un portique de bois, un siège pendu à deux chaînes ; le marin peut monter dessus. */
 private fun Scene.swing(x: Float, z: Float, yaw: Float = 0f) {
     val ground = groundHeight(x, z)
-    val turn = Quat.rotationY(yaw * PI.toFloat() / 180f)
+    val turn = rotation(y = yaw)
     fun at(dx: Float, y: Float, dz: Float = 0f) = vec(x, ground + y, z) + turn.rotate(vec(dx, 0, dz))
     val wood = Color.hex(0x7A5034)
     for (side in floatArrayOf(-1f, 1f)) for (lean in floatArrayOf(-1f, 1f))
         box(.12, 2.5, .12, wood, round = .02, at = at(side * .85f, 1.22f, lean * .35f))
-            .also { it.rotation = turn * Quat.axisAngle(Vec3.X, -lean * .28f) }.solid(blocksCamera = false)   // en A, vers la poutre
+            .rotate(x = -lean * 16, y = yaw).solid(blocksCamera = false)                                     // en A, vers la poutre
     val beam = box(1.95, .14, .14, wood, round = .02, at = at(0f, 2.42f)).rotate(y = yaw).solid(blocksCamera = false)
     val seat = box(.7, .06, .3, Color.hex(0xD9A05B), round = .02, at = at(0f, .55f)).rotate(y = yaw)
     seat.dynamic(density = 500, friction = .8, angularDamping = .3)
@@ -184,7 +156,7 @@ private fun Scene.swing(x: Float, z: Float, yaw: Float = 0f) {
 
 /** Un ballon de plage léger et rebondissant, qui freine vite dans l'air. */
 private fun Scene.beachBall(x: Float, z: Float, radius: Float = .35f) =
-    model("models/ballon.glb", at = vec(x, groundHeight(x, z) + radius + .01f, z), scale = radius)
+    model("models/ballon.glb", scale = radius).onGround(x, z, .005)
         .dynamic(mass = .6, friction = .5, bounce = .65, shape = Sphere(radius), damping = .8, angularDamping = .1, rollingResistance = .05)
 
 /** Un coquillage doré : deux pyramides à six pans. */

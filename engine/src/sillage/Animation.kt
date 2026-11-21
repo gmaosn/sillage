@@ -23,7 +23,16 @@ class ModelNode internal constructor(
     val skin: Int = -1,
     /** Per triangle, per vertex 4 joints (indices in the skin) then 4 weights (24 floats); empty without a skin. */
     internal val skinWeights: FloatArray = FloatArray(0),
+    /** Its custom properties (glTF `extras`: Blender's custom properties when exported): strings, numbers (Double), booleans. */
+    val properties: Map<String, Any?> = emptyMap(),
+    /** The lamp it carries (KHR_lights_punctual: Blender's lights), or null. */
+    val light: ModelLight? = null,
 ) {
+    /**
+     * What it is for in a scene, from its name and its `sillage` property (see [Role]): Blender's way of
+     * saying "this box is a collision volume", "the player starts here", "this crate moves".
+     */
+    val role: Role = roleOf(name, properties, light)
     val local: Mat4 get() = matrix ?: Mat4.trs(translation, rotation, scale)
 }
 
@@ -32,6 +41,39 @@ class ModelNode internal constructor(
  * when the mesh was bound to it. A skinned vertex goes where its joints take it, by their weights.
  */
 class Skin internal constructor(val joints: IntArray, val inverseBind: List<Mat4>)
+
+/** A lamp of a model: its kind ("point", "spot", "directional"), colour, glTF intensity (candela for a point), range in metres. */
+class ModelLight internal constructor(val type: String, val color: Color, val intensity: Float, val range: Float?, val name: String?)
+
+/**
+ * What a node of a model is for in a scene. Blender sets it by the object's name (a prefix) or by a
+ * custom property `sillage` (its value in brackets):
+ *
+ * - [COLLIDER] `col_…` (`collider`): an invisible collision volume;
+ * - [SPAWN] `spawn` (`spawn`): where the player starts, facing the object's −Z (Blender's −Y… as exported);
+ * - [DYNAMIC] (`dynamic`): a separate object that moves, falls and can be pushed;
+ * - [ZONE] `zone_…` (`zone`): an invisible trigger zone, found by name;
+ * - [PICKUP] `pickup_…` (`pickup`): a separate object a player picks up;
+ * - [LAMP]: a light;
+ * - [DRAWN]: everything else, drawn as part of the model.
+ */
+enum class Role { DRAWN, COLLIDER, SPAWN, DYNAMIC, ZONE, PICKUP, LAMP }
+
+internal fun roleOf(name: String?, properties: Map<String, Any?>, light: ModelLight?): Role {
+    when ((properties["sillage"] as? String)?.lowercase()) {
+        "collider" -> return Role.COLLIDER; "spawn" -> return Role.SPAWN; "dynamic" -> return Role.DYNAMIC
+        "zone" -> return Role.ZONE; "pickup" -> return Role.PICKUP; "drawn", "none" -> return Role.DRAWN
+    }
+    val n = name?.lowercase() ?: ""
+    return when {
+        n.startsWith("col_") || n == "col" -> Role.COLLIDER
+        n == "spawn" || n.startsWith("spawn.") || n.startsWith("spawn_") -> Role.SPAWN
+        n.startsWith("zone_") -> Role.ZONE
+        n.startsWith("pickup_") -> Role.PICKUP
+        light != null -> Role.LAMP
+        else -> Role.DRAWN
+    }
+}
 
 /** What a channel animates. */
 enum class ChannelTarget(val components: Int) { TRANSLATION(3), ROTATION(4), SCALE(3) }
@@ -63,6 +105,44 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                                  internal val cutoffs: FloatArray = FloatArray(0),
                                  /** The skeletons of the model's skinned meshes. */
                                  val skins: List<Skin> = emptyList()) {
+    /** Nodes that are not drawn as part of the model (helpers: collision volumes, zones, separate objects, spawn), with their children. */
+    internal val hidden: BooleanArray = BooleanArray(nodes.size).also { h ->
+        fun hide(i: Int) { h[i] = true; for (c in nodes[i].children) hide(c) }
+        for (i in nodes.indices) if (nodes[i].role != Role.DRAWN && nodes[i].role != Role.LAMP) hide(i)
+    }
+
+    /** The helpers of the model (every node whose [ModelNode.role] is not DRAWN), parents first. */
+    val helpers: List<Int> get() = order.filter { nodes[it].role != Role.DRAWN && (nodes[it].parent < 0 || !hidden[nodes[it].parent]) }
+
+    /** A node's place in the model at rest. */
+    fun restPlace(i: Int): Mat4 = restWorld[i]
+
+    /** The vertices of node [i]'s own mesh in its own space (3 floats each; none for an empty). */
+    fun localPoints(i: Int): FloatArray {
+        val t = nodes[i].triangles
+        return FloatArray(t.size / TRI * 9) { k -> t[(k / 9) * TRI + k % 9] }
+    }
+
+    /** Node [i] and its children as one mesh in node [i]'s space, its scale left out (a separate object: see [Role.DYNAMIC]). */
+    fun subtreeMesh(i: Int): Mesh {
+        val g = MeshBuilder(); val mats = ArrayList<Int>()
+        fun visit(j: Int, m: Mat4) {
+            val n = nodes[j]; val t = n.triangles
+            val mirrored = m.determinant3x3() < 0
+            for (k in t.indices step TRI) {
+                val a = m.transformPoint(Vec3(t[k], t[k + 1], t[k + 2])); val b = m.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
+                val c = m.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
+                val before = g.triangleCount
+                if (mirrored) g.triangle(a, c, b, Color(t[k + 9], t[k + 10], t[k + 11])) else g.triangle(a, b, c, Color(t[k + 9], t[k + 10], t[k + 11]))
+                if (g.triangleCount > before) mats.add(t[k + 12].toInt())
+            }
+            for (c in n.children) visit(c, m * nodes[c].local)
+        }
+        val s = nodes[i].scale
+        visit(i, Mat4.trs(Vec3.ZERO, Quat.IDENTITY, s))
+        return g.build().smooth().withMaterials(mats.toIntArray())
+    }
+
     /** Each node's place in the model at rest. */
     private val restWorld: Array<Mat4> by lazy {
         val out = Array(nodes.size) { Mat4.IDENTITY }
@@ -124,7 +204,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
 
     /** Each node's triangles as a mesh in node space (knowing each triangle's material), shared by every instance of the model. */
     private val localMeshes: Map<Int, LocalMesh> by lazy {
-        order.filter { nodes[it].triangles.isNotEmpty() }.associateWith { i ->
+        order.filter { nodes[it].triangles.isNotEmpty() && !hidden[it] }.associateWith { i ->
             val g = MeshBuilder(); val t = nodes[i].triangles; val mats = ArrayList<Int>(); val kept = ArrayList<Int>()
             for (k in t.indices step TRI) {
                 val before = g.triangleCount
@@ -147,6 +227,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         val g = MeshBuilder(); val mats = ArrayList<Int>()
         val keptNode = ArrayList<Int>(); val keptTri = ArrayList<Int>(); val keptMirrored = ArrayList<Boolean>()
         fun visit(i: Int, parent: Mat4) {
+            if (hidden[i]) return
             val n = nodes[i]
             val world = parent * n.local
             val mirrored = world.determinant3x3() < 0
@@ -185,6 +266,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
     fun surfaces(): Pair<FloatArray, IntArray> {
         val pos = ArrayList<Float>(); val mat = ArrayList<Int>()
         fun visit(i: Int, parent: Mat4) {
+            if (hidden[i]) return
             val n = nodes[i]
             val world = parent * n.local
             val mirrored = world.determinant3x3() < 0

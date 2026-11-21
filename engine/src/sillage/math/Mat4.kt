@@ -45,6 +45,19 @@ class Mat4(
         m01 * d.x + m11 * d.y + m21 * d.z,
         m02 * d.x + m12 * d.y + m22 * d.z)
 
+    /** The inverse of an affine matrix (rotation, scale, translation; the last row 0, 0, 0, 1). */
+    fun inverseAffine(): Mat4 {
+        val d = determinant3x3()
+        require(d != 0f) { "The matrix cannot be inverted (a scale of 0)" }
+        val k = 1f / d
+        // The inverse of the 3×3 block (column-major: mCR), then the translation brought back.
+        val i00 = (m11 * m22 - m21 * m12) * k; val i01 = (m21 * m02 - m01 * m22) * k; val i02 = (m01 * m12 - m11 * m02) * k
+        val i10 = (m20 * m12 - m10 * m22) * k; val i11 = (m00 * m22 - m20 * m02) * k; val i12 = (m10 * m02 - m00 * m12) * k
+        val i20 = (m10 * m21 - m20 * m11) * k; val i21 = (m20 * m01 - m00 * m21) * k; val i22 = (m00 * m11 - m10 * m01) * k
+        val tx = -(i00 * m30 + i10 * m31 + i20 * m32); val ty = -(i01 * m30 + i11 * m31 + i21 * m32); val tz = -(i02 * m30 + i12 * m31 + i22 * m32)
+        return Mat4(i00, i01, i02, 0f, i10, i11, i12, 0f, i20, i21, i22, 0f, tx, ty, tz, 1f)
+    }
+
     /** Determinant of the upper-left 3×3 block; negative when the transform mirrors. */
     fun determinant3x3() =
         m00 * (m11 * m22 - m12 * m21) + m01 * (m12 * m20 - m10 * m22) + m02 * (m10 * m21 - m11 * m20)

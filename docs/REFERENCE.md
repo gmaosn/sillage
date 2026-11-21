@@ -50,7 +50,9 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `model(path, at, scale = 1)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
 | `mesh(mesh, at)` | a `Mesh` of your own |
 | `chain(from, to, links, radius = .03, color = GREY, start = null, end = null, density = 2000)` | a chain of dynamic capsule nodes joined by ball joints, hanging from `start` (or the world), holding `end`; the links |
-| `player(model = null, at, radius = .28, height = 1.8, setup = {})` | a `Player`; without a model, a capsule |
+| `player(model = null, at = null, radius = .28, height = 1.8, setup = {})` | a `Player`; without a model, a capsule; without `at`, at a model's `spawn` (or the origin) |
+| `find(name)` | the first node with that name (a model's separate objects are named after their Blender objects) |
+| `zone(name)`, `onEnter(zone) { node -> … }`, `onExit(zone) { … }`, `onPickup(name) { player -> … }` | the zones and pickups made from a model's objects (`zone_NAME`, `pickup_NAME`), by name without Blender's ".001" |
 | `collider(shape, at, rotation, blocksCamera = true, surface = "stone")` | an invisible static `Body` |
 | `zone(shape, at, onEnter = {}, onExit = {})` | a `Zone` noticing nodes coming in and out |
 | `pickup(node, radius = .8, celebrate = true, onPickup = {})` | a `Pickup`: the node disappears with a chime when a player reaches it |
@@ -266,12 +268,13 @@ Light and air of a scene. Every value can change at any time; turning `shadows` 
 
 ### Models and animation
 
-`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy, clips, textures and skins. `read(bytes)` and `readModel(bytes, beside)` do the same from bytes (`beside` gives the bytes of a file the GLB names, an image beside it). Paths are looked up on disk, then in the resources. Cubic-spline curves and morph targets are refused with a message.
+`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy, clips, textures and skins. `read(bytes)` and `readModel(bytes, beside)` do the same from bytes (`beside` gives the bytes of a file the GLB names, an image beside it). Paths are looked up on disk, then in the resources. Cubic-spline curves and morph targets are refused with a message. `KHR_lights_punctual` (Blender's lights) is read.
 
 | Class | |
 |---|---|
-| `Model` | `nodes` (`ModelNode`s), `roots`, `clips` (by name), `materials` (names by index), `textures` (each material's image texture or null), `skins`, `order` (parents before children); `flatten()` (rest pose as one mesh, skins included), `surfaces()` (world triangles and their material indices, for collision), `parts()` |
-| `ModelNode` | `name`, `parent`, `children`, `translation`, `rotation`, `scale`, `matrix` (when given instead of TRS), `local`, `skin` (index in `skins`, −1: none) |
+| `Model` | `nodes` (`ModelNode`s), `roots`, `clips` (by name), `materials` (names by index), `textures` (each material's image texture or null), `skins`, `order` (parents before children); `flatten()` (rest pose as one mesh, skins included), `surfaces()` (world triangles and their material indices, for collision), `parts()`; `helpers` (nodes whose role is not DRAWN), `restPlace(i)`, `localPoints(i)`, `subtreeMesh(i)`; helpers are neither drawn nor in `surfaces()` |
+| `ModelNode` | `name`, `parent`, `children`, `translation`, `rotation`, `scale`, `matrix` (when given instead of TRS), `local`, `skin` (index in `skins`, −1: none), `properties` (glTF `extras`: Blender's custom properties), `light` (a `ModelLight`: `type`, `color`, `intensity`, `range`, `name`), `role` |
+| `Role` | what a node is for in a scene: `DRAWN`, `COLLIDER`, `SPAWN`, `DYNAMIC`, `ZONE`, `PICKUP`, `LAMP` (see the guide, "Blender as the editor") |
 | `Skin` | `joints` (node indices), `inverseBind` (one `Mat4` per joint) |
 | `Clip` | `name`, `channels`, `duration` |
 | `Channel` | `node`, `target` (`ChannelTarget.TRANSLATION`, `ROTATION`, `SCALE`), `times`, `values`, `step` |

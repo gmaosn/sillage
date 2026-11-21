@@ -376,6 +376,23 @@ Models are glTF binary files (`.glb`), as Blender exports them: meshes with colo
 
 Paths are looked up on disk first, then in the classpath resources (`resources/models/…` in the module).
 
+### Blender as the editor
+
+A model can carry more than what is drawn. Objects named by a few conventions (or given a custom property `sillage`) become, when the scene starts, what they stand for: the scene is laid out in Blender, the code keeps the game.
+
+| In Blender | In the game |
+|---|---|
+| an object named `col_…` (or `sillage = collider`) | an invisible collision volume, fitted to the object: a box by default; `col_sphere_…`, `col_capsule_…` (standing on its Y axis), `col_mesh_…` (its triangles as they are), or a property `shape`. An empty works too: Blender's cube of side 2, scaled. A volume under an animated part (a boat that rocks) follows it. |
+| an empty named `spawn` | where `player()` starts when it is given no `at`, facing as the empty does; the camera starts behind it |
+| a point or spot light | a lamp (`light`): its colour, its range as the radius; Blender's 1000 W gives an intensity of about 1.5 |
+| `sillage = dynamic` on an object | a separate node of its own, named after the object (`find("crate")`), with a moving body: properties `mass`, `density`, `bounce`, `friction`, `surface`, `shape` |
+| an object named `pickup_…` (or `sillage = pickup`) | a separate node a player picks up; `onPickup("shell") { player -> … }` acts for all of `pickup_shell`, `pickup_shell.001`… |
+| an object or empty named `zone_…` (or `sillage = zone`) | an invisible trigger zone: `onEnter("door") { node -> … }`, `onExit`, `zone("door")` |
+
+Custom properties on any of them: `surface` (grass, sand, wood, stone, road, ice: friction and footsteps), `camera = false` (the camera passes through: palms, barrels, a mast), on a lamp `night = true` (it lights up at dusk), `flicker`, `intensity`, `radius`. Blender writes them when "Include › Custom Properties" is ticked in the glTF export, and its lights with "Include › Punctual Lights". The helpers are not drawn, and `solid()` leaves them out.
+
+They take their place at the scene's first frame, where the model is then: place a model with `model(path, at, scale)`, `rotate` and `onGround`, then they follow. The island of the demo is laid out this way: its collision volumes, the sailor's start and the evening lamps are in `village.glb` and `port.glb` (written by `tools/create_assets.py`, as Blender would).
+
 ## Without a window
 
 A scene runs without a window, which makes tests and servers simple:

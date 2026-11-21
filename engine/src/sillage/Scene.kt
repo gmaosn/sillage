@@ -69,7 +69,7 @@ class Scene {
     internal val cameraIgnores = HashSet<Int>()              // body ids the camera passes through
     private val linked = ArrayList<Node>()                   // dynamic nodes, following their bodies
     private val kinematicNodes = ArrayList<Node>()
-    private class Follower(val node: Node, val part: String, val offset: Vec3, val body: Body)
+    private class Follower(val node: Node, val part: String, val offset: Vec3, val body: Body, val rotation: Quat = Quat.IDENTITY)
     private val followers = ArrayList<Follower>()
     private class Shadow(val disc: Node, val of: Node, val radius: Float)
     private val shadows = ArrayList<Shadow>()
@@ -93,7 +93,26 @@ class Scene {
 
     // ------------------------------------------------------------------ making things
 
-    private fun add(node: Node, at: Vec3): Node { node.position = at; all.add(node); return node }
+    internal fun add(node: Node, at: Vec3): Node { node.position = at; all.add(node); return node }
+
+    // ------------------------------------------------------------------ Blender as the editor
+
+    internal val helpers = ModelHelpers(this)
+
+    /** The first node called [name] (a separate object of a model is named after its Blender object), or null. */
+    fun find(name: String): Node? = all.firstOrNull { it.name == name && !it.isShadow }
+
+    /** The first zone made from a model's object `zone_NAME` (or with `sillage = zone`), once the scene has started; null before or if none. */
+    fun zone(name: String): Zone? = helpers.zone(name)
+
+    /** Runs [action] when a node enters the model zone [zone] (Blender object `zone_NAME`, NAME without ".001"). */
+    fun onEnter(zone: String, action: (Node) -> Unit) = helpers.onEnter(zone, action)
+
+    /** Runs [action] when a node leaves the model zone [zone]. */
+    fun onExit(zone: String, action: (Node) -> Unit) = helpers.onExit(zone, action)
+
+    /** Runs [action] when a player picks up a model's object `pickup_NAME` (any of them, NAME without ".001"). */
+    fun onPickup(name: String, action: (Player) -> Unit) = helpers.onPickup(name, action)
 
     // Primitives of the same size and colour share one mesh: the renderer then draws all their copies
     // in a single call (a thousand crates, one draw). Replace a node's mesh rather than editing a shared one.
@@ -177,6 +196,7 @@ class Scene {
         val node = Node(this, if (m.clips.isEmpty()) flat.getOrPut(path) { m.flatten().also { require(it.triangleCount > 0) { "GLB without triangles: $path" } } } else Mesh.EMPTY)
         node.model = m
         node.source = path
+        if (m.helpers.isNotEmpty()) helpers.pending.add(node)
         if (m.clips.isNotEmpty()) { node.parts = m.parts(); node.animator = Animator(m, node.parts) }
         if (autoTextures) texturesByName(node)
         node.scale = scale.toFloat()
@@ -216,9 +236,13 @@ class Scene {
      * follows it, its model's clips play by themselves (idle, walk, run, jump, fall…). Without a model it
      * is a plain capsule. [setup] adjusts it: speeds, keys, clip names, `view = CameraMode.FIRST_PERSON`…
      */
-    fun player(model: String? = null, at: Vec3 = Vec3.ZERO, radius: Number = .28, height: Number = 1.8, setup: Player.() -> Unit = {}): Player {
-        val c = Character(physics, at, radius.toFloat(), height.toFloat())
-        val p = Player(this, c, at)
+    fun player(model: String? = null, at: Vec3? = null, radius: Number = .28, height: Number = 1.8, setup: Player.() -> Unit = {}): Player {
+        // Without [at]: where a model's `spawn` object stands, facing as it does.
+        val spawn = if (at == null) helpers.spawn() else null
+        val start = at ?: spawn?.first ?: Vec3.ZERO
+        val c = Character(physics, start, radius.toFloat(), height.toFloat())
+        val p = Player(this, c, start)
+        if (spawn != null) { p.yaw = spawn.second; if (playerList.isEmpty()) camera.yaw = spawn.second }
         if (model != null) {
             val m = models.getOrPut(model) { Glb.loadModel(model) }
             p.model = m
@@ -448,7 +472,7 @@ class Scene {
         physics.addMesh(TriangleMesh(v.toFloatArray(), pal.toIntArray(), palette))
     }
 
-    internal fun addCollider(node: Node, shape: Shape, offset: Vec3, part: String?, surface: String, blocksCamera: Boolean): Body {
+    internal fun addCollider(node: Node, shape: Shape, offset: Vec3, part: String?, surface: String, blocksCamera: Boolean, rotation: Quat = Quat.IDENTITY): Body {
         val b: Body
         if (part == null) {
             val m = node.matrix()
@@ -457,8 +481,8 @@ class Scene {
             val a = requireNotNull(node.animator) { "collider(part = …) needs an animated model" }
             requireNotNull(a.nodePose(part)) { "No part « $part » (the model has: ${a.model.nodes.mapNotNull { it.name }.joinToString()})" }
             val (p, q) = partPose(node, part, offset)
-            b = physics.add(shape, p, q, type = BodyType.KINEMATIC)
-            followers.add(Follower(node, part, offset, b))
+            b = physics.add(shape, p, q * rotation, type = BodyType.KINEMATIC)
+            followers.add(Follower(node, part, offset, b, rotation))
         }
         b.tag = node; surfaces[b.id] = surface
         if (!blocksCamera) cameraIgnores.add(b.id)
@@ -502,10 +526,11 @@ class Scene {
     fun zone(shape: Shape, at: Vec3, onEnter: (Node) -> Unit = {}, onExit: (Node) -> Unit = {}): Zone {
         val t = physics.addTrigger(shape, at)
         val z = Zone(t)
+        z.onEnter = onEnter; z.onExit = onExit
         t.filter = { b -> (b.tag as? Node ?: playerList.firstOrNull { it.character.body == b })?.let { z.filter(it) } ?: false }
         fun nodeOf(b: Body): Node? = b.tag as? Node ?: playerList.firstOrNull { it.character.body == b }
-        t.onEnter = { b -> nodeOf(b)?.let(onEnter) }
-        t.onExit = { b -> nodeOf(b)?.let(onExit) }
+        t.onEnter = { b -> nodeOf(b)?.let { z.onEnter(it) } }
+        t.onExit = { b -> nodeOf(b)?.let { z.onExit(it) } }
         return z
     }
 
@@ -516,13 +541,14 @@ class Scene {
     fun pickup(node: Node, radius: Number = .8, celebrate: Boolean = true, onPickup: (Player) -> Unit = {}): Pickup {
         val t = physics.addTrigger(Sphere(radius.toFloat()), node.position)
         val p = Pickup(node, t)
+        p.onPickup = onPickup
         t.filter = { b -> playerList.any { it.character.body == b } }
         t.onEnter = { b ->
             val who = playerList.first { it.character.body == b }
             t.enabled = false; node.visible = false; p.collected = true
             sounds.playPickup()
             if (celebrate) who.celebrate()
-            onPickup(who)
+            p.onPickup(who)
         }
         pickupList.add(p)
         return p
@@ -788,6 +814,7 @@ class Scene {
     fun step(dt: Float) { input.poll(); update(dt); camera.view(dt) }
 
     internal fun update(dt: Float) {
+        if (helpers.pending.isNotEmpty()) helpers.settle()
         time += dt
         for (k in 0 until keyActions.size) { val a = keyActions[k]; if (input.pressed(a.first)) a.second() }
         camera.switchKey?.let { k -> if (input.pressed(k)) camera.mode = if (camera.mode == CameraMode.FIRST_PERSON) CameraMode.THIRD_PERSON else CameraMode.FIRST_PERSON }
@@ -805,7 +832,7 @@ class Scene {
         // the platforms will be drawn, without sinking into them for a frame.
         for (k in 0 until all.size) { val n = all[k]; if (n !is Player) n.animator?.advance(dt) }
         val h = dt.coerceIn(1f / 240f, 1f / 30f)
-        for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, q) }
+        for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, if (f.rotation === Quat.IDENTITY) q else q * f.rotation) }
         for (n in kinematicNodes) n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation)
         val physicsStart = System.nanoTime()
         physics.step(h)
@@ -855,6 +882,12 @@ class Scene {
 
 /** A zone made by [Scene.zone]. */
 class Zone internal constructor(val trigger: Trigger) {
+    /** Its name, for a zone made from a model (`zone_NAME` in Blender); null otherwise. */
+    var name: String? = null
+        internal set
+    /** What happens when a node comes in, and goes out. */
+    var onEnter: (Node) -> Unit = {}
+    var onExit: (Node) -> Unit = {}
     /** Which nodes count (all moving ones by default). */
     var filter: (Node) -> Boolean = { true }
     var enabled: Boolean
@@ -864,6 +897,8 @@ class Zone internal constructor(val trigger: Trigger) {
 
 /** Something to pick up, made by [Scene.pickup]. */
 class Pickup internal constructor(val node: Node, internal val zone: Trigger) {
+    /** What happens when a player picks it up (after the chime and the celebration). */
+    var onPickup: (Player) -> Unit = {}
     var collected = false
         internal set
 }
