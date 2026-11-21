@@ -61,6 +61,7 @@ internal class Runtime(private val title: String, private val args: Array<String
   --animation clip        force the player's clip (captures)
   --hour H                start at hour H (0 to 24, see Lighting.time)
   --debug physics,free,paused   start with the physics drawn (F5), the free camera (F6), paused (F7)
+  --no-cull               draw everything, even what the camera cannot see (comparisons)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers""")
@@ -121,6 +122,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             if (!headless) window = openWindow(title, 1280, 800)
             var r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, scene.lighting.shadows)
             renderer = r; r.ouvrir()
+            r.cull = "--no-cull" !in args
             window?.mouseCaptured = true
             scene.input.source = KeySource { k -> window?.isDown(k) ?: false }
             var last = System.nanoTime()
@@ -202,7 +204,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                     fresh.audio = audio
                     r.oublier()
                     if (fresh.lighting.shadows != scene.lighting.shadows) {
-                        r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting.shadows); renderer = r; r.ouvrir()
+                        r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting.shadows); renderer = r; r.ouvrir(); r.cull = "--no-cull" !in args
                     }
                     scene = fresh
                 }
@@ -235,7 +237,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             val cpu = frameTimes.list().drop(min(60, frameTimes.size / 4)).sorted()
             println("SILLAGE_RUN_OK frames=" + frame + " smoke=" + smoke + " position=" + (p?.position ?: Vec3.ZERO) + " ground=" + (p?.onGround ?: false) +
                 " cpu=" + (if (cpu.isEmpty()) "-" else "%.2f/%.2f/%.1f".format(cpu.average(), cpu[(cpu.size * .99).toInt().coerceAtMost(cpu.size - 1)], cpu.last())) +
-                "ms gpu=" + "%.2f".format(gpu) + "ms first-frame=" + firstFrame + "ms")
+                "ms gpu=" + "%.2f".format(gpu) + "ms first-frame=" + firstFrame + "ms drawn=" + r.drawn + " culled=" + r.culled)
             if (System.getenv("SILLAGE_FRAME_TIMES") != null) println("SILLAGE_FRAME_TIMES " + frameTimes.list().withIndex().sortedByDescending { it.value }.take(12).joinToString { "#" + it.index + "=" + "%.1f".format(it.value) })
             if (recording != null && recordedCount > 0) {
                 Sound(recorded.copyOf(recordedCount), 2, rate).save(recording)

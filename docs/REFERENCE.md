@@ -102,6 +102,8 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | Member | |
 |---|---|
 | `position`, `rotation`, `scale`, `yaw` | placement; `yaw` in degrees about Y (0 faces −Z) |
+| `drawDistance` | beyond it (metres from the camera) it is not drawn nor casts a shadow (infinite) |
+| `lod(mesh, from)`, `lod(path, from)` | a lighter mesh drawn from `from` metres on (not for animated models) |
 | `visible`, `name`, `tag` | `tag` is yours: the engine never reads it |
 | `castsShadow` | whether it casts a shadow from the sun (true); it receives shadows either way |
 | `mesh` | what is drawn; replace it to change the look (primitives share meshes: do not edit one in place) |

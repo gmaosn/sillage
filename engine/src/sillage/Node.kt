@@ -35,12 +35,51 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
     /** Parts of an animated model, each drawn with the node's [matrix] times the part's pose. */
     var parts: List<Part> = emptyList()
+    /**
+     * Beyond this distance from the camera (metres) it is not drawn, nor its shadow; infinite by default
+     * (the haze already hides what is past [Lighting.fogEnd], and that is not drawn either).
+     */
+    var drawDistance: Float = Float.POSITIVE_INFINITY
+
+    // Its sphere in the world for the renderer's culling, and what it was computed from.
+    internal val cullCache = FloatArray(4)
+    internal var cullPosition: Vec3? = null
+    internal var cullRotation: Quat? = null
+    internal var cullScale = Float.NaN
+    internal var cullMesh: Mesh? = null
+
+    /** Lighter meshes for far away: from each distance on, its mesh (sorted, nearest first). */
+    private var lods: List<Pair<Float, Mesh>> = emptyList()
+
+    /**
+     * Draws [mesh] instead of its own from [from] metres away from the camera on: a lighter version of it,
+     * fewer triangles for the same look from afar. Several can follow each other; not for animated models.
+     */
+    fun lod(mesh: Mesh, from: Number): Node {
+        require(parts.isEmpty()) { "lod(): an animated model draws its parts, it cannot change its mesh with the distance" }
+        lods = (lods + (from.toFloat() to mesh)).sortedBy { it.first }
+        return this
+    }
+
+    /** [lod] with a model's file (its rest pose as one mesh). */
+    fun lod(path: String, from: Number): Node = lod(scene.flatModel(path), from)
+
+    /** The mesh to draw from [eye]: its own, or the level of detail for that distance. */
+    internal fun meshAt(eye: Vec3): Mesh {
+        if (lods.isEmpty()) return mesh
+        val dx = position.x - eye.x; val dy = position.y - eye.y; val dz = position.z - eye.z
+        val d2 = dx * dx + dy * dy + dz * dz
+        var m = mesh
+        for ((d, l) in lods) if (d2 >= d * d) m = l else break
+        return m
+    }
+
     /** The file a model node came from (for messages and the debug panel). */
     internal var source: String? = null
         internal set
     /** Plays the model's clips; null when the node is not an animated model. */
     var animator: Animator? = null
-        internal set
+        internal set(v) { field = v; if (v != null && this !is Player) scene.animates(this) }
     /** The model it was loaded from, if any. */
     var model: Model? = null
         internal set
@@ -56,6 +95,8 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     internal var removed = false
     internal var fxY = Float.NaN                 // height at the last frame, to see it fall into water
     internal val behaviours = ArrayList<Node.(Float) -> Unit>()
+    /** Its rank among the nodes made by the program (behaviours run in this order). */
+    internal val serial: Long = nextSerial++
 
     /** Rotation about the vertical axis, in degrees (0 faces −Z, 90 faces −X). */
     var yaw: Float
@@ -212,7 +253,7 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     }
 
     /** Runs [block] every frame with the frame's duration in seconds. */
-    fun onUpdate(block: Node.(dt: Float) -> Unit): Node { behaviours.add(block); return this }
+    fun onUpdate(block: Node.(dt: Float) -> Unit): Node { behaviours.add(block); scene.behaves(this); return this }
 
     /** Turns on itself, [degreesPerSecond] about [axis]. */
     fun spin(degreesPerSecond: Number = 90, axis: Vec3 = Vec3.Y): Node {
@@ -263,3 +304,5 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
 /** The sound a body makes when it hits something. */
 enum class Impact { AUTO, WOOD, RUBBER, SILENT }
+
+private var nextSerial = 0L

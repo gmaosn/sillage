@@ -58,6 +58,10 @@ class Mesh(val vertices: FloatArray) {
     internal var dynamic = false
         private set
     @Volatile internal var version = 0
+    /** The renderer's batches of this mesh and whose they are (see VulkanRenderer.add); what it last uploaded it for. */
+    internal var batches: Array<Any?>? = null
+    internal var batchOwner: Any? = null
+    internal var preparedBy: Any? = null
     /** The same triangles with [effects] ([EFFECT_FLOATS] per vertex), keeping the materials. */
     internal fun withEffects(effects: FloatArray): Mesh {
         require(effects.size == vertices.size / 9 * EFFECT_FLOATS) { "$EFFECT_FLOATS effect floats per vertex" }
@@ -80,6 +84,13 @@ class Mesh(val vertices: FloatArray) {
     internal fun dynamicCopy(): Mesh = Mesh(vertices.copyOf()).also { it.materials = materials; it.effects = effects; it.dynamic = true }
     /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
     internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
+
+    /** A sphere holding the mesh (the centre of its bounds, half their diagonal): x, y, z, radius. */
+    internal val sphere: FloatArray by lazy {
+        val (lo, hi) = bounds
+        val dx = (hi.x - lo.x) / 2; val dy = (hi.y - lo.y) / 2; val dz = (hi.z - lo.z) / 2
+        floatArrayOf((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, (lo.z + hi.z) / 2, sqrt(dx * dx + dy * dy + dz * dz))
+    }
 
     /** Smallest box holding the mesh: min and max corners. */
     val bounds: Pair<Vec3, Vec3> by lazy {

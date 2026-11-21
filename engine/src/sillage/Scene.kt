@@ -98,6 +98,24 @@ class Scene {
 
     internal fun add(node: Node, at: Vec3): Node { node.position = at; all.add(node); return node }
 
+    /** Nodes with [Node.onUpdate] blocks, and animated models (not players), in the order they were made. */
+    private val behaving = ArrayList<Node>()
+    private val animated = ArrayList<Node>()
+    internal fun animates(node: Node) {
+        if (node in animated) return
+        var i = animated.size
+        while (i > 0 && animated[i - 1].serial > node.serial) i--
+        animated.add(i, node)
+    }
+
+    internal fun behaves(node: Node) {
+        if (node in behaving) return
+        // Kept in the order the nodes were made, whatever the order their blocks came in: as when every node was visited.
+        var i = behaving.size
+        while (i > 0 && behaving[i - 1].serial > node.serial) i--
+        behaving.add(i, node)
+    }
+
     // ------------------------------------------------------------------ Blender as the editor
 
     internal val helpers = ModelHelpers(this)
@@ -196,6 +214,9 @@ class Scene {
      * normals (default) or the file's ([Normals.FROM_FILE]: Blender's flat faces and sharp edges kept).
      * Its helper objects (collision volumes, spawn, lamps…: see [Role]) take their place at the first frame.
      */
+    /** A model's file as one mesh in its rest pose, shared like [model]'s. */
+    internal fun flatModel(path: String): Mesh = flat.getOrPut(path) { models.getOrPut(path) { Glb.loadModel(path) }.flatten() }
+
     fun model(path: String, at: Vec3 = Vec3.ZERO, scale: Number = 1, normals: Normals = Normals.SMOOTH): Node {
         val key = if (normals == Normals.SMOOTH) path else "$path|$normals"
         val m = models.getOrPut(key) { Glb.loadModel(path, normals) }
@@ -512,7 +533,7 @@ class Scene {
     fun remove(node: Node) {
         if (node.removed) return
         node.removed = true
-        all.remove(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node)
+        all.remove(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node); behaving.remove(node); animated.remove(node)
         shadows.filter { it.of === node }.forEach { all.remove(it.disc) }
         shadows.removeAll { it.of === node }
         node.body?.let { b -> sounds.untrack(b); surfaces.remove(b.id); cameraIgnores.remove(b.id); physics.remove(b) }
@@ -832,11 +853,14 @@ class Scene {
         }
         for (k in 0 until updates.size) updates[k](this, dt)
         runScripts()
-        nodeCopy.clear(); for (k in 0 until all.size) nodeCopy.add(all[k])
-        for (k in 0 until nodeCopy.size) { val n = nodeCopy[k]; val bs = n.behaviours; for (j in 0 until bs.size) n.(bs[j])(dt) }
+        // Only the nodes that have behaviours, or animations, are visited: a world of 40 000 still blocks costs nothing here.
+        if (behaving.isNotEmpty()) {
+            nodeCopy.clear(); for (k in 0 until behaving.size) nodeCopy.add(behaving[k])
+            for (k in 0 until nodeCopy.size) { val n = nodeCopy[k]; if (n.removed) continue; val bs = n.behaviours; for (j in 0 until bs.size) n.(bs[j])(dt) }
+        }
         // The world first (animated scenery, moving platforms, bodies), then the players: they stand where
         // the platforms will be drawn, without sinking into them for a frame.
-        for (k in 0 until all.size) { val n = all[k]; if (n !is Player) n.animator?.advance(dt) }
+        for (k in 0 until animated.size) animated[k].animator?.advance(dt)
         val h = dt.coerceIn(1f / 240f, 1f / 30f)
         for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, if (f.rotation === Quat.IDENTITY) q else q * f.rotation) }
         for (n in kinematicNodes) n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation)

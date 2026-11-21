@@ -28,6 +28,7 @@ fun main(args: Array<String>) {
         "endurance" to { endurance() },
         "performance" to { performance() },
         "outils" to { outils() },
+        "mondes" to { mondes() },
     )
     val choisis = option("--seulement")?.split(',')?.map { it.trim() } ?: groupes.keys.toList()
     for (g in choisis) require(g in groupes) { "Groupe inconnu « $g » (groupes : ${groupes.keys.joinToString()})" }
@@ -53,7 +54,8 @@ class Qa(val rapide: Boolean, val graine: Long, val refaire: Boolean) {
         "articulations" to "Articulations, véhicules, plateformes, collision continue",
         "personnage" to "Personnage : parcours aléatoires et cas limites", "rendu" to "Rendu 3D", "chargeurs" to "Chargeurs : fichiers abîmés", "api" to "API publique : parties réelles",
         "son" to "Son : l'île entendue, hors ligne", "endurance" to "Endurance", "performance" to "Performance",
-        "outils" to "Outils du développeur : débogage, rechargement")
+        "outils" to "Outils du développeur : débogage, rechargement",
+        "mondes" to "Grands mondes : ce que la caméra ne voit pas")
 
     /** Nombre de cas tirés au sort : peu en mode rapide. */
     fun cas(rapide: Int, complet: Int) = if (this.rapide) rapide else complet
