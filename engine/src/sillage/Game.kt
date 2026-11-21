@@ -57,7 +57,8 @@ internal class Runtime(private val title: String, private val args: Array<String
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers
-  --pad-test [--seconds N]   check the pads from the terminal (buttons, sticks, motion, lights, rumble, triggers)""")
+  --pad-test [--seconds N]   check the pads from the terminal (buttons, sticks, motion, lights, rumble, triggers)
+  --pad-script "0 L 0,1; 1 tap CROSS; 2 R 1,0"   a scripted pad (see PadScript)""")
             return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
         }
         if ("--pad-test" in args) { padTest(args); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
@@ -82,6 +83,7 @@ internal class Runtime(private val title: String, private val args: Array<String
         var scene = Scene().apply(setup)
         option("--animation")?.let { scene.forcedPlayerClip = it }
         option("--hour")?.let { scene.lighting.time = it.toFloat() }
+        option("--pad-script")?.let { PadScript(it).attach(scene) }
         scene.audio = audio
         val rate = audio?.mixer?.rate ?: 48_000
         val block = FloatArray(2 * 512)

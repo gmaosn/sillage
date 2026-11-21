@@ -165,6 +165,27 @@ class DualSenseTest {
         }
     }
 
+    @Test fun desRapportsAuHasardNeFontJamaisDeMal() {
+        val rnd = Random(11)
+        val s = PadState(); val cal = DualSense.Calibration()
+        var parsed = 0
+        repeat(20_000) {
+            val size = intArrayOf(0, 1, 9, 10, 11, 63, 64, 65, 77, 78, 79, 100)[rnd.nextInt(12)]
+            val b = ByteArray(size).also(rnd::nextBytes)
+            if (size > 0 && rnd.nextBoolean()) b[0] = (if (rnd.nextBoolean()) 0x01 else 0x31).toByte()
+            if (size >= 78 && b[0].toInt() == 0x31 && rnd.nextBoolean()) le32(b, 74, Crc32.seeded(0xA1, b, 0, 74).toLong() and 0xFFFFFFFFL)
+            if (DualSense.parseInput(b, size, cal, s, rnd.nextBoolean()) == DualSense.PARSED) {
+                parsed++
+                for (i in 0 until 4) assertTrue(s.axes[i] in -1f..1f)
+                assertTrue(s.axes[4] in 0f..1f && s.axes[5] in 0f..1f)
+                assertTrue(s.battery in -1f..1f && s.batteryState in BatteryState.entries.indices)
+                for (f in 0 until 2) assertTrue(s.touchX[f] in 0f..1f && s.touchY[f] in 0f..1f && s.touchId[f] in 0..127)
+                assertTrue(s.gyro.all { it.isFinite() } && s.accel.all { it.isFinite() })
+            }
+        }
+        assertTrue(parsed > 3000, "$parsed rapports lus")
+    }
+
     private fun out(touched: Int, setup: PadOutput.() -> Unit = {}) = PadOutput().apply { this.touched = touched; setup() }
 
     @Test fun barreLumineuseParUsb() {

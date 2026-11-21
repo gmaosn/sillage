@@ -176,7 +176,8 @@ internal class SystemPads(
     /** Number of looks at the devices so far (tests wait on it). */
     @Volatile var scans = 0
         private set
-    val thread: Thread = Thread(::watch, "sillage-pads").apply { isDaemon = true; start() }
+    /** The watcher; started at the end of the constructor, once every field is set. */
+    val thread: Thread = Thread(::watch, "sillage-pads").apply { isDaemon = true }
 
     /** Signals an eventfd from any thread (the game's, a pad's). */
     fun signal(efd: Int) { synchronized(devSignal) { devSignal.signal(efd) } }
@@ -348,6 +349,8 @@ internal class SystemPads(
         if (vendor == 0x28DE && product == 0x11FF) return ignore.isNullOrBlank()
         return !ignore.isNullOrBlank() && listed(ignore)
     }
+
+    init { thread.start() }
 
     private companion object { const val DENIED_FOR = 1500L }
 }
