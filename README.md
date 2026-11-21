@@ -38,7 +38,8 @@ No third-party library: the engine depends on the Kotlin standard library and on
 ## Requirements
 
 - Linux on x86-64, with a Vulkan driver (Mesa or a vendor's) and Wayland or X11. Sound goes through ALSA, which on a desktop hands it to PipeWire or PulseAudio.
-- JDK 25, which the build tool downloads by itself.
+- JDK 25 and the Kotlin Toolchain, which `./kotlin` (and so `./sillage`) downloads by itself into `.tools/` on the first build.
+- Nothing else: the shaders are compiled to SPIR-V in the repository (`tools/shaders.sh` and `glslc` only to change them).
 
 ## Getting started
 
@@ -86,3 +87,7 @@ A game is a module of the project: `./sillage new mygame` makes one, `./sillage 
 ## Status
 
 Sillage runs on Linux today. The window layer is ready for other systems, which are not written yet. Not there yet: streamed audio (files are decoded whole into memory), MP3, morph targets. The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.
+
+## Licence
+
+Sillage is free software under the [Apache License, Version 2.0](LICENSE) (see [NOTICE](NOTICE)).

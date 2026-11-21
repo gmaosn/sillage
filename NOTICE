@@ -1,0 +1,25 @@
+Sillage
+Copyright 2026 Ruben Begert
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Sillage has no third-party code and no third-party library: the engine depends on the Kotlin standard
+library and calls the system's own C libraries (Vulkan, Wayland, XCB, ALSA, libxkbcommon, libc) through the
+JDK's Foreign Function & Memory API.
+
+Written from public specifications:
+- The Vulkan constants and structure layouts in engine/src/sillage/vk were written from the Vulkan API
+  Registry (Khronos Group, Apache License 2.0).
+- The Wayland protocol tables in engine/src/sillage/platform (xdg-shell, xdg-decoration, relative pointer,
+  pointer constraints, cursor shape) were written from the protocols' XML descriptions (MIT licence), as
+  wayland-scanner would generate them.
+- The glTF 2.0 reader follows the Khronos glTF 2.0 specification; Ogg Vorbis, PNG, JPEG, TrueType and CFF
+  are read from their published specifications.
+
+Test references, not shipped with the engine:
+- engine/test/fixtures/fonts holds measurements (metrics, kerning, coverage) taken with FreeType and
+  HarfBuzz from fonts installed on the authors' machine; no font data is included.
+- engine/test/fixtures/vorbis holds synthetic signals encoded with libvorbis, and their decoding by
+  libvorbisfile.
+
+The demo's models, textures, sounds and music are made by the engine or by the scripts in tools/.
