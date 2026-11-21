@@ -19,6 +19,11 @@ import java.lang.invoke.VarHandle
  * Calls return what libc returns, or −errno on failure, so a caller never reads errno separately.
  *
  * Linux numbers, the same on x86-64 and ARM64 (both use the generic ioctl encoding and 64-bit time).
+ *
+ * Each call is made first without capturing errno: a capturing downcall allocates a little on every call
+ * (40 bytes, even compiled), which the readers, called hundreds of times a second, must not. Only when
+ * that call fails is it made again with errno captured, to learn why. Every call here may be repeated so
+ * (a failed read read nothing, a failed write wrote nothing, the ioctls read or replace a whole state).
  */
 internal class Posix(arena: Arena) : DeviceIo {
     private val state: MemorySegment = arena.allocate(STATE)
@@ -35,6 +40,8 @@ internal class Posix(arena: Arena) : DeviceIo {
         require(bytes.size < 511) { "Path too long: $path" }
         MemorySegment.copy(bytes, 0, this.path, JAVA_BYTE, 0, bytes.size); this.path.set(JAVA_BYTE, bytes.size.toLong(), 0)
         while (true) {
+            val r0 = OPEN0.invokeExact(fOpen, this.path, flags, 0) as Int
+            if (r0 >= 0) return r0
             val r = fail(OPEN.invokeExact(fOpen, state, this.path, flags, 0) as Int)
             if (r != -EINTR) return r
         }
@@ -45,6 +52,8 @@ internal class Posix(arena: Arena) : DeviceIo {
     /** read(2) of at most [max] bytes into [buf]. */
     override fun read(fd: Int, buf: MemorySegment, max: Int): Int {
         while (true) {
+            val r0 = (READ0.invokeExact(fRead, fd, buf, max.toLong()) as Long).toInt()
+            if (r0 >= 0) return r0
             val r = fail(READ.invokeExact(fRead, state, fd, buf, max.toLong()) as Long).toInt()
             if (r != -EINTR) return r
         }
@@ -52,6 +61,8 @@ internal class Posix(arena: Arena) : DeviceIo {
 
     override fun write(fd: Int, buf: MemorySegment, len: Int): Int {
         while (true) {
+            val r0 = (WRITE0.invokeExact(fWrite, fd, buf, len.toLong()) as Long).toInt()
+            if (r0 >= 0) return r0
             val r = fail(WRITE.invokeExact(fWrite, state, fd, buf, len.toLong()) as Long).toInt()
             if (r != -EINTR) return r
         }
@@ -60,6 +71,8 @@ internal class Posix(arena: Arena) : DeviceIo {
     /** ioctl(2) with a pointer argument. */
     override fun ioctl(fd: Int, request: Long, arg: MemorySegment): Int {
         while (true) {
+            val r0 = IOCTL_P0.invokeExact(fIoctl, fd, request, arg) as Int
+            if (r0 >= 0) return r0
             val r = fail(IOCTL_P.invokeExact(fIoctl, state, fd, request, arg) as Int)
             if (r != -EINTR) return r
         }
@@ -68,6 +81,8 @@ internal class Posix(arena: Arena) : DeviceIo {
     /** ioctl(2) with an integer argument (or none: pass 0). */
     override fun ioctl(fd: Int, request: Long, arg: Int): Int {
         while (true) {
+            val r0 = IOCTL_I0.invokeExact(fIoctl, fd, request, arg) as Int
+            if (r0 >= 0) return r0
             val r = fail(IOCTL_I.invokeExact(fIoctl, state, fd, request, arg) as Int)
             if (r != -EINTR) return r
         }
@@ -80,7 +95,9 @@ internal class Posix(arena: Arena) : DeviceIo {
     override fun waitReadable(fd: Int, wake: Int, timeoutMs: Int): Int {
         pollFds.set(JAVA_INT, 0, fd); pollFds.set(JAVA_SHORT, 4, POLLIN.toShort()); pollFds.set(JAVA_SHORT, 6, 0)
         pollFds.set(JAVA_INT, 8, wake); pollFds.set(JAVA_SHORT, 12, POLLIN.toShort()); pollFds.set(JAVA_SHORT, 14, 0)
-        val n = fail(POLL.invokeExact(fPoll, state, pollFds, if (wake >= 0) 2L else 1L, timeoutMs) as Int)
+        val count = if (wake >= 0) 2L else 1L
+        val n0 = POLL0.invokeExact(fPoll, pollFds, count, timeoutMs) as Int
+        val n = if (n0 >= 0) n0 else fail(POLL.invokeExact(fPoll, state, pollFds, count, 0) as Int)
         if (n == -EINTR) return 0
         if (n < 0) return n
         if (n == 0) return 0
@@ -165,5 +182,15 @@ internal class Posix(arena: Arena) : DeviceIo {
         @JvmField val EVENTFD: MethodHandle = h(JAVA_INT, JAVA_INT, JAVA_INT)
         @JvmField val INOTIFY_INIT: MethodHandle = h(JAVA_INT, JAVA_INT)
         @JvmField val INOTIFY_ADD: MethodHandle = h(JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT)
+        // The same without errno, tried first.
+        private fun p(ret: MemoryLayout, vararg args: MemoryLayout): MethodHandle = linker.downcallHandle(FunctionDescriptor.of(ret, *args))
+        private fun pv(firstVariadic: Int, ret: MemoryLayout, vararg args: MemoryLayout): MethodHandle =
+            linker.downcallHandle(FunctionDescriptor.of(ret, *args), Linker.Option.firstVariadicArg(firstVariadic))
+        @JvmField val OPEN0: MethodHandle = pv(2, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT)
+        @JvmField val READ0: MethodHandle = p(JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
+        @JvmField val WRITE0: MethodHandle = p(JAVA_LONG, JAVA_INT, ADDRESS, JAVA_LONG)
+        @JvmField val IOCTL_P0: MethodHandle = pv(2, JAVA_INT, JAVA_INT, JAVA_LONG, ADDRESS)
+        @JvmField val IOCTL_I0: MethodHandle = pv(2, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT)
+        @JvmField val POLL0: MethodHandle = p(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT)
     }
 }

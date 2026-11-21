@@ -90,19 +90,16 @@ internal class HidrawDualSense(owner: SystemPads, node: String, fd: Int, val inf
         return r
     }
 
+    /** One report per call (hidraw gives one per read): reading on until EAGAIN would make a failing call each time. */
     override fun readReports(x: DeviceIo): Boolean {
-        var got = false
-        for (k in 0 until 32) {
-            val n = x.read(fd, inBuf, 128)
-            if (n == -Posix.EAGAIN) break
-            if (n <= 0) { endedBecause = if (n == 0) "end of file" else Posix.describe(-n); return false }
-            MemorySegment.copy(inBuf, JAVA_BYTE, 0, report, 0, n)
-            when (DualSense.parseInput(report, n, calibration, cur, edge, stamp)) {
-                DualSense.PARSED -> { integrate(); got = true }
-                DualSense.BAD_CRC -> badReports++
-            }
+        val n = x.read(fd, inBuf, 128)
+        if (n == -Posix.EAGAIN) return true
+        if (n <= 0) { endedBecause = if (n == 0) "end of file" else Posix.describe(-n); return false }
+        MemorySegment.copy(inBuf, JAVA_BYTE, 0, report, 0, n)
+        when (DualSense.parseInput(report, n, calibration, cur, edge, stamp)) {
+            DualSense.PARSED -> { integrate(); publish() }
+            DualSense.BAD_CRC -> badReports++
         }
-        if (got) publish()
         return true
     }
 

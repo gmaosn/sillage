@@ -142,6 +142,8 @@ class HotplugTest {
             src.close()
             val last = node.written.last()
             assertEquals(0x04, u(last, 1) and 0x04); assertEquals(0x05, u(last, 1 + 10), "R2 libérée en partant")
+            pad.lightbar = Color.RED; pad.rumble(1)                 // après la fermeture (la dernière image d'un jeu) : sans effet ni erreur
+            assertSame(last, node.written.last())
         } finally { src.close() }
     }
 

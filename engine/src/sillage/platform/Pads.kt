@@ -180,9 +180,12 @@ internal class SystemPads(
     val thread: Thread = Thread(::watch, "sillage-pads").apply { isDaemon = true }
 
     /** Signals an eventfd from any thread (the game's, a pad's). */
-    fun signal(efd: Int) { synchronized(devSignal) { devSignal.signal(efd) } }
+    fun signal(efd: Int) { synchronized(devSignal) { if (wakeOpen) devSignal.signal(efd) } }
 
-    private fun wakeWatcher() { synchronized(real) { real.signal(hotplugWake) } }
+    private fun wakeWatcher() { synchronized(real) { if (wakeOpen) real.signal(hotplugWake) } }
+
+    /** False once closed: a game still setting a pad's lights then (its last frame, Ctrl-C) touches nothing freed. */
+    private var wakeOpen = true
 
     fun say(key: String, message: String) {
         synchronized(said) { if (!said.add(key)) return; notes.add(message) }
@@ -201,15 +204,18 @@ internal class SystemPads(
         if (running) { rescanNow = true; wakeWatcher() }
     }
 
+    private val closing = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override fun close() {
-        if (!running) return
+        // Not under this object's lock: the pads' threads take it as they end, while close waits for them.
+        if (!closing.compareAndSet(false, true)) return
         running = false
         wakeWatcher()
         thread.join(2000)
         val all = synchronized(this) { live.toList() }
         for (p in all) p.stop()
         for (p in all) p.thread?.join(1000)
-        synchronized(real) { real.close(hotplugWake) }
+        synchronized(devSignal) { synchronized(real) { wakeOpen = false; real.close(hotplugWake) } }
         wakeArena.close()
     }
 

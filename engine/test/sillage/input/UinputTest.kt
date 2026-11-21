@@ -74,6 +74,25 @@ class UinputTest {
             axis(Ev.ABS_HAT0Y, -1, "croix en haut") { pad.isDown(Pad.DPAD_UP) }; axis(Ev.ABS_HAT0Y, 1, "croix en bas") { pad.isDown(Pad.DPAD_DOWN) && !pad.isDown(Pad.DPAD_UP) }
             axis(Ev.ABS_HAT0Y, 0, "croix au repos") { pad.buttonsDown().isEmpty() }
 
+            // Le fil de lecture evdev n'alloue rien : 1500 mouvements du stick par paquets de 10 (le tampon du noyau
+            // déborderait d'un coup), après autant pour chauffer.
+            val bean = java.lang.management.ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+            var step = 0
+            fun sweep() {
+                repeat(150) {
+                    val n = reader.eventCount
+                    repeat(10) { step++; gen.abs(Ev.ABS_RX, (step % 200 - 100) * 300) }
+                    waitFor(what = "les mouvements lus") { reader.eventCount >= n + 20 }
+                }
+            }
+            sweep()
+            val before = bean.getThreadAllocatedBytes(reader.thread!!.threadId())
+            sweep()
+            val bytes = bean.getThreadAllocatedBytes(reader.thread!!.threadId()) - before
+            println("UINPUT fil evdev : $bytes octets alloués pour 3000 évènements")
+            assertTrue(bytes < 4096, "$bytes octets alloués par le fil evdev pour 3000 évènements")
+            axis(Ev.ABS_RX, 0, "droit au repos") { pad.rightStick.amount == 0f }
+
             // Vibration : l'effet téléversé (fort, faible, durée), joué, puis arrêté quand le temps est écoulé.
             pad.rumble(.5, .25, .3)
             waitFor(what = "l'effet joué") { gen.uploads.isNotEmpty() && gen.plays.any { it[1] == 1 } }
