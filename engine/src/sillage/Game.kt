@@ -56,9 +56,11 @@ internal class Runtime(private val title: String, private val args: Array<String
   --hour H                start at hour H (0 to 24, see Lighting.time)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
-  --validation            Vulkan validation layers""")
+  --validation            Vulkan validation layers
+  --pad-test [--seconds N]   check the pads from the terminal (buttons, sticks, motion, lights, rumble, triggers)""")
             return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
         }
+        if ("--pad-test" in args) { padTest(args); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-sounds")?.let { exportSounds(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-textures")?.let { exportTextures(Path.of(it)); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         val headless = "--headless" in args
@@ -107,6 +109,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             renderer = r; r.ouvrir()
             window?.mouseCaptured = true
             scene.input.source = KeySource { k -> window?.isDown(k) ?: false }
+            if (window != null && scene.input.padSource === PadSource.NONE) scene.input.padSource = PadSource.system()
             var last = System.nanoTime()
             var frame = 0; var fps = 60; var fpsFrames = 0; var fpsTime = 0f
             val start = scene.player?.position ?: Vec3.ZERO
@@ -171,6 +174,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                     audio?.mixer?.stopAll()
                     val fresh = Scene().apply(build)
                     fresh.input.source = scene.input.source
+                    fresh.input.adoptPads(scene.input)
                     fresh.audio = audio
                     r.oublier()
                     if (fresh.lighting.shadows != scene.lighting.shadows) {
@@ -201,6 +205,7 @@ internal class Runtime(private val title: String, private val args: Array<String
             return RunReport(frame, if (sorted.isEmpty()) 0.0 else sorted.average(), sorted.getOrElse((sorted.size * .99).toInt().coerceAtMost(sorted.size - 1)) { 0.0 },
                 sorted.lastOrNull() ?: 0.0, p?.position ?: Vec3.ZERO, gpu, firstFrame)
         } finally {
+            scene.input.padSource.close()
             renderer?.close()
             window?.close()
             audio?.close()

@@ -51,6 +51,19 @@ class Camera internal constructor(private val scene: Scene) {
     var near = .08f
     var far = 200f
     var mouseSensitivity = 1f
+    /** The pad stick that turns the view (null: none), and how fast at a full tilt, in degrees per second (up and down: two thirds). */
+    var lookStick: Stick? = Stick.RIGHT
+    var stickSpeed = 160f
+    /** Which pad turns it, by slot; −1 (the default) for any. */
+    var pad = -1
+    /** Up on the stick or the mouse looks down instead. */
+    var invertY = false
+    /**
+     * First person: turning a pad with motion sensors (a DualSense) turns the view, [gyroSensitivity] times
+     * as much (1: the view turns as far as the pad). Turning about the vertical works however the pad is held.
+     */
+    var gyroAim = false
+    var gyroSensitivity = 1f
     /** Where the camera is (updated every frame). */
     var position = Vec3(0f, 5f, 10f)
         private set
@@ -78,12 +91,40 @@ class Camera internal constructor(private val scene: Scene) {
         return if (m.lengthSquared() > 1f) m.normalized() else m
     }
 
-    internal fun turn(dx: Float, dy: Float) {
+    internal fun turn(dx: Float, dy0: Float) {
         val k = mouseSensitivity
+        val dy = if (invertY) -dy0 else dy0
         azimuth -= dx * .0035f * k
         if (mode == CameraMode.FIRST_PERSON) pitch = (pitch - dy * .2f * k).coerceIn(-85f, 85f)
         else elev = (elev + dy * .003f * k).coerceIn(.08f, 1.25f)
         mouseCalm = 0f
+    }
+
+    /** Turns with the pad: its stick (speed growing with the tilt, for fine aiming), and in first person its gyroscope. */
+    private fun steer(dt: Float) {
+        val input = scene.input
+        lookStick?.let { which ->
+            val s = input.stick(which, pad)
+            if (s != null && s.amount > 0f) {
+                val k = s.amount * stickSpeed * dt * PI.toFloat() / 180f
+                azimuth -= s.x * k
+                val up = if (invertY) -s.y else s.y
+                if (mode == CameraMode.FIRST_PERSON) pitch = (pitch + up * k * 180f / PI.toFloat() * .66f).coerceIn(-85f, 85f)
+                else elev = (elev - up * k * .66f).coerceIn(.08f, 1.25f)
+                mouseCalm = 0f
+            }
+        }
+        if (gyroAim && mode == CameraMode.FIRST_PERSON) {
+            val p = input.motionPad(pad) ?: return
+            val tx = p.turnedAbout(0, dt); val ty = p.turnedAbout(1, dt); val tz = p.turnedAbout(2, dt)
+            // About the vertical: the turn about the direction the pad feels gravity from (its accelerometer).
+            val ax = p.state.accel[0]; val ay = p.state.accel[1]; val az = p.state.accel[2]
+            val g = sqrt(ax * ax + ay * ay + az * az)
+            val yaw = if (g > 4f) (tx * ax + ty * ay + tz * az) / g else ty
+            azimuth += yaw * gyroSensitivity
+            pitch = (pitch + tx * 180f / PI.toFloat() * gyroSensitivity * (if (invertY) -1f else 1f)).coerceIn(-85f, 85f)
+            if (tx != 0f || yaw != 0f) mouseCalm = 0f
+        }
     }
 
     internal fun zoom(wheel: Float) { if (mode == CameraMode.THIRD_PERSON) distance = (distance - wheel * .6f).coerceIn(minDistance, maxDistance) }
@@ -93,6 +134,7 @@ class Camera internal constructor(private val scene: Scene) {
     /** The view matrix for this frame. */
     internal fun view(dt: Float): Mat4 {
         mouseCalm += dt
+        if (mode != CameraMode.FIXED) steer(dt)
         val t = target
         when {
             mode == CameraMode.FIXED || t == null -> {
