@@ -129,6 +129,6 @@ Heavy runs are best capped in memory (`systemd-run --user --scope -p MemoryMax=4
 ## Adding things
 
 - **A Vulkan function**: add its signature handle in `vk/Vulkan.kt` if the shape is new, the function, and any struct in `vk/Structs.kt` with its exact layout (check it against the registry).
-- **A shape**: a `Shape` subclass with volume, inertia and bounding radius; a rank and the routines against every other shape in `Collide.kt` (and against triangles); its bounds in `PhysicsWorld.prepareBody`; ray and sweep tests in `Queries.kt`; tests; then new fingerprints.
+- **A shape**: a `Shape` subclass with volume, inertia, bounding radius, principal axes and `scaled`; the convex hull (`Hull.kt`, narrow phase in `CollideHull.kt`: separating axes with the Gauss map, clipping) and the compound (`Compound.kt`, a part index in each contact's feature id) are the examples to follow; a rank and the routines against every other shape in `Collide.kt` (and against triangles); its bounds in `PhysicsWorld.prepareBody`; ray and sweep tests in `Queries.kt`; tests; then new fingerprints.
 - **A scene builder**: a function in `Scene` that makes a `Node` (sharing its mesh when the parameters repeat), documented in KDoc, in the guide and in the reference, with a check in `qa/…/Api.kt`.
 - **A sound**: a function in `Sounds`, built from `Synth` with a fixed seed, and listed in `--export-sounds`.

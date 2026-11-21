@@ -95,6 +95,9 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     internal var removed = false
     internal var fxY = Float.NaN                 // height at the last frame, to see it fall into water
     internal val behaviours = ArrayList<Node.(Float) -> Unit>()
+    /** The physics water this node's water stands for ([Scene.water]), if it carries things. */
+    var waterVolume: sillage.physics.WaterVolume? = null
+        internal set
     /** Its rank among the nodes made by the program (behaviours run in this order). */
     internal val serial: Long = nextSerial++
 
@@ -220,6 +223,28 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Slides along [axis] without turning (a drawer, a lift), between [min] and [max] metres when both are given; motor and spring on the result. */
     fun slider(axis: Vec3, to: Node? = null, min: Number? = null, max: Number? = null): SliderJoint =
         scene.physics.addSlider(to?.body, joinable(), axis).also { j -> if (min != null && max != null) j.limits(min.toFloat(), max.toFloat()) }
+
+    /**
+     * A shoulder or a hip ([to]'s joint at [anchor], or the world's): it turns freely within a cone of [swing]
+     * degrees about [axis] ([swing2] across, for an elliptic one) and twists about it by up to [twist]
+     * degrees each way. For rag dolls, lamps on an arm, a fishing rod's tip.
+     */
+    fun cone(anchor: Vec3, axis: Vec3, to: Node? = null, swing: Number = 45, swing2: Number = swing, twist: Number = 30): sillage.physics.ConeTwistJoint {
+        val d = PI.toFloat() / 180f
+        return scene.physics.addConeTwist(to?.body, joinable(), anchor, axis, swing.toFloat() * d, swing2.toFloat() * d, -twist.toFloat() * d, twist.toFloat() * d)
+    }
+
+    /**
+     * A convex hull of its mesh's points (as it is scaled now), for `dynamic(shape = …)`: a rock or a bevelled
+     * crate that rolls and stacks as its shape says. At most [maxVertices] points are kept.
+     */
+    fun hullShape(maxVertices: Int = 32): sillage.physics.ConvexHull {
+        val m = if (mesh.triangleCount > 0) mesh else model?.flatten() ?: error("hullShape(): this node draws no mesh")
+        val v = m.vertices
+        val pts = FloatArray(v.size / 3)
+        for (k in 0 until v.size / 9) { pts[3 * k] = v[9 * k] * scale; pts[3 * k + 1] = v[9 * k + 1] * scale; pts[3 * k + 2] = v[9 * k + 2] * scale }
+        return sillage.physics.ConvexHull(pts, maxVertices)
+    }
 
     /** Glued to [to] (or to the world) as they are now. */
     fun glue(to: Node? = null): FixedJoint = scene.physics.addFixed(to?.body, joinable())

@@ -173,6 +173,13 @@ box(4, .3, 2, Color.ORANGE, at = vec(0, 1, 0)).kinematic()
 collider(Box(1f, 1.5f, 1f), at = vec(-3, 1.5, 2))             // an invisible wall
 ```
 
+Shapes besides the primitives' own: `boxShape(w, h, d)`, `sphereShape(r)`, `capsuleShape(r, h)`, a convex hull and a compound. `rock.hullShape()` wraps a node's mesh in its convex hull (at most 32 points by default), so that a rock, a bevelled crate or a barrel rolls and stacks as it looks; `Compound(Compound.Part(…), …)` joins several shapes in one body (a table: a top and four legs; a hammer). The body sits on the shape's centre of mass, the node where its mesh says.
+
+```kotlin
+val rock = model("models/rock.glb", at = vec(2, 3, 0))
+rock.dynamic(shape = rock.hullShape(), density = 2600)
+```
+
 When a model is animated, a collider can follow one of its parts: `port.collider(Box(.7f, .25f, .75f), part = "boat")` gives a rocking boat a deck to stand on.
 
 `dynamic` also takes `damping` (air drag, for a beach ball), `angularDamping`, `rollingResistance` and `impact` (the sound of a hit: `AUTO`, `WOOD`, `RUBBER`, `SILENT`). The body itself is `node.body`, with its velocity, mass and forces.
@@ -185,12 +192,12 @@ Bodies can be joined, once dynamic:
 
 ```kotlin
 val door = box(.9, 2, .06, at = vec(.45, 1, 0)).dynamic(density = 600)
-door.hinge(anchor = vec(0, 1, 0), axis = Vec3.Y).limits(-1.6f, 0f)       // opens one way
+door.hinge(anchor = vec(0, 1, 0), axis = Vec3.Y, min = -92, max = 0)     // opens one way (degrees)
 val lamp = sphere(.15, Color.YELLOW, at = vec(3, 2, 0)).dynamic()
 chain(from = vec(3, 3.5, 0), to = vec(3, 2.15, 0), links = 6, end = lamp)  // hangs on a chain
 ```
 
-`hangFrom` swings freely, `hinge` turns about an axis, `slider` slides (a lift, a drawer), `glue` welds, `rope` and `spring` pull; each joins the node to another (`to = …`) or to the world. Hinges and sliders take limits, motors and springs (`motor(speed, maxTorque)`, `spring(hertz)`). The demo's see-saw and swing are a dozen lines each. `Vehicle(physics, car.body)` turns a box into a car with suspension, steering, brakes and tyres that skid. A player standing on anything that moves (the boat, a lift, a turning platform, a floating crate) is carried by it, and keeps its speed when jumping off. [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
+`cone(anchor, axis, swing = 45, twist = 30)` is a shoulder or a hip (a rag doll's joints): it turns within a cone of `swing` degrees and twists by up to `twist`. `hangFrom` swings freely, `hinge` turns about an axis, `slider` slides (a lift, a drawer), `glue` welds, `rope` and `spring` pull; each joins the node to another (`to = …`) or to the world. Hinges and sliders take limits, motors and springs (`motor(speed, maxTorque)`, `spring(hertz)`). The demo's see-saw and swing are a dozen lines each. `Vehicle(physics, car.body)` turns a box into a car with suspension, steering, brakes and tyres that skid. A player standing on anything that moves (the boat, a lift, a turning platform, a floating crate) is carried by it, and keeps its speed when jumping off. [PHYSICS.md](PHYSICS.md) tells more, including how to use the physics without a scene.
 
 ## The player
 
@@ -458,6 +465,8 @@ Everything casts a shadow from the sun (or the moon) on what is below it, within
 
 Water finds its shores by itself: wherever solid ground rises gently out of it, `water()` lays a lagoon of the `shallows` colour reaching `reach` metres out, a lacy line of foam that swells against the beach and a line of surf rolling in. Raised things standing in the water, such as a pier's deck, leave the water under them open. The sky is mirrored at grazing angles, and the sun, the moon and the lamps glitter on the small waves. The shores are looked for once the scene is built, so the order of the calls does not matter.
 
+The water carries: what is lighter than water floats (a crate of density 500 half in, a beach ball high on the waves), what is heavier sinks slowly and comes to rest on the bottom, and both are slowed and rocked as in water. Whatever falls in splashes, with a sound fitting its size. `water(…, buoyant = false)` is only a picture; `node.waterVolume` gives the physics' water (its `level` may rise and fall, `flow` makes a current).
+
 ## Lamps, glow and wind
 
 ```kotlin
@@ -505,7 +514,7 @@ A model can carry more than what is drawn. Objects named by a few conventions (o
 
 | In Blender | In the game |
 |---|---|
-| an object named `col_…` (or `sillage = collider`) | an invisible collision volume, fitted to the object: a box by default; `col_sphere_…`, `col_capsule_…` (standing on its Y axis), `col_mesh_…` (its triangles as they are), or a property `shape`. An empty works too: Blender's cube of side 2, scaled. A volume under an animated part (a boat that rocks) follows it. |
+| an object named `col_…` (or `sillage = collider`) | an invisible collision volume, fitted to the object: a box by default; `col_sphere_…`, `col_capsule_…` (standing on its Y axis), `col_hull_…` (the convex hull of its points), `col_mesh_…` (its triangles as they are), or a property `shape`. An empty works too: Blender's cube of side 2, scaled. A volume under an animated part (a boat that rocks) follows it. |
 | an empty named `spawn` | where `player()` starts when it is given no `at`, facing as the empty does; the camera starts behind it |
 | a point or spot light | a lamp (`light`): its colour, its range as the radius; Blender's 1000 W gives an intensity of about 1.5 |
 | `sillage = dynamic` on an object | a separate node of its own, named after the object (`find("crate")`), with a moving body: properties `mass`, `density`, `bounce`, `friction`, `surface`, `shape` |

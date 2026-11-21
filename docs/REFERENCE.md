@@ -46,7 +46,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `cone(radius = .5, height = 1, color = YELLOW, at)` | standing on Y |
 | `plane(width = 10, depth = width, color = GRASS, at)` | flat, facing up, not solid |
 | `ground(size = 400, color = GRASS, surface = Material.GRASS, at)` | flat solid floor, its edge lost in the haze |
-| `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests |
+| `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6, buoyant = true)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests |
 | `model(path, at, scale = 1, normals = Normals.SMOOTH)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
 | `mesh(mesh, at)` | a `Mesh` of your own |
 | `chain(from, to, links, radius = .03, color = GREY, start = null, end = null, density = 2000)` | a chain of dynamic capsule nodes joined by ball joints, hanging from `start` (or the world), holding `end`; the links |
@@ -113,6 +113,9 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `at(x, y, z)`, `at(vec)` | places it (and its body) |
 | `rotate(x = 0, y = 0, z = 0)` | turns it by degrees from its current rotation (X, then Y, then Z) |
 | `scaled(factor)` | size factor; set it before `dynamic` or `solid` |
+| `hullShape(maxVertices = 32)` | the convex hull of its mesh (as scaled now), for `dynamic(shape = …)` |
+| `cone(anchor, axis, to = null, swing = 45, swing2 = swing, twist = 30)` | a cone–twist joint in degrees (a shoulder); the `ConeTwistJoint` |
+| `waterVolume` | for a `water()` node: the physics' `WaterVolume` (level, flow, drag), null without buoyancy |
 | `onGround(x, z, lift = 0)` | sets it down on the ground at (x, z), its lowest point (as turned and scaled) on it; its body goes with it |
 | `moveTo(target, over, ease = IN_OUT, after = 0)`, `scaleTo(factor, over, ease, after)` | `Tween`s: a kinematic body follows smoothly; the scale changes the look only |
 | `dynamic(mass, density = 400, bounce = 0, friction = .6, shape, surface = "wood", impact = AUTO, damping = 0, angularDamping = 0, rollingResistance)` | a moving rigid body. Shape: the primitive's, a model's bounding box, or `shape` (in metres, not scaled) |

@@ -56,6 +56,8 @@ val island: Scene.() -> Unit = {
     crate(-3.4f, 1.4f, size = .55f, yaw = 34.4f)
     crate(4.2f, 6.4f, yaw = 17.2f); crate(4.9f, 6.9f, size = .5f)         // sur la plage
     crate(-1.4f, 11.1f, size = .6f, yaw = 22.9f)                           // au bout du ponton
+    // Une caisse à la dérive dans le lagon, près de la barque : l'eau la porte (elle est plus légère qu'elle).
+    model("models/caisse.glb", at = vec(-2.3, 0, 13.4), scale = .55).rotate(y = 31, x = 8).dynamic(mass = 18, friction = .7)
 
     // Des articulations : une bascule sur la plage de gauche, une balançoire à chaînes sur celle de droite.
     seeSaw(-6.4f, 5.6f, yaw = 35f)

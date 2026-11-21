@@ -7,6 +7,7 @@ import sillage.audio.Voice
 import sillage.math.Mat4
 import sillage.math.Quat
 import sillage.math.Vec3
+import sillage.physics.addWater
 import sillage.physics.Body
 import sillage.physics.BodyType
 import sillage.physics.Box
@@ -257,8 +258,11 @@ class Scene {
      * colour reaching [reach] metres out, with foam against the beach and surf rolling in; wave crests
      * drift on the open water. The shores are found when the scene is built, so add the land first or not.
      */
-    fun water(level: Number = 0, color: Color = Color.WATER, size: Number = 300, shallows: Color? = null, reach: Number = 6): Node {
+    fun water(level: Number = 0, color: Color = Color.WATER, size: Number = 300, shallows: Color? = null, reach: Number = 6,
+              buoyant: Boolean = true): Node {
         val node = Node(this, Mesh.EMPTY)
+        // It carries what floats (lighter than water), slows what sinks, rocks what rolls on it.
+        if (buoyant) { val h = size.toFloat() / 2; node.waterVolume = physics.addWater(level.toFloat(), -h, -h, h, h) }
         node.water = WaterLook(color, shallows ?: color.mix(Color.hex(0xB8F2E6), .6f), reach.toFloat())
         node.castsShadow = false
         pendingWater.add(Triple(node, level.toFloat(), size.toFloat()))
@@ -445,6 +449,9 @@ class Scene {
 
     /** Offset from a model's origin to the centre of its bounding box (primitives are already centred). */
     private fun centreOf(node: Node, given: Shape?): Vec3 {
+        // A hull or a compound is centred on its centre of mass: the node's origin stays where its points were given.
+        if (given is sillage.physics.ConvexHull) return given.centre
+        if (given is sillage.physics.Compound) return given.centre
         if (given != null || node.shape != null) return Vec3.ZERO
         val m = if (node.mesh.triangleCount > 0) node.mesh else node.model?.flatten() ?: return Vec3.ZERO
         val (lo, hi) = m.bounds
@@ -808,6 +815,8 @@ class Scene {
             if (before > w[0] && y <= w[0] && abs(p.x) < w[1] && abs(p.z) < w[1]) {
                 val count = (8 + 3 * -vy).toInt().coerceAtMost(48)
                 particles.spawn(Particles.SPLASH, p.x, w[0] + .02f, p.z, count)
+                val size = if (n is Player) 1f else ((n.body?.shape?.boundingRadius ?: .3f) / .6f).coerceIn(0f, 1f)
+                sounds.playSplash(Vec3(p.x, w[0], p.z), -vy, size)
             }
         }
     }

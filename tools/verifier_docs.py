@@ -34,6 +34,7 @@ val score: Int get() = TODO(); val sound: Sound get() = TODO(); val cry: Sound g
 val mesh: Mesh get() = TODO(); val width: Float get() = TODO(); val world: PhysicsWorld get() = TODO(); val dt: Float get() = TODO()
 val shape: Shape get() = TODO(); val triangles: FloatArray get() = TODO(); val materialIds: IntArray get() = TODO()
 val cabin: Body get() = TODO()
+val points: FloatArray get() = TODO()
 fun openDoor() {}
 fun jump() {}
 fun pause() {}

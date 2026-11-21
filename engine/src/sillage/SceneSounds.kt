@@ -30,6 +30,15 @@ internal class SceneSounds(private val scene: Scene) {
     private val wood by lazy { List(3) { Sounds.knock(it) } }
     private val rubber by lazy { List(3) { Sounds.bounce(it) } }
     private val scrape by lazy { Sounds.scrape() }
+    private val splashes by lazy { List(4) { Sounds.splash(it / 3f, it) } }
+
+    /** Something fell into the water at [at] at [speed] m/s (downwards); [size] is how big it is, 0 a pebble, 1 a sailor. */
+    fun playSplash(at: Vec3, speed: Float, size: Float) {
+        if (audio == null) return
+        val k = (size.coerceIn(0f, 1f) * 3f + .5f).toInt().coerceIn(0, 3)
+        val volume = ((speed - 1.5f) / 6f).coerceIn(.15f, 1f) * (.5f + .5f * size.coerceIn(0f, 1f))
+        play(splashes[k], at, volume, 1f + (rnd.unit() - .5f) * .1f, 50f)
+    }
     private val rnd = Noise(2026)
 
     private class Tracked(val body: Body, val impact: Impact, var velocity: Vec3, var last: Float = -1f)
@@ -237,6 +246,7 @@ internal fun exportSounds(dir: java.nio.file.Path) {
     for (v in 0..2) { all["knock-$v"] = Sounds.knock(v); all["bounce-$v"] = Sounds.bounce(v); all["waves-$v"] = Sounds.waves(v) }
     for (v in 0..3) all["gull-$v"] = Sounds.gull(v)
     all["scrape"] = Sounds.scrape()
+    for (v in 0..3) all["splash-$v"] = Sounds.splash(v / 3f, v)
     for ((name, s) in all) s.save(dir.resolve("$name.wav"))
     println("SILLAGE_SOUNDS ${all.size} files in $dir")
 }

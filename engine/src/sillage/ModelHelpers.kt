@@ -103,6 +103,12 @@ internal class ModelHelpers(private val scene: Scene) {
         val half = Vec3((hi.x - lo.x) / 2 * s.x, (hi.y - lo.y) / 2 * s.y, (hi.z - lo.z) / 2 * s.z)
         val centre = Vec3((hi.x + lo.x) / 2 * scale.x, (hi.y + lo.y) / 2 * scale.y, (hi.z + lo.z) / 2 * scale.z)
         val h = Vec3(max(half.x, .005f), max(half.y, .005f), max(half.z, .005f))
+        if (kind == "hull" && pts.size >= 12) {
+            // Its own points, scaled as it stands; the hull sits on its centre of mass.
+            val scaled = FloatArray(pts.size) { k -> pts[k] * when (k % 3) { 0 -> scale.x; 1 -> scale.y; else -> scale.z } }
+            val hull = sillage.physics.ConvexHull(scaled)
+            return hull to hull.centre
+        }
         val shape: Shape = when (kind) {
             "sphere", "ball" -> Sphere(max(h.x, max(h.y, h.z)))
             "capsule" -> { val r = max(h.x, h.z); Capsule(r, max(h.y - r, 0f)) }

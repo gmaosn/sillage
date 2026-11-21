@@ -10,6 +10,7 @@ import sillage.physics.Capsule
 import sillage.physics.Shape
 import sillage.physics.Sphere
 import sillage.physics.raycast
+import sillage.physics.waterList
 import kotlin.math.*
 
 /**
@@ -155,8 +156,15 @@ class Debug internal constructor(private val scene: Scene) {
                 circle(top, x, y, r, c, 0f, half, 12); circle(top, z, y, r, c, 0f, half, 12)
                 circle(bottom, x, y, r, c, half, 2 * half, 12); circle(bottom, z, y, r, c, half, 2 * half, 12)
             }
-            // Shapes this drawing does not know yet: their bounding sphere, so that nothing is invisible.
-            else -> { val r = shape.boundingRadius; circle(at, x, y, r, c); circle(at, y, z, r, c); circle(at, z, x, r, c) }
+            is sillage.physics.ConvexHull -> for (f in 0 until shape.faceCount) {
+                // Each face's loop; an edge is drawn by both its faces, which costs little.
+                val loop = shape.face(f)
+                for (k in loop.indices) {
+                    val a = shape.vertex(loop[k]); val b = shape.vertex(loop[(k + 1) % loop.size])
+                    line(at + rot.rotate(a), at + rot.rotate(b), c)
+                }
+            }
+            is sillage.physics.Compound -> for (part in shape.parts) shape(part.shape, at + rot.rotate(part.position), rot * part.rotation, c)
         }
     }
 
@@ -169,6 +177,7 @@ class Debug internal constructor(private val scene: Scene) {
     private val jointColor = Color(1f, .35f, .85f)
     private val contactColor = Color(1f, .9f, .25f)
     private val speedColor = Color(1f, 1f, 1f)
+    private val waterColor = Color(.3f, .75f, 1f)
 
     /** Writes this frame's lines into [extras] (none when the physics is not shown). */
     internal fun fill(extras: FrameExtras, eye: Vec3) {
@@ -202,6 +211,16 @@ class Debug internal constructor(private val scene: Scene) {
                 }
             }
             for (t in w.triggers) shape(t.shape, t.position, t.rotation, zoneColor)
+            // The waters that carry: their outline at the surface, near the camera when they are endless.
+            for (water in w.waterList) {
+                if (!water.enabled) continue
+                val y = water.level
+                val x0 = maxOf(water.minX, eye.x - 60f); val x1 = minOf(water.maxX, eye.x + 60f)
+                val z0 = maxOf(water.minZ, eye.z - 60f); val z1 = minOf(water.maxZ, eye.z + 60f)
+                if (x0 >= x1 || z0 >= z1) continue
+                line(x0, y, z0, x1, y, z0, waterColor); line(x1, y, z0, x1, y, z1, waterColor)
+                line(x1, y, z1, x0, y, z1, waterColor); line(x0, y, z1, x0, y, z0, waterColor)
+            }
             for (j in w.jointList) {
                 val a = j.anchorA; val b = j.anchorB
                 line(a, b, jointColor)

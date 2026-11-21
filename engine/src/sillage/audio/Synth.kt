@@ -208,6 +208,35 @@ object Sounds {
         }, .9f)
     }
 
+    /**
+     * Something falling into water: the slap on the surface, a rush of spray, then the gulp of the hollow
+     * closing behind it, a rising « bloop », and a bubble or two. [size]: 0 a pebble, 1 a crate or a sailor.
+     */
+    fun splash(size: Float = .5f, variant: Int = 0): Sound {
+        val rnd = Noise(300L + variant); val s = size.coerceIn(0f, 1f)
+        val tune = 1f + (rnd.unit() - .5f) * .15f
+        val slapF = Biquad(R).lowPass(900f - 400f * s); val sprayF = Biquad(R).bandPass((2800f - 1200f * s) * tune, .8f)
+        val gulpAt = .05f + .07f * s
+        val bubbles = List(2) { k -> gulpAt + .12f + .1f * k + rnd.unit() * .08f to (700f + rnd.unit() * 500f) * (1.4f - .5f * s) }
+        var gulp = 0f; val bub = FloatArray(bubbles.size)
+        return Synth.normalize(Synth.sound(.5f + .45f * s) { _, t ->
+            var x = slapF.process(rnd.next()) * Synth.decay(t, .015f + .03f * s) * 1.2f
+            x += sprayF.process(rnd.next()) * Synth.decay(t, .06f + .14f * s, .008f) * .8f
+            if (t >= gulpAt) {
+                // A bubble's tone rises as it shrinks (Minnaert): the cavity closing, then smaller bubbles.
+                val u = t - gulpAt
+                gulp += TAU * (260f + 380f * (1f - s)) * tune * (1f + 1.6f * u / (.12f + .1f * s)) / R
+                x += sin(gulp) * Synth.decay(u, .05f + .06f * s) * .7f
+            }
+            for ((k, b) in bubbles.withIndex()) if (t >= b.first) {
+                val u = t - b.first
+                bub[k] += TAU * b.second * (1f + 2f * u / .05f) / R
+                x += sin(bub[k]) * Synth.decay(u, .025f) * .25f
+            }
+            x
+        }, .85f)
+    }
+
     /** A little glockenspiel arpeggio, rising: something was won. */
     fun pickup(): Sound {
         val notes = floatArrayOf(1318.5f, 1661.2f, 1975.5f, 2637.0f)

@@ -52,7 +52,8 @@ class BlenderTest {
             """{"name":"crate","mesh":0,"translation":[-3,0.5,0],"scale":[0.5,0.5,0.5],"extras":{"sillage":"dynamic","mass":12}}""",
             """{"name":"zone_door","translation":[0,1,-3]}""",
             """{"name":"pickup_shell.001","mesh":0,"translation":[2,0.3,2],"scale":[0.2,0.2,0.2]}""",
-            """{"name":"COL_wall.002","translation":[6,1,0],"scale":[0.1,1,2],"extras":{"camera":false,"surface":"wood"}}""")
+            """{"name":"COL_wall.002","translation":[6,1,0],"scale":[0.1,1,2],"extras":{"camera":false,"surface":"wood"}}""",
+            """{"name":"col_hull_rock","mesh":0,"translation":[-6,0.5,4],"rotation":[0,0.3826834,0,0.9238795],"scale":[0.5,0.5,0.5]}""")
         val json = """{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[${nodes.indices.joinToString(",")}]}],
             "nodes":[${nodes.joinToString(",")}],
             "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
@@ -95,6 +96,11 @@ class BlenderTest {
         val wall = s.physics.raycast(Vec3(10f, 1f, 0f), Vec3(-1f, 0f, 0f), 20f, meshes = false)!!
         assertEquals(6.1f, wall.point.x, 1e-3f)
         assertEquals("wood", s.surfaces[wall.body!!.id])
+        // A col_hull_… volume: the convex hull of its own points (a cube turned 45°), its top at 1 m.
+        val rockHit = s.physics.raycast(Vec3(-6f, 10f, 4f), Vec3(0f, -1f, 0f), 20f, meshes = false)!!
+        assertTrue(rockHit.body!!.shape is sillage.physics.ConvexHull)
+        assertEquals(8, (rockHit.body!!.shape as sillage.physics.ConvexHull).vertexCount)
+        assertEquals(1f, rockHit.point.y, 1e-3f)
         // The lamp: Blender's 1000 W point light (54.3 cd) gives about 1.5; night and flicker from its properties.
         val lamp = s.lights.single()
         assertEquals(1.5f, lamp.intensity, .01f); assertEquals(8f, lamp.radius); assertTrue(lamp.onlyAtNight); assertEquals(.2f, lamp.flicker, 1e-6f)
