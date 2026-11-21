@@ -38,6 +38,17 @@ class Scene {
     /** Sun, shade, sky and haze. Change them while building the scene. */
     val lighting = Lighting()
     val camera = Camera(this)
+    /**
+     * The scene's own random numbers: `every(…, randomExtra)` draws from it, and a game may too
+     * (`random.nextFloat()`). Seeded from the clock, or from `--seed N` / [seed], so that a run can be
+     * played again exactly (checks, recordings).
+     */
+    var random: kotlin.random.Random = kotlin.random.Random(System.nanoTime())
+        private set
+
+    /** Sets [random]'s seed: the same seed, the same draws. */
+    fun seed(seed: Long) { random = kotlin.random.Random(seed) }
+
     /** Where the sounds are heard from: the followed player's head (default) or the camera. */
     var listener = Listener.PLAYER
 
@@ -624,7 +635,7 @@ class Scene {
     /** Runs [block] every [seconds] (plus a random extra up to [randomExtra] seconds each time). */
     fun every(seconds: Number, randomExtra: Number = 0, block: () -> Unit) {
         val s = seconds.toFloat(); val r = randomExtra.toFloat()
-        timers.add(Timer(time + s + Math.random().toFloat() * r, s, r, block))
+        timers.add(Timer(time + s + random.nextFloat() * r, s, r, block))
     }
 
     /** Runs [block] when the scene restarts (see [restart]). */
@@ -849,7 +860,7 @@ class Scene {
         // Callbacks may add or remove timers and nodes: they run over a copy kept from frame to frame.
         if (timers.isNotEmpty()) {
             timerCopy.clear(); for (k in 0 until timers.size) timerCopy.add(timers[k])
-            for (k in 0 until timerCopy.size) { val t = timerCopy[k]; if (time >= t.at) { t.action(); if (t.every > 0f) t.at = time + t.every + Math.random().toFloat() * t.spread else timers.remove(t) } }
+            for (k in 0 until timerCopy.size) { val t = timerCopy[k]; if (time >= t.at) { t.action(); if (t.every > 0f) t.at = time + t.every + random.nextFloat() * t.spread else timers.remove(t) } }
         }
         for (k in 0 until updates.size) updates[k](this, dt)
         runScripts()

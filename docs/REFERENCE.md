@@ -289,13 +289,13 @@ Texts, panels, laid-out boxes, buttons, text fields and menus over the scene, on
 
 Elements (`Hud.Element`) have `x`, `y`, `anchor`, `visible`, `opacity` (0 to 1, for see-through panels and fades). A `Text` also has `value`, `size`, `color`, `align` (`AUTO`, `LEFT`, `CENTER`, `RIGHT`), `font`, `wrap`, `shadow` and `outline` (colours, null: none), `outlineWidth`; a `Panel` `width`, `height`, `color`, `radius`. A `Layout` has its `root` box and the builder functions; a `Menu` also `title` (a `Label`), `pauses`, `onBack` (what Escape does; by default `close()`), `veil` (how dark the scene behind is), `isOpen`, `open()`, `close()`, `toggle()`.
 
-Builders (`UiBuilder`, in a `Box` or a `Menu`): `text(value, size = 2, color = null, font = null, wrap = 0)`, `button(label, size = null) { … }` (the label may be a `() -> String`), `field(placeholder = "", width = 260, size = null) { text -> … }`, `row(spacing, padding, place) { … }`, `column(spacing, padding, place) { … }`, `space(size)`. A null colour, size or font is the theme's.
+Builders (`UiBuilder`, in a `Group` or a `Menu`): `text(value, size = 2, color = null, font = null, wrap = 0)`, `button(label, size = null) { … }` (the label may be a `() -> String`), `field(placeholder = "", width = 260, size = null) { text -> … }`, `row(spacing, padding, place) { … }`, `column(spacing, padding, place) { … }`, `space(size)`. A null colour, size or font is the theme's.
 
 Widgets (`Widget`): `visible`, `opacity`, `width`, `height` (fixed sizes; 0 fits the content), `left`, `top`, `laidWidth`, `laidHeight` (where the last layout put them), `focusable`, `hovered`, `focused`.
 
 | Widget | |
 |---|---|
-| `Box` | `vertical`, `children`, `spacing`, `padding`, `paddingX`, `paddingY`, `place` (`Place.START`, `CENTER`, `END`, `STRETCH`), `background`, `backgroundOpacity`, `radius`, `border`, `borderWidth`, `shadow`; `add`, `remove`, `clear`, `panel(color, opacity = 1, radius = 10, padding = 14)` |
+| `Group` | `vertical`, `children`, `spacing`, `padding`, `paddingX`, `paddingY`, `place` (`Place.START`, `CENTER`, `END`, `STRETCH`), `background`, `backgroundOpacity`, `radius`, `border`, `borderWidth`, `shadow`; `add`, `remove`, `clear`, `panel(color, opacity = 1, radius = 10, padding = 14)` |
 | `Label` | `size`, `color`, `font`, `wrap`, `align`, `shadow`, `outline`, `outlineWidth`; `set(text)` |
 | `Button` | `label`, `size`, `enabled`, `onClick` |
 | `TextField` | `text`, `placeholder`, `size`, `maxLength`, `caret`, `selection`, `select(start, end)`, `onChange`, `onSubmit` |

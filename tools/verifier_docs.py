@@ -35,6 +35,13 @@ val mesh: Mesh get() = TODO(); val width: Float get() = TODO(); val world: Physi
 val shape: Shape get() = TODO(); val triangles: FloatArray get() = TODO(); val materialIds: IntArray get() = TODO()
 val cabin: Body get() = TODO()
 fun openDoor() {}
+fun jump() {}
+fun pause() {}
+var power = 0f
+fun steer(x: Float, y: Float) {}
+val found: Int get() = TODO()
+val clock: String get() = TODO()
+val options: Hud.Menu get() = TODO()
 """
 IMPORTS = """import sillage.*
 import sillage.audio.*

@@ -55,7 +55,7 @@ class HudTest {
 
     @Test fun placementEnTraversEtLignes() {
         val b = Banc()
-        lateinit var x: Label; lateinit var y: Label; lateinit var r: Box
+        lateinit var x: Label; lateinit var y: Label; lateinit var r: Group
         b.hud.column(0, 0, place = Place.CENTER) {
             x = text("A", 2); text("ABCDEFGHIJ", 2)
             r = row(spacing = 4) { y = text("A", 1); text("AB", 3) }

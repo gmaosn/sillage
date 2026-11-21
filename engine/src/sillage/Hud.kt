@@ -106,8 +106,8 @@ class Hud internal constructor() {
      * Boxes laid out by themselves ([Hud.column], [Hud.row]): the [root] box takes the size of its content,
      * and the whole is placed from its anchor like any element. Add children with the builder functions.
      */
-    open class Layout internal constructor(x: Float, y: Float, anchor: Anchor, val root: Box) : Element(x, y, anchor), UiBuilder {
-        override val box: Box get() = root
+    open class Layout internal constructor(x: Float, y: Float, anchor: Anchor, val root: Group) : Element(x, y, anchor), UiBuilder {
+        override val box: Group get() = root
     }
 
     /**
@@ -115,8 +115,8 @@ class Hud internal constructor() {
      * column. While it is open it has the keyboard (arrows, Tab, Enter, Space), the mouse is free and, if
      * [pauses], the game stands still. Escape runs [onBack] (by default: [close]).
      */
-    class Menu internal constructor(title: String?, val pauses: Boolean, root: Box, private val content: Box) : Layout(0f, 0f, Anchor.CENTER, root) {
-        override val box: Box get() = content
+    class Menu internal constructor(title: String?, val pauses: Boolean, root: Group, private val content: Group) : Layout(0f, 0f, Anchor.CENTER, root) {
+        override val box: Group get() = content
         /** The title above the buttons (null: none). */
         val title: Label? = title?.let { Label({ it }, 4f, null, null, 0f) }
         /** What Escape does while the menu is on top; null: nothing. */
@@ -193,14 +193,14 @@ class Hud internal constructor() {
      * `hud.column(24, 24, Hud.Anchor.TOP_RIGHT) { panel(ink, .7); text("SCORE"); text({ "$score" }, 3) }`.
      */
     fun column(x: Number = 0, y: Number = 0, anchor: Anchor = Anchor.TOP_LEFT, spacing: Number = 8, padding: Number = 0, place: Place = Place.START,
-               block: Box.() -> Unit): Layout = layout(true, x, y, anchor, spacing, padding, place, block)
+               block: Group.() -> Unit): Layout = layout(true, x, y, anchor, spacing, padding, place, block)
 
     /** Boxes side by side; see [column]. */
     fun row(x: Number = 0, y: Number = 0, anchor: Anchor = Anchor.TOP_LEFT, spacing: Number = 10, padding: Number = 0, place: Place = Place.CENTER,
-            block: Box.() -> Unit): Layout = layout(false, x, y, anchor, spacing, padding, place, block)
+            block: Group.() -> Unit): Layout = layout(false, x, y, anchor, spacing, padding, place, block)
 
-    private fun layout(vertical: Boolean, x: Number, y: Number, anchor: Anchor, spacing: Number, padding: Number, place: Place, block: Box.() -> Unit): Layout {
-        val root = Box(vertical).also { it.spacing = spacing.toFloat(); it.padding = padding.toFloat(); it.place = place }
+    private fun layout(vertical: Boolean, x: Number, y: Number, anchor: Anchor, spacing: Number, padding: Number, place: Place, block: Group.() -> Unit): Layout {
+        val root = Group(vertical).also { it.spacing = spacing.toFloat(); it.padding = padding.toFloat(); it.place = place }
         val l = add(Layout(x.toFloat(), y.toFloat(), anchor, root))
         root.owner = this
         root.block()
@@ -217,8 +217,8 @@ class Hud internal constructor() {
      * ```
      */
     fun menu(title: String? = null, pauses: Boolean = true, block: Menu.() -> Unit = {}): Menu {
-        val content = Box(true).also { it.spacing = 10f; it.place = Place.STRETCH }
-        val root = Box(true).also { it.spacing = 18f; it.place = Place.STRETCH; it.paddingX = 34f; it.paddingY = 28f; it.radius = -1f; it.shadow = true }
+        val content = Group(true).also { it.spacing = 10f; it.place = Place.STRETCH }
+        val root = Group(true).also { it.spacing = 18f; it.place = Place.STRETCH; it.paddingX = 34f; it.paddingY = 28f; it.radius = -1f; it.shadow = true }
         val m = Menu(title, pauses, root, content)
         m.title?.let { it.align = Align.CENTER; it.size = theme.titleSize; root.add(it) }
         root.add(content)
@@ -379,9 +379,9 @@ class Hud internal constructor() {
         if (openMenus.isNotEmpty()) { layoutAll(); focus(focusables().firstOrNull()) }
     }
 
-    private fun inside(w: Widget, box: Box): Boolean {
+    private fun inside(w: Widget, box: Group): Boolean {
         if (w === box) return true
-        for (c in box.children) if (c === w || (c is Box && inside(w, c))) return true
+        for (c in box.children) if (c === w || (c is Group && inside(w, c))) return true
         return false
     }
 
@@ -397,7 +397,7 @@ class Hud internal constructor() {
     private fun collect(w: Widget, out: ArrayList<Widget>) {
         if (!w.visible) return
         if (w.focusable) out.add(w)
-        if (w is Box) for (i in 0 until w.children.size) collect(w.children[i], out)
+        if (w is Group) for (i in 0 until w.children.size) collect(w.children[i], out)
     }
 
     // ------------------------------------------------------------------ one frame of interaction
@@ -629,7 +629,7 @@ class Hud internal constructor() {
         when (w) {
             is Label -> { val t = w.value(); if (t != w.shown) { w.shown = t; c = true } }
             is Button -> { val fn = w.labelFn; if (fn != null) { val t = fn(); if (t != w.label) { w.label = t; c = true } } }
-            is Box -> for (i in 0 until w.children.size) if (texts(w.children[i])) c = true
+            is Group -> for (i in 0 until w.children.size) if (texts(w.children[i])) c = true
             else -> {}
         }
         return c
@@ -749,7 +749,7 @@ class Hud internal constructor() {
                 w.mw = 260f; w.mh = 7f * s + 2 * 5.5f * s
             }
             is Spacer -> { w.mw = w.size; w.mh = w.size }
-            is Box -> {
+            is Group -> {
                 var along = 0f; var across = 0f; var n = 0
                 for (c in w.children) {
                     if (!c.visible) continue
@@ -767,7 +767,7 @@ class Hud internal constructor() {
 
     private fun arrange(w: Widget, x: Float, y: Float, width: Float, height: Float) {
         w.left = x; w.top = y; w.laidWidth = width; w.laidHeight = height
-        if (w !is Box) return
+        if (w !is Group) return
         val ix = x + w.paddingX; val iy = y + w.paddingY
         val iw = width - 2 * w.paddingX; val ih = height - 2 * w.paddingY
         var at = 0f
@@ -793,7 +793,7 @@ class Hud internal constructor() {
         if (op <= 0f) return true
         val p = painter; val th = theme
         when (w) {
-            is Box -> {
+            is Group -> {
                 val bg = w.background ?: if (w.radius < 0f) th.panel else null       // a menu's panel takes the theme's colour
                 val radius = if (w.radius < 0f) th.radius * 1.6f else w.radius
                 if (w.shadow) { p.opacity = op * .45f; p.box(w.left, w.top + 6f, w.laidWidth, w.laidHeight, Color.hex(0x04090B), radius + 4f, soft = 22f * p.k) }

@@ -60,6 +60,7 @@ internal class Runtime(private val title: String, private val args: Array<String
   --trace [--trace-every N]    print the player's state
   --animation clip        force the player's clip (captures)
   --hour H                start at hour H (0 to 24, see Lighting.time)
+  --seed N                the scene's random numbers from seed N (the same run again)
   --debug physics,free,paused   start with the physics drawn (F5), the free camera (F6), paused (F7)
   --no-cull               draw everything, even what the camera cannot see (comparisons)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
@@ -88,7 +89,8 @@ internal class Runtime(private val title: String, private val args: Array<String
             headless -> Audio.offline()
             else -> Audio.open(option("--audio-device") ?: "default")
         }
-        var scene = Scene().apply(setup)
+        // The seed before the scene is built: what it draws while being built is drawn from it too.
+        var scene = Scene().also { s -> option("--seed")?.let { s.seed(it.toLong()) } }.apply(setup)
         val dev = DevLink.enabled
         var initial = if (dev) DevLink.Initial(scene) else null
         var frozen = false                                  // dev: an update failed, the picture waits for a fix

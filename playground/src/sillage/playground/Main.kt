@@ -30,7 +30,7 @@ val playground: Scene.() -> Unit = {
 
     // Stars to collect, and a ball falling from the sky every 3 seconds.
     for (p in listOf(vec(4, .6, 0), vec(-6, 3.8, -6), vec(10.5, 2.8, -2.5), vec(-3, .6, 5))) pickup(cone(.25, .5, Color.YELLOW, at = p).spin(120))
-    every(3) { val b = sphere(.25, colors.random(), at = vec(Math.random() * 6 - 3, 9, Math.random() * 6 - 3)).dynamic(bounce = .7); after(20) { b.remove() } }
+    every(3) { val b = sphere(.25, colors.random(random), at = vec(random.nextFloat() * 6 - 3, 9, random.nextFloat() * 6 - 3)).dynamic(bounce = .7); after(20) { b.remove() } }
 
     // B drops a heap of 400 crates in front of the player: the physics spreads them over the cores.
     val dropped = ArrayList<Node>()

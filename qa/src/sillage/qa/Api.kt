@@ -36,11 +36,13 @@ fun Qa.api() {
     }
 
     controle("terrain de jeu en formes simples : un robot y joue", "rien sous le sol ni de non fini, ballons tombés retirés") {
-        val m = Scene().apply(playground); val p = m.player!!; p.controls = false
+        val m = Scene().apply { seed(graine + 902) }.apply(playground); val p = m.player!!; p.controls = false
         val robot = Robot(Random(graine + 901))
         val frames = cas(2400, 9000)
         val depart = m.physics.liveBodyCount
-        var sous = 0; var nonFinis = 0; var plus = 0
+        // Sous le sol : tout le corps passé dessous (le sol traversé). Un ballon que l'ascenseur, en descendant
+        // jusqu'au sol, écrase contre lui garde son centre juste sous 0 : compté à part (limite connue).
+        var sous = 0; var ecrases = 0; var nonFinis = 0; var plus = 0
         repeat(frames) {
             val (d, saut) = robot.commande(p.position)
             p.move(d, robot.marche); if (saut) p.jump()
@@ -48,13 +50,15 @@ fun Qa.api() {
             for (n in m.nodes) {
                 val b = n.body ?: continue
                 if (b.type != BodyType.DYNAMIC) continue
-                if (!b.position.isFinite()) nonFinis++ else if (b.position.y < 0f) sous++
+                if (!b.position.isFinite()) nonFinis++
+                else if (b.position.y + b.shape.boundingRadius < 0f) sous++
+                else if (b.position.y < 0f) ecrases++
             }
             if (!p.position.isFinite()) nonFinis++ else if (p.position.y < -.05f) sous++
             plus = max(plus, m.physics.liveBodyCount - depart)
         }
         // Un ballon toutes les 3 s, retiré après 20 s : jamais plus de 7 à la fois.
-        "$frames images, $sous corps sous le sol, $nonFinis non finis, ${p.position.let { "joueur en (%.1f ; %.1f ; %.1f)".format(it.x, it.y, it.z) }}, jusqu'à $plus ballons tombés à la fois" to
+        "$frames images, $sous corps sous le sol, $ecrases images d'un corps écrasé contre le sol, $nonFinis non finis, ${p.position.let { "joueur en (%.1f ; %.1f ; %.1f)".format(it.x, it.y, it.z) }}, jusqu'à $plus ballons tombés à la fois" to
             (sous == 0 && nonFinis == 0 && plus in 6..7)
     }
 

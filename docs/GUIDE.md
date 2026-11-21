@@ -331,10 +331,10 @@ val counter = hud.column(24, 24, Hud.Anchor.TOP_RIGHT, spacing = 10, place = Pla
     text({ "SHELLS ${found} / 6" }, 1.5)
     row(spacing = 8) { text("TIME", 1.25, Color.YELLOW); text({ clock }, 1.25) }
 }
-counter.opacity = .5                                               // the whole block fades
+counter.opacity = .5f                                              // the whole block fades
 ```
 
-A `Box` lays its children in a column or a row, `spacing` units apart, `padding` (or `paddingX`, `paddingY`) inside its edge; `place` sets how they sit across it (`START`, `CENTER`, `END`, or `STRETCH` to the box's width). A box with a `background` is a panel: `radius` rounds it, `border` outlines it, `shadow` lifts it off the scene. A widget's `width` and `height` fix its size; after a frame, `left`, `top`, `laidWidth` and `laidHeight` tell where it went.
+A `Group` lays its children in a column or a row, `spacing` units apart, `padding` (or `paddingX`, `paddingY`) inside its edge; `place` sets how they sit across it (`START`, `CENTER`, `END`, or `STRETCH` to the box's width). A box with a `background` is a panel: `radius` rounds it, `border` outlines it, `shadow` lifts it off the scene. A widget's `width` and `height` fix its size; after a frame, `left`, `top`, `laidWidth` and `laidHeight` tell where it went.
 
 ### Buttons, menus and the pause menu
 
