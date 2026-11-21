@@ -331,6 +331,7 @@ Light and air of a scene. Every value can change at any time; turning `shadows` 
 | `sunGlow` | the glow around the sun, and its glitter on water |
 | `fogStart`, `fogEnd` | the haze begins and hides everything beyond (45 m, 150 m) |
 | `shadows`, `shadowRange` | cast shadows (true), drawn within this many metres of what the camera looks at (24) |
+| `shadowCascades` | shadow squares one inside the other: 1, 2 or 3 (default): the finest of `shadowRange`, then three times wider, then out to the haze |
 | `time` | the hour, 0 to 24 (null: none, the values above stay as set); once set, the sun, the moon and the colours follow it |
 | `dayLength` | seconds of play for 24 hours (0: the hour stands still) |
 | `sunrise`, `sunTilt` | where the sun rises (a direction on the ground) and how far from the zenith it passes at noon (30°) |

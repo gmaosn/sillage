@@ -47,7 +47,9 @@ private const val PUSH_BYTES = 128
 /** Point lights handed to the shaders each frame (the nearest to the camera). */
 internal const val MAX_LIGHTS = 16
 /** Bytes of the frame's uniform block (frame.glsl): fourteen vectors, then the lights' places and colours. */
-private const val FRAME_BYTES = (14 + 2 * MAX_LIGHTS) * 16
+/** Shadow squares one inside the other, each with its layer in the shadow map (see Lighting.shadowCascades). */
+internal const val CASCADES = 3
+private const val FRAME_BYTES = (14 + CASCADES + 2 * MAX_LIGHTS) * 16
 /** Levels of the glow: half the picture's size, then each half the last. */
 private const val BLOOM_LEVELS = 5
 /** Floats per particle drawn: centre and size (negative: it glows), colour and opacity. */
@@ -128,7 +130,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private val shadowSize=if(shadows) SHADOW_TEXELS else 1
     private var shadowMap: Image?=null
     private var shadowPass=0L
-    private var shadowFramebuffer=0L
+    private var shadowFramebuffers=LongArray(0)
+    private var shadowLayerViews=LongArray(0)
     private var shadowPipeline=0L
     private var sampler=0L                     // compares depths in the shadow map
     private var repeat=0L                      // reads the detail textures: repeating, filtered between levels
@@ -190,8 +193,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private val skyBatches=IdentityHashMap<Mesh,Batch>()
     private val shadowBatches=IdentityHashMap<Mesh,Batch>()      // blob shadows
     private val waterBatches=IdentityHashMap<Mesh,Batch>()
-    private val casterBatches=IdentityHashMap<Mesh,Batch>()      // copies drawn into the shadow map
-    private val casters=ArrayList<Batch>()
+    private val casterBatches=Array(CASCADES) { IdentityHashMap<Mesh,Batch>() }   // copies drawn into each cascade's map
+    private val casters=Array(CASCADES) { ArrayList<Batch>() }
     private val opaque=ArrayList<Batch>()
     private val quiet=ArrayList<Batch>()
     private val skies=ArrayList<Batch>()
@@ -369,10 +372,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         finally { dev.unmapMemory(b.memory) }
     }
 
-    private fun image(format: Int, usage: Int, aspect: Int, samples: Int = 1, width: Int = largeur, height: Int = hauteur): Image = stack.frame { s ->
+    private fun image(format: Int, usage: Int, aspect: Int, samples: Int = 1, width: Int = largeur, height: Int = hauteur, layers: Int = 1): Image = stack.frame { s ->
         val p=s.allocate(JAVA_LONG)
         dev.createImage(s.struct(VkImageCreateInfo, "imageType" to VK_IMAGE_TYPE_2D, "format" to format,
-            "extent.width" to width, "extent.height" to height, "extent.depth" to 1, "mipLevels" to 1, "arrayLayers" to 1,
+            "extent.width" to width, "extent.height" to height, "extent.depth" to 1, "mipLevels" to 1, "arrayLayers" to layers,
             "samples" to samples, "tiling" to VK_IMAGE_TILING_OPTIMAL, "usage" to usage,
             "sharingMode" to VK_SHARING_MODE_EXCLUSIVE, "initialLayout" to VK_IMAGE_LAYOUT_UNDEFINED),p)
         val img=p.get(JAVA_LONG,0)
@@ -381,8 +384,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             "memoryTypeIndex" to memoryType(req.u32(VkMemoryRequirements,"memoryTypeBits"),VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)),p)
         val mem=p.get(JAVA_LONG,0)
         dev.bindImageMemory(img,mem,0)
-        dev.createImageView(s.struct(VkImageViewCreateInfo, "image" to img, "viewType" to VK_IMAGE_VIEW_TYPE_2D, "format" to format,
-            "subresourceRange.aspectMask" to aspect, "subresourceRange.levelCount" to 1, "subresourceRange.layerCount" to 1),p)
+        dev.createImageView(s.struct(VkImageViewCreateInfo, "image" to img, "viewType" to (if(layers>1) VK_IMAGE_VIEW_TYPE_2D_ARRAY else VK_IMAGE_VIEW_TYPE_2D),
+            "format" to format, "subresourceRange.aspectMask" to aspect, "subresourceRange.levelCount" to 1, "subresourceRange.layerCount" to layers),p)
         Image(img,mem,p.get(JAVA_LONG,0))
     }
 
@@ -473,7 +476,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         require(features and VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT != 0) { "D16 depth cannot be sampled" }
         val filtered=features and VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT != 0
         val map=image(VK_FORMAT_D16_UNORM,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT or VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,
-            1,shadowSize,shadowSize)
+            1,shadowSize,shadowSize,CASCADES)
         shadowMap=map
         val a=s.structs(VkAttachmentDescription,1)
         attachment(a,0,VK_FORMAT_D16_UNORM,VK_SAMPLE_COUNT_1_BIT,VK_ATTACHMENT_LOAD_OP_CLEAR,VK_ATTACHMENT_STORE_OP_STORE,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
@@ -486,9 +489,18 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT)
         shadowPass=renderPass(s,a,1,false,0,-1,d)
         val p=s.allocate(JAVA_LONG)
-        dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to shadowPass, "attachmentCount" to 1,
-            "pAttachments" to s.longs(map.view), "width" to shadowSize, "height" to shadowSize, "layers" to 1),p)
-        shadowFramebuffer=p.get(JAVA_LONG,0)
+        // One view and one framebuffer per layer: each cascade is drawn into its own.
+        shadowLayerViews=LongArray(CASCADES) { c ->
+            dev.createImageView(s.struct(VkImageViewCreateInfo, "image" to map.image, "viewType" to VK_IMAGE_VIEW_TYPE_2D, "format" to VK_FORMAT_D16_UNORM,
+                "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "subresourceRange.levelCount" to 1,
+                "subresourceRange.baseArrayLayer" to c, "subresourceRange.layerCount" to 1),p)
+            p.get(JAVA_LONG,0)
+        }
+        shadowFramebuffers=LongArray(CASCADES) { c ->
+            dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to shadowPass, "attachmentCount" to 1,
+                "pAttachments" to s.longs(shadowLayerViews[c]), "width" to shadowSize, "height" to shadowSize, "layers" to 1),p)
+            p.get(JAVA_LONG,0)
+        }
         val filter=if(filtered) VK_FILTER_LINEAR else VK_FILTER_NEAREST
         dev.createSampler(s.struct(VkSamplerCreateInfo, "magFilter" to filter, "minFilter" to filter,
             "mipmapMode" to VK_SAMPLER_MIPMAP_MODE_NEAREST, "addressModeU" to VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -912,8 +924,9 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         meshes.values.forEach { destroy(it) }; meshes.clear()
         effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
         dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
-        batches.clear(); quietBatches.clear(); skyBatches.clear(); shadowBatches.clear(); waterBatches.clear(); casterBatches.clear()
+        batches.clear(); quietBatches.clear(); skyBatches.clear(); shadowBatches.clear(); waterBatches.clear(); for(m in casterBatches) m.clear()
         token=Any()                  // what meshes remember of this renderer is forgotten with it
+        cascadeValid.fill(false)     // the next scene draws every shadow map at its first frame
         for(f in frames) f.hudSent=null
     }
 
@@ -930,12 +943,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
      * [token]): a world of many copies looks them up without hashing.
      */
     private var token=Any()
-    private val maps: Array<IdentityHashMap<Mesh,Batch>> by lazy { arrayOf(batches,quietBatches,skyBatches,shadowBatches,waterBatches,casterBatches) }
+    private val maps: Array<IdentityHashMap<Mesh,Batch>> by lazy { arrayOf(batches,quietBatches,skyBatches,shadowBatches,waterBatches,*casterBatches) }
 
     private fun add(map: IdentityHashMap<Mesh,Batch>, order: ArrayList<Batch>, mesh: Mesh, node: Node, pose: Mat4?) {
         if(mesh.vertices.isEmpty()) return
         var slots=mesh.batches
-        if(mesh.batchOwner!==token || slots==null) { slots=arrayOfNulls(6); mesh.batches=slots; mesh.batchOwner=token }
+        if(mesh.batchOwner!==token || slots==null) { slots=arrayOfNulls(5+CASCADES); mesh.batches=slots; mesh.batchOwner=token }
         var slot=0
         while(maps[slot]!==map) slot++
         val b=(slots[slot] as Batch?) ?: map.getOrPut(mesh) { Batch(mesh) }.also { slots[slot]=it }
@@ -965,6 +978,18 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     }
 
     /** Sorts this frame's copies into batches, one per mesh (new meshes go to the GPU once). Apart from [dessiner], so the JIT compiles it on its own. */
+    /** The frame's shadow squares: centre x, y, z and half side per cascade. */
+    private val squares=FloatArray(4*CASCADES)
+    /**
+     * The farther squares are drawn again less often: the finest every frame, the second every two
+     * frames, the third every four (at most two shadow passes per frame). A square not drawn again keeps
+     * the place it was drawn at ([drawnSquares]), so that the shaders read its map where it really is.
+     */
+    private val drawnSquares=FloatArray(4*CASCADES)
+    private val cascadeValid=BooleanArray(CASCADES)
+    private val cascadeNow=BooleanArray(CASCADES)
+    private var cascadeFrames=0L
+
     /** Frustum planes of the frame (a, b, c, d each, normalised; inside: a·x + b·y + c·z + d ≥ 0). */
     private val planes=FloatArray(24)
     /** Whether what the camera cannot see is left out (true); false draws everything, for comparisons. */
@@ -996,14 +1021,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         return true
     }
 
-    private fun gather(objets: List<Node>, hidden: Node?) = gather(objets,hidden,null,Vec3.ZERO,Float.POSITIVE_INFINITY,Vec3.ZERO,0f,Vec3.UP)
+    private fun gather(objets: List<Node>, hidden: Node?) = gather(objets,hidden,null,Vec3.ZERO,Float.POSITIVE_INFINITY,FloatArray(4*CASCADES),Vec3.UP)
 
     /**
      * The frame's copies, grouped by mesh. With [viewProj], what the camera cannot see (outside its
-     * frustum, past [haze] or past its node's draw distance) is left out, and only what stands in the
-     * shadow square (centre [shadowCentre], half side [shadowHalf], seen along [light]) casts into the map.
+     * frustum, past [haze] or past its node's draw distance) is left out, and only what stands in a
+     * cascade's square ([squares]: centre x, y, z and half side for each; half 0: none; seen along
+     * [light]) casts into that cascade's map.
      */
-    private fun gather(objets: List<Node>, hidden: Node?, viewProj: Mat4?, eye: Vec3, haze: Float, shadowCentre: Vec3, shadowHalf: Float, light: Vec3) {
+    private fun gather(objets: List<Node>, hidden: Node?, viewProj: Mat4?, eye: Vec3, haze: Float, squares: FloatArray, light: Vec3) {
         fun effects(m: Mesh) {
             val e=m.effects
             if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
@@ -1028,31 +1054,37 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
             else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
         }
-        for(b in casters) b.count=0
+        for(list in casters) for(b in list) b.count=0
         for(b in opaque) b.count=0
         for(b in quiet) b.count=0
         for(b in skies) b.count=0
         for(b in shadows) b.count=0
         for(b in waters) b.count=0
-        casters.clear(); opaque.clear(); quiet.clear(); skies.clear(); shadows.clear(); waters.clear()
+        for(list in casters) list.clear()
+        opaque.clear(); quiet.clear(); skies.clear(); shadows.clear(); waters.clear()
         culled=0; drawn=0
         if(viewProj!=null) extractPlanes(viewProj)
         // The shadow square's axes, as light.glsl lays them.
         val ref=if(kotlin.math.abs(light.y)>.99f) Vec3.Z else Vec3.Y
         val sRight=(ref cross light).normalized(); val sUp=light cross sRight
         /** Whether a copy of [mesh] placed by node [o] and [pose] is seen, then whether it casts into the map. */
-        var seen=true; var casting=false
+        var seen=true; var casting=0                                     // casting: one bit per cascade
         fun place(o: Node, wx: Float, wy: Float, wz: Float, r: Float) {
             val dx=wx-eye.x; val dy=wy-eye.y; val dz=wz-eye.z
             val dist=kotlin.math.sqrt(dx*dx+dy*dy+dz*dz)-r
             val near=dist<=haze && dist<=o.drawDistance
             seen=near && inFrustum(wx,wy,wz,r)
-            if(shadowHalf<=0f || !near) { casting=false; return }
-            val ux=wx-shadowCentre.x; val uy=wy-shadowCentre.y; val uz=wz-shadowCentre.z
-            casting=kotlin.math.abs(ux*sRight.x+uy*sRight.y+uz*sRight.z)<=shadowHalf+r && kotlin.math.abs(ux*sUp.x+uy*sUp.y+uz*sUp.z)<=shadowHalf+r
+            casting=0
+            if(!near) return
+            for(c in 0 until CASCADES) {
+                val half=squares[4*c+3]
+                if(half<=0f || !cascadeNow[c]) continue
+                val ux=wx-squares[4*c]; val uy=wy-squares[4*c+1]; val uz=wz-squares[4*c+2]
+                if(kotlin.math.abs(ux*sRight.x+uy*sRight.y+uz*sRight.z)<=half+r && kotlin.math.abs(ux*sUp.x+uy*sUp.y+uz*sUp.z)<=half+r) casting=casting or (1 shl c)
+            }
         }
         fun test(mesh: Mesh, o: Node, pose: Mat4?) {
-            if(viewProj==null) { seen=true; casting=true; return }
+            if(viewProj==null) { seen=true; casting=(1 shl CASCADES)-1; return }
             if(pose==null) {
                 // A node that has not moved since the last frame keeps its world sphere (its place and mesh are immutable values).
                 val c=o.cullCache
@@ -1092,23 +1124,23 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             if(o.isSky) { prepare(mesh); add(skyBatches,skies,mesh,o,null); continue }
             if(mesh.vertices.isNotEmpty()) {
                 test(mesh,o,null)
-                if(seen || casting) prepare(mesh)
+                if(seen || casting!=0) prepare(mesh)
                 if(o.isShadow) { if(seen) add(shadowBatches,shadows,mesh,o,null) else culled++; continue }
                 val look=o.water
                 if(look!=null) { if(seen) { add(waterBatches,waters,mesh,o,null); waterBatches[mesh]?.water=look } else culled++; continue }
                 val casts=o.castsShadow && !mesh.unlit
                 if(seen) { drawn++; add(if(casts) batches else quietBatches,if(casts) opaque else quiet,mesh,o,null) } else culled++
-                if(casts && casting) add(casterBatches,casters,mesh,o,null)
+                if(casts && casting!=0) for(c in 0 until CASCADES) if(casting and (1 shl c)!=0) add(casterBatches[c],casters[c],mesh,o,null)
             }
             val parts=o.parts
             val casts=o.castsShadow
             for(j in parts.indices) {
                 val p=parts[j]
                 test(p.mesh,o,p.pose)
-                if(!seen && !casting) { culled++; continue }
+                if(!seen && casting==0) { culled++; continue }
                 prepare(p.mesh)
                 if(seen) { drawn++; add(if(casts) batches else quietBatches,if(casts) opaque else quiet,p.mesh,o,p.pose) } else culled++
-                if(casts && casting) add(casterBatches,casters,p.mesh,o,p.pose)
+                if(casts && casting!=0) for(c in 0 until CASCADES) if(casting and (1 shl c)!=0) add(casterBatches[c],casters[c],p.mesh,o,p.pose)
             }
         }
     }
@@ -1129,7 +1161,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
      * axes (from view × projection: its first row is the camera's right, its last its forward direction) and
      * the point lights.
      */
-    private fun writeFrame(f: Frame, l: Lighting, main: Vec3, vp: Mat4, extras: FrameExtras?) {
+    private fun writeFrame(f: Frame, l: Lighting, main: Vec3, vp: Mat4, extras: FrameExtras?, squares: FloatArray) {
         val u=f.uniformMapped
         var o=0L
         fun v(x: Float, y: Float, z: Float, w: Float) {
@@ -1153,6 +1185,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         v(rx,ry,rz,0f)
         v(ry*fz-rz*fy,rz*fx-rx*fz,rx*fy-ry*fx,0f)
         c(l.sunGlow,0f)
+        for(k in 0 until CASCADES) v(squares[4*k],squares[4*k+1],squares[4*k+2],squares[4*k+3])
         val a=extras?.lights
         for(i in 0 until MAX_LIGHTS) {
             if(a!=null && i<lights) {
@@ -1222,18 +1255,33 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         }
         val index=image
         syncTextures(surface==0L || capture!=null)
-        // The main light's square: the map's centre (snapped to its texels) and half side, or 0 for no shadows.
+        // The main light's squares, finest first: each one's centre (snapped to its texels, so that shadows
+        // stay still while the camera moves) and half side; 0 for none.
         val main=lighting.mainLight()
-        val range=if(shadowSize>1 && lighting.shadows && focus!=null) lighting.shadowRange else 0f
-        val centre=if(range>0f) snapped(focus!!,2f*range/shadowSize,main) else Vec3.ZERO
-        gather(objets,hidden,if(cull) camera else null,oeil,if(lighting.fogEnd>0f) lighting.fogEnd else Float.POSITIVE_INFINITY,centre,range,main)
+        val on=shadowSize>1 && lighting.shadows && focus!=null
+        val n=cascadeFrames++
+        for(c in 0 until CASCADES) {
+            val half=if(on) lighting.cascadeHalf(c) else 0f
+            val due=c==0 || !cascadeValid[c] || (half>0f) != (drawnSquares[4*c+3]>0f) ||
+                (c==1 && n%2L==1L) || (c==2 && n%4L==2L)
+            cascadeNow[c]=due
+            if(due) {
+                val ctr=if(half>0f) snapped(focus!!,2f*half/shadowSize,main) else Vec3.ZERO
+                drawnSquares[4*c]=ctr.x; drawnSquares[4*c+1]=ctr.y; drawnSquares[4*c+2]=ctr.z; drawnSquares[4*c+3]=half
+                cascadeValid[c]=true
+            }
+            for(k in 0..3) squares[4*c+k]=drawnSquares[4*c+k]
+        }
+        val range=squares[3]
+        val centre=Vec3(squares[0],squares[1],squares[2])
+        gather(objets,hidden,if(cull) camera else null,oeil,if(lighting.fogEnd>0f) lighting.fogEnd else Float.POSITIVE_INFINITY,squares,main)
         if(hud!==f.hudSent) { hudGpu.send(f,hud); f.hudSent=hud }
         hudGpu.prepare(hud.atlas)
         // Instance rows of every batch, side by side, then the particles.
         val particleCount=extras?.particleCount ?: 0
         val lineVertices=extras?.lineVertexCount ?: 0
         var total=PARTICLE_FLOATS*particleCount+LINE_FLOATS*lineVertices
-        for(b in casters) total+=12*b.count
+        for(list in casters) for(b in list) total+=12*b.count
         for(b in opaque) total+=12*b.count
         for(b in quiet) total+=12*b.count
         for(b in skies) total+=12*b.count
@@ -1243,7 +1291,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val mapped=f.mapped
         var at=0L
         fun put(b: Batch) { b.start=at; MemorySegment.copy(b.rows,0,mapped,JAVA_FLOAT,at,12*b.count); at+=48L*b.count }
-        for(b in casters) put(b)
+        for(list in casters) for(b in list) put(b)
         for(b in opaque) put(b)
         for(b in quiet) put(b)
         for(b in skies) put(b)
@@ -1253,7 +1301,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         if(particleCount>0) MemorySegment.copy(extras!!.particles,0,mapped,JAVA_FLOAT,at,PARTICLE_FLOATS*particleCount)
         val lineStart=particleStart+4L*PARTICLE_FLOATS*particleCount
         if(lineVertices>0) MemorySegment.copy(extras!!.lines,0,mapped,JAVA_FLOAT,lineStart,LINE_FLOATS*lineVertices)
-        writeFrame(f,lighting,main,camera,extras)
+        writeFrame(f,lighting,main,camera,extras,squares)
         val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
         val command=f.command
         try {
@@ -1265,6 +1313,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             }
             hudGpu.record(command)
             val constants=s.allocate(JAVA_FLOAT,32)
+            var pushSquare=centre; var pushHalf=range
             fun pushConstants(vp: Mat4, water: WaterLook?=null) {
                 // Column by column, as GLSL reads a mat4 (Mat4 names its coefficients column first).
                 constants.setAtIndex(JAVA_FLOAT,0,vp.m00); constants.setAtIndex(JAVA_FLOAT,1,vp.m01); constants.setAtIndex(JAVA_FLOAT,2,vp.m02); constants.setAtIndex(JAVA_FLOAT,3,vp.m03)
@@ -1272,7 +1321,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 constants.setAtIndex(JAVA_FLOAT,8,vp.m20); constants.setAtIndex(JAVA_FLOAT,9,vp.m21); constants.setAtIndex(JAVA_FLOAT,10,vp.m22); constants.setAtIndex(JAVA_FLOAT,11,vp.m23)
                 constants.setAtIndex(JAVA_FLOAT,12,vp.m30); constants.setAtIndex(JAVA_FLOAT,13,vp.m31); constants.setAtIndex(JAVA_FLOAT,14,vp.m32); constants.setAtIndex(JAVA_FLOAT,15,vp.m33)
                 constants.setAtIndex(JAVA_FLOAT,16,oeil.x); constants.setAtIndex(JAVA_FLOAT,17,oeil.y); constants.setAtIndex(JAVA_FLOAT,18,oeil.z); constants.setAtIndex(JAVA_FLOAT,19,temps)
-                constants.setAtIndex(JAVA_FLOAT,20,centre.x); constants.setAtIndex(JAVA_FLOAT,21,centre.y); constants.setAtIndex(JAVA_FLOAT,22,centre.z); constants.setAtIndex(JAVA_FLOAT,23,range)
+                constants.setAtIndex(JAVA_FLOAT,20,pushSquare.x); constants.setAtIndex(JAVA_FLOAT,21,pushSquare.y); constants.setAtIndex(JAVA_FLOAT,22,pushSquare.z); constants.setAtIndex(JAVA_FLOAT,23,pushHalf)
                 if(water!=null) {
                     constants.setAtIndex(JAVA_FLOAT,24,water.deep.r); constants.setAtIndex(JAVA_FLOAT,25,water.deep.g); constants.setAtIndex(JAVA_FLOAT,26,water.deep.b)
                     constants.setAtIndex(JAVA_FLOAT,28,water.shallow.r); constants.setAtIndex(JAVA_FLOAT,29,water.shallow.g); constants.setAtIndex(JAVA_FLOAT,30,water.shallow.b)
@@ -1295,19 +1344,25 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.cmdSetScissor(command,s.struct(VkRect2D, "extent.width" to w, "extent.height" to h))
             }
             val sets=s.longs(f.set)
-            // The shadow map first (only cleared when there are no shadows: the shaders then never read it).
+            // The shadow maps first, one cascade per layer (only cleared when a cascade is off: the shaders then never read it).
             val clearDepth=s.struct(VkClearValue).also { it.put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0) }
-            dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to shadowFramebuffer,
-                "renderArea.extent.width" to shadowSize, "renderArea.extent.height" to shadowSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
-                VK_SUBPASS_CONTENTS_INLINE)
-            if(range>0f) {
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipeline)
-                dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
-                area(shadowSize,shadowSize)
-                pushConstants(camera)
-                for(b in casters) draw(b)
+            for(c in 0 until CASCADES) {
+                if(!cascadeNow[c]) continue                  // drawn a frame or three ago: its map is kept
+                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to shadowFramebuffers[c],
+                    "renderArea.extent.width" to shadowSize, "renderArea.extent.height" to shadowSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
+                    VK_SUBPASS_CONTENTS_INLINE)
+                if(squares[4*c+3]>0f && casters[c].isNotEmpty()) {
+                    dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipeline)
+                    dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
+                    area(shadowSize,shadowSize)
+                    pushSquare=Vec3(squares[4*c],squares[4*c+1],squares[4*c+2]); pushHalf=squares[4*c+3]
+                    pushConstants(camera)
+                    for(b in casters[c]) draw(b)
+                }
+                dev.cmdEndRenderPass(command)
             }
-            dev.cmdEndRenderPass(command)
+            // The scene: the finest square in the push constants (its w > 0 says shadows are on), all of them in the frame block.
+            pushSquare=centre; pushHalf=range
             // The scene in linear light; the clear alpha is "very far" for the ink.
             val clear=s.structs(VkClearValue,2)
             clear.at(VkClearValue,0).put(VkClearValue, "float32[0]" to lighting.horizon.r, "float32[1]" to lighting.horizon.g,
@@ -1471,7 +1526,9 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.destroyDescriptorPool(descriptorPool); dev.destroyDescriptorSetLayout(setLayout); dev.destroyDescriptorSetLayout(postSetLayout)
                 dev.destroySampler(sampler); dev.destroySampler(linear); dev.destroySampler(repeat)
                 textures?.let { destroy(it) }; textures=null
-                dev.destroyFramebuffer(shadowFramebuffer); dev.destroyRenderPass(shadowPass)
+                for(fb in shadowFramebuffers) dev.destroyFramebuffer(fb)
+                for(v in shadowLayerViews) dev.destroyImageView(v)
+                dev.destroyRenderPass(shadowPass)
                 shadowMap?.let { destroy(it) }; shadowMap=null
                 destroyTargets()
                 dev.destroyRenderPass(renderPass); dev.destroyRenderPass(postPass); dev.destroyRenderPass(compositePass)

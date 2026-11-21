@@ -37,6 +37,21 @@ class Lighting {
      */
     var shadows: Boolean = true
     var shadowRange: Float = 24f
+    /**
+     * How many shadow squares, one inside the other (1 to 3): the finest of [shadowRange], then three
+     * times wider, then out to the haze's end ([fogEnd], at least twice the second). Far things keep their
+     * shadows, softer; 1 keeps only the finest, as before.
+     */
+    var shadowCascades: Int = 3
+        set(v) { require(v in 1..3) { "shadowCascades is 1, 2 or 3 (got $v)" }; field = v }
+
+    /** Half side of shadow square [c] (0: finest), or 0 when there are fewer squares. */
+    internal fun cascadeHalf(c: Int): Float = when {
+        c >= shadowCascades -> 0f
+        c == 0 -> shadowRange
+        c == 1 -> shadowRange * 3f
+        else -> maxOf(shadowRange * 6f, minOf(fogEnd, 400f))
+    }
 
     /**
      * The hour, from 0 to 24 (6 sunrise, 12 noon, 18 sunset, 0 midnight). Null (the default): no hour,

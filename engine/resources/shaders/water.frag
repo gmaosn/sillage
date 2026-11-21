@@ -7,12 +7,12 @@
 layout(location=0) in vec3 normal;
 layout(location=1) in vec3 color;
 layout(location=2) in vec3 world;
-layout(location=3) in vec3 sun;
 // water: the open sea's colour (rgb); shallows: the lagoon's colour (rgb) and how far it reaches (w, m).
 layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
-layout(set = 0, binding = 0) uniform sampler2DShadow shadowMap;
+layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadowMap;
 layout(location=0) out vec4 outColor;
 #include "frame.glsl"
+#include "light.glsl"
 #include "shading.glsl"
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -50,7 +50,7 @@ void main() {
     float foam = clamp(max(shore, max(surf * 0.85, crest * 0.7)), 0.0, 1.0);
     // The light: the main light (relative to a clear day's sun, so that noon keeps the water's own colours),
     // the sky in the shadows of what stands above it, and the lamps around.
-    float shade = sunlight();
+    float shade = sunlight(world, dot(normal, normal) > 1e-8 ? normalize(normal) : vec3(0.0));
     vec3 tint = fr.sunColor.rgb / vec3(1.0, 0.95, 0.84);
     vec3 light = mix(fr.shade.rgb * 0.62 + fr.skyAmb.rgb * 0.25, tint, shade) * mix(0.92, 1.0, max(fr.sunDir.y, 0.0));
     c = mix(c, vec3(0.93, 0.98, 0.97), foam) * (light + pointLights(vec3(0.0, 1.0, 0.0), world));

@@ -20,7 +20,6 @@ layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 
 layout(location=0) out vec3 normal;
 layout(location=1) out vec3 color;
 layout(location=2) out vec3 world;
-layout(location=3) out vec3 sun;
 layout(location=4) out vec3 glow;
 layout(location=5) out vec3 detailAt;              // the point in the object's space, in tiles of its texture
 layout(location=6) out vec3 detailNormal;          // the normal in the object's space
@@ -42,7 +41,4 @@ void main() {
     detail = vec4(inTexture.x - 1.0, inTexture.x > 0.5 ? inTexture.z : 0.0, inTexture.w, inImage.z);
     uv = inImage.xy;
     glow = any(lessThan(inEffect.rgb, vec3(0.0))) ? -inEffect.rgb * fr.sunDir.w : inEffect.rgb;
-    // Looked up a little off the surface, along its normal: a face never shadows itself.
-    vec3 n = dot(normal, normal) > 1e-8 ? normalize(normal) : vec3(0.0);
-    sun = pc.shadow.w > 0.0 ? sunView(world + n * (pc.shadow.w / 600.0), pc.shadow) : vec3(0.0);
 }

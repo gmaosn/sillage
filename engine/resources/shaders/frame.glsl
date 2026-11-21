@@ -16,6 +16,7 @@ layout(set = 0, binding = 1) uniform Frame {
     vec4 camRight;    // the camera's right and up, for things that face it
     vec4 camUp;
     vec4 glow;        // colour of the glow around a low sun
+    vec4 cascade[3];  // the shadow squares, finest first: centre (xyz), half side (w; 0: none)
     vec4 lightPos[MAX_LIGHTS];    // xyz, w: radius (m)
     vec4 lightColor[MAX_LIGHTS];  // colour × intensity
 } fr;

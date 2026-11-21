@@ -1,18 +1,37 @@
 // Sillage — the scene's light, shared by the fragment shaders (toon.frag, water.frag). Before including
-// it, a shader declares its push constants `pc` (with `shadow` and `eye`), its input `sun` (place in the
-// shadow map), the shadow map at set 0, binding 0, and includes frame.glsl.
+// it, a shader declares its push constants `pc` (with `shadow` and `eye`; shadow.w > 0: cast shadows on),
+// the shadow maps at set 0, binding 0 (one layer per cascade), and includes frame.glsl and light.glsl.
 
-// How much of the main light reaches this point: 0 in another thing's shadow, 1 in full light. Nine
-// filtered lookups soften the edge; the shadows fade out towards the border of the map.
-float sunlight() {
-    if (pc.shadow.w <= 0.0) return 1.0;
-    float edge = max(abs(sun.x), abs(sun.y));
-    if (edge >= 1.0) return 1.0;
-    vec2 uv = sun.xy * 0.5 + 0.5;
+// The main light through cascade c at this point: nine filtered lookups soften the edge. Looked up a little
+// off the surface along its normal, by a share of the texel: a face never shadows itself.
+float cascadeLight(int c, vec3 world, vec3 n) {
+    vec4 sq = fr.cascade[c];
+    vec3 s = sunView(world + n * (sq.w / 600.0), sq);
+    vec2 uv = s.xy * 0.5 + 0.5;
     float texel = 1.25 / fr.groundAmb.w;
     float sum = 0.0;
-    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) sum += texture(shadowMap, vec3(uv + vec2(i, j) * texel, sun.z));
-    return mix(sum / 9.0, 1.0, smoothstep(0.8, 1.0, edge));
+    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) sum += texture(shadowMap, vec4(uv + vec2(i, j) * texel, float(c), s.z));
+    return sum / 9.0;
+}
+
+// How much of the main light reaches this point: 0 in another thing's shadow, 1 in full light. The finest
+// square that holds the point answers; near its border it blends into the next, and the last one fades
+// out towards its own border.
+float sunlight(vec3 world, vec3 n) {
+    if (pc.shadow.w <= 0.0) return 1.0;
+    for (int c = 0; c < 3; c++) {
+        vec4 sq = fr.cascade[c];
+        if (sq.w <= 0.0) break;
+        vec3 s = sunView(world, sq);
+        float edge = max(abs(s.x), abs(s.y));
+        if (edge >= 1.0) continue;
+        float here = cascadeLight(c, world, n);
+        float blend = smoothstep(0.8, 1.0, edge);
+        if (blend <= 0.0) return here;
+        bool last = c == 2 || fr.cascade[c + 1].w <= 0.0;
+        return mix(here, last ? 1.0 : cascadeLight(c + 1, world, n), blend);
+    }
+    return 1.0;
 }
 
 // The point lights' light on a surface of normal n at p: soft toon steps, bright near the lamp and

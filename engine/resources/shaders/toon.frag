@@ -6,16 +6,16 @@
 layout(location=0) in vec3 normal;
 layout(location=1) in vec3 color;
 layout(location=2) in vec3 world;
-layout(location=3) in vec3 sun;
 layout(location=4) in vec3 glow;
 layout(location=5) in vec3 detailAt;
 layout(location=6) in vec3 detailNormal;
 layout(location=7) flat in vec4 detail;
 layout(location=8) in vec2 uv;
 layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
-layout(set = 0, binding = 0) uniform sampler2DShadow shadowMap;
+layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadowMap;
 layout(location=0) out vec4 outColor;
 #include "frame.glsl"
+#include "light.glsl"
 #include "shading.glsl"
 #include "texture.glsl"
 
@@ -30,7 +30,7 @@ void main() {
     vec3 v = normalize(pc.eye.xyz - world);
     float ndl = dot(n, fr.sunDir.xyz);
     // Two softened steps: the terminator, then a brighter band facing the light. Cast shadows take it away.
-    float shade = sunlight();
+    float shade = sunlight(world, dot(normal, normal) > 1e-8 ? normalize(normal) : vec3(0.0));
     float lit = smoothstep(-0.06, 0.12, ndl) * shade;
     float high = smoothstep(0.62, 0.78, ndl) * shade;
     vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, lit) + fr.sunColor.rgb * high * 0.10;
