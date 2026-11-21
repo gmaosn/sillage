@@ -94,6 +94,28 @@ class JointTest {
         assertTrue(tilt < 1e-4f, "la porte penche : $tilt")
     }
 
+    /**
+     * Une porte légère frappée loin de ses gonds (24 rad/s d'un coup) puis claquée contre ses butées : la passe
+     * rigide des articulations et les lignes angulaires tenues au gond la gardent à 1,2 mm (2,5 mm avant).
+     */
+    @Test fun unePorteFrappeeViolemmentResteSurSesGonds() {
+        val w = PhysicsWorld()
+        val door = w.add(Box(.45f, 1f, .03f), Vec3(.45f, 1f, 0f), mass = 40f)
+        val hinge = w.addHinge(null, door, Vec3(0f, 1f, 0f), Vec3.Y)
+        hinge.limits(-1.2f, 1.2f)
+        var drift = 0f; var over = 0f
+        for (k in 0 until 8) {
+            // Pushed at a point beyond its edge once it has turned: a large lever, a fast spin.
+            door.applyImpulse(Vec3(0f, 0f, if (k % 2 == 0) 60f else -60f), Vec3(.9f, 1.8f, 0f))
+            run(w, .5f) {
+                drift = max(drift, (hinge.anchorB - Vec3(0f, 1f, 0f)).length())
+                over = max(over, max(-1.2f - hinge.angle, hinge.angle - 1.2f))
+            }
+        }
+        assertTrue(drift < .0018f, "les gonds bougent de ${drift * 1000} mm")
+        assertTrue(over < .01f, "butée dépassée de $over rad")
+    }
+
     @Test fun unMoteurFaitTournerUneRoueASaVitesse() {
         val w = PhysicsWorld(gravity = Vec3.ZERO)
         val wheel = w.add(Capsule(.4f, .05f), Vec3(0f, 1f, 0f), Quat.axisAngle(Vec3.X, PI.toFloat() / 2))

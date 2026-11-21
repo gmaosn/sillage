@@ -8,7 +8,7 @@ import kotlin.math.hypot
 import kotlin.math.max
 
 /**
- * Physics benches. Usage: bench [pyramid [rows]] [pile [count]] [determinism].
+ * Physics benches. Usage: bench [pyramid [rows]] [pile [count]] [determinism] [doors [count]] …
  * Times are wall-clock per 1/60 s step on this machine, after a warm-up.
  */
 fun main(args: Array<String>) {
@@ -23,6 +23,7 @@ fun main(args: Array<String>) {
             "threads" -> threadsDeterminism(n ?: 6000)
             "settle" -> settle(n ?: 1000)
             "solver" -> solverCost(n ?: 3000)
+            "doors" -> doors(n ?: 12)
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -229,3 +230,33 @@ private fun threadsDeterminism(count: Int) {
     }
     println("Fils : $count corps, 300 pas, identiques au bit près avec et sans fils (${a.contactCount} points), empreinte ${java.lang.Long.toHexString(digest(a))}")
 }
+
+/**
+ * Diagnostics of hinge drift: doors with limits hit at random, as in qa's « portes à butées » check. Prints,
+ * per door, the worst distance of the hinge from its anchor and the step where it happened (just after a
+ * hit, at a stop, or later).
+ */
+private fun doors(count: Int) {
+    val rnd = java.util.Random(901)
+    var worst = 0f
+    repeat(count) { k ->
+        val w = PhysicsWorld()
+        val door = w.add(Box(.45f, 1f, .03f), Vec3(.45f, 1f, 0f), density = 300f + rnd.nextFloat() * 600f)
+        val low = -2.5f + rnd.nextFloat() * 2f; val high = .2f + rnd.nextFloat() * 1.8f
+        val g = w.addHinge(null, door, Vec3(0f, 1f, 0f), Vec3.Y); g.limits(low, high)
+        var drift = 0f; var at = -1; var sinceHit = 0; var atStop = false; var spinBefore = 0f; var spinAfter = 0f; var spin = 0f
+        repeat(240) { i ->
+            val before = door.angularVelocity.length()
+            if (i % 30 == 0) { door.applyImpulse(Vec3(0f, 0f, -60f + rnd.nextFloat() * 120f), Vec3(.9f, .2f + rnd.nextFloat() * 1.6f, 0f)); sinceHit = 0 }
+            val after = door.angularVelocity.length()
+            w.step(DT); sinceHit++
+            val d = (g.anchorB - Vec3(0f, 1f, 0f)).length()
+            if (d > drift) { drift = d; at = sinceHit; atStop = g.angle <= low + .01f || g.angle >= high - .01f; spinBefore = before; spinAfter = after; spin = door.angularVelocity.length() }
+        }
+        worst = max(worst, drift)
+        println("  porte $k (${"%.0f".format(door.mass)} kg) : gonds ${"%.2f".format(drift * 1000)} mm, ${at} pas après un coup" + (if (atStop) ", en butée" else "") +
+            ", ω ${"%.1f".format(spinBefore)} → ${"%.1f".format(spinAfter)} → ${"%.1f".format(spin)} rad/s")
+    }
+    println("Portes : pire ${"%.2f".format(worst * 1000)} mm")
+}
+

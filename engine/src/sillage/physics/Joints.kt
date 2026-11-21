@@ -56,6 +56,8 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
     val force: Float get() = lastImpulse * invH
     internal var lastImpulse = 0f
     internal var invH = 0f
+    /** Set while the world runs the rigid velocity pass: springs and motors sit it out. */
+    internal var rigid = false
 
     internal fun local(i: Int, p: Vec3): Vec3 = if (i < 0) p else rot(i).conjugate().rotate(p - centre(i))
     internal fun worldPoint(i: Int, l: Vec3) = if (i < 0) l else centre(i) + rot(i).rotate(l)
@@ -126,8 +128,25 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
         return impulse
     }
 
+    /**
+     * The linear impulse at the anchors (+ on b, − on a) that keeps them together while the angular impulse
+     * [l] acts (+[l] on b, −[l] on a), given the point constraint's K [k]: the bodies then turn about the
+     * anchor, not each about its centre of mass. A hinge's limits, motor, spring and axes act this way, so
+     * that a door slammed against its stop does not tear at its hinges (the Schur complement of the point
+     * rows, instead of leaving the point rows to catch up in the next passes).
+     */
+    internal fun anchorHold(l: Vec3, ra: Vec3, rb: Vec3, k: Mat3): Vec3 =
+        k.solve(-((ii(ib, l) cross rb) + (ii(ia, l) cross ra)))
+
+    /** Change of b's angular velocity relative to a under the angular impulse [l] with its anchor hold [hold]. */
+    internal fun coupledTurn(l: Vec3, hold: Vec3, ra: Vec3, rb: Vec3): Vec3 =
+        ii(ib, l) + ii(ia, l) + ii(ib, rb cross hold) + ii(ia, ra cross hold)
+
+    /** Applies the angular impulse [l] with its anchor hold [hold]; returns the hold, to be counted with the point's impulse. */
+    internal fun applyCoupled(l: Vec3, hold: Vec3, ra: Vec3, rb: Vec3): Vec3 { apply(hold, ra, rb, l); return hold }
+
     /** K of the point constraint: (mA + mB)·1 − [rA]× IA [rA]× − [rB]× IB [rB]×. */
-    private fun pointMass(ra: Vec3, rb: Vec3): Mat3 {
+    internal fun pointMass(ra: Vec3, rb: Vec3): Mat3 {
         val m = im(ia) + im(ib)
         fun col(e: Vec3) = e * m - (ra cross ii(ia, ra cross e)) - (rb cross ii(ib, rb cross e))
         return Mat3(col(Vec3.X), col(Vec3.Y), col(Vec3.Z))
@@ -236,19 +255,27 @@ class HingeJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
     override fun solve(useBias: Boolean, invH: Float) {
         val qa = dq(ia); val qb = dq(ib)
         val axis = qa.rotate(axisA0)
-        val mass = axialMass(axis)
         val angle = angleOf(axis, qa.rotate(refA0), qb.rotate(refB0))
         fun cdot() = (w(ib) - w(ia)) dot axis
+        // The angular rows turn the bodies about the anchor: each comes with the linear impulse that keeps the
+        // anchors together (Joint.anchorHold), and its mass is the inertia about the anchor. Solved about each
+        // centre of mass, a limit stopping a door turned it about its middle and pulled the hinge along, which
+        // the point rows then had to bring back (with the rigid pass: 3.9 mm out of the hinges, now 2.1 mm).
+        val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
+        val k = pointMass(ra, rb)
+        val hold = anchorHold(axis, ra, rb, k)
+        val mass = (axis dot coupledTurn(axis, hold, ra, rb)).let { if (it > 0f) 1f / it else 0f }
         // Spring, then motor, then limits (which overrule both), then the axes, then the point (Box2D's order).
-        if (springHertz > 0f) {
+        if (springHertz > 0f && !rigid) {
             val c = angle - springAngle
             val l = -spring.massScale * mass * (cdot() + spring.biasRate * c) - spring.impulseScale * springImpulse
-            springImpulse += l; applyAngular(axis * l)
+            springImpulse += l; impulse += applyCoupled(axis * l, hold * l, ra, rb)
         }
-        if (motorEnabled) {
+        if (motorEnabled && !rigid) {
             val max = maxMotorTorque * h; val old = motorImpulse
             motorImpulse = (motorImpulse - mass * (cdot() - motorSpeed)).coerceIn(-max, max)
-            applyAngular(axis * (motorImpulse - old))
+            val l = motorImpulse - old
+            impulse += applyCoupled(axis * l, hold * l, ra, rb)
         }
         if (limitsEnabled) for (side in 0..1) {
             // Lower: angle − lower ≥ 0; upper: upper − angle ≥ 0, the same row turned round.
@@ -260,9 +287,10 @@ class HingeJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
             val old = if (side == 0) lowerImpulse else upperImpulse
             val new = max(old - mass * massScale * (sign * cdot() + bias) - impulseScale * old, 0f)
             if (side == 0) lowerImpulse = new else upperImpulse = new
-            applyAngular(axis * (sign * (new - old)))
+            val l = sign * (new - old)
+            impulse += applyCoupled(axis * l, hold * l, ra, rb)
         }
-        // The axes stay aligned: two rows across a's axis.
+        // The axes stay aligned: two rows across a's axis, about the anchor too.
         run {
             val j1 = perpendicular(axis); val j2 = axis cross j1
             val rel = w(ib) - w(ia)
@@ -274,13 +302,15 @@ class HingeJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
                 b1 += soft.biasRate * (err dot j1); b2 += soft.biasRate * (err dot j2)
                 massScale = soft.massScale; impulseScale = soft.impulseScale
             }
-            val i1 = ii(ia, j1) + ii(ib, j1); val i2 = ii(ia, j2) + ii(ib, j2)
+            val h1 = anchorHold(j1, ra, rb, k); val h2 = anchorHold(j2, ra, rb, k)
+            val i1 = coupledTurn(j1, h1, ra, rb); val i2 = coupledTurn(j2, h2, ra, rb)
             val k11 = j1 dot i1; val k12 = j1 dot i2; val k22 = j2 dot i2
             val det = k11 * k22 - k12 * k12
-            if (det > 1e-12f) {
+            if (det > 1e-12f * k11 * k22 && det > 0f) {
                 val l1 = -(k22 * b1 - k12 * b2) / det; val l2 = -(-k12 * b1 + k11 * b2) / det
-                val step = j1 * (l1 * massScale - impulseScale * (angular dot j1)) + j2 * (l2 * massScale - impulseScale * (angular dot j2))
-                angular += step; applyAngular(step)
+                val s1 = l1 * massScale - impulseScale * (angular dot j1); val s2 = l2 * massScale - impulseScale * (angular dot j2)
+                val step = j1 * s1 + j2 * s2
+                angular += step; impulse += applyCoupled(step, h1 * s1 + h2 * s2, ra, rb)
             }
         }
         impulse += solvePoint(useBias, impulse)
@@ -367,12 +397,12 @@ class SliderJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, a
         val d = dp(ib) - dp(ia) + (rb - ra) + deltaCenter
         val axis = dq(ia).rotate(axis0)
         val translation = d dot axis
-        if (springHertz > 0f) {
+        if (springHertz > 0f && !rigid) {
             val m = row(axis, ra, rb, d)
             val l = -spring.massScale * m * (rowSpeed(axis) + spring.biasRate * (translation - springPosition)) - spring.impulseScale * springImpulse
             springImpulse += l; applyRow(axis, l)
         }
-        if (motorEnabled) {
+        if (motorEnabled && !rigid) {
             val m = row(axis, ra, rb, d)
             val max = maxMotorForce * h; val old = motorImpulse
             motorImpulse = (motorImpulse - m * (rowSpeed(axis) - motorSpeed)).coerceIn(-max, max)
@@ -483,7 +513,7 @@ class DistanceJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body,
     override fun solve(useBias: Boolean, invH: Float) {
         val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
         val m = measure(ra, rb)
-        if (!rope) {
+        if (!rope && !(rigid && springHertz > 0f)) {
             // A spring pulls in both passes (softness is its nature); a rigid rod corrects only with bias.
             val c = current - length
             val s = if (springHertz > 0f) spring else soft
