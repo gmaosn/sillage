@@ -30,6 +30,7 @@ A game is a module of the project whose `module.yaml` depends on `//engine`. The
 ./sillage run garden          # builds what changed (nothing: under a second), then plays
 ./sillage dev garden          # plays, and reloads the game each time you save a file
 ./sillage package garden      # build/package/garden/garden-x86_64.AppImage
+./sillage pad                 # try the gamepads plugged in (a DualSense: its lights, rumble and triggers)
 ./sillage games               # the games of the project
 ```
 
@@ -261,7 +262,7 @@ A `Pad` has `isDown`, `pressed`, `released`; `leftStick` and `rightStick` (`x`, 
 
 On Linux the user must be allowed to open the pads. Gamepads are, on a desktop session (udev gives the seat's user access to joysticks). A DualSense's raw HID device needs a udev rule: Steam installs one (`60-steam-input.rules`), and some distributions ship such rules (`game-devices-udev`). Without it the DualSense is read through evdev, with its buttons, sticks, triggers and rumble only, and a message says so once. Started by Steam with Steam Input, a game sees Steam's virtual pads instead of the real ones, as SDL games do. Steam, when it runs, may also drive a DualSense's lights.
 
-`--pad-test` (any game, or `./kotlin run -m playground --jvm-args=--enable-native-access=ALL-UNNAMED -- --pad-test`) checks the pads from a terminal, without a window: it says which pads the system shows and which it may not open, prints each pad's state live, cycles the light bar colours, lights the player LEDs, rumbles, sets resistances on the triggers (TRIANGLE changes them, CROSS rumbles, SQUARE lights the mute button), and holding PS for two seconds stops it.
+`./sillage pad` (or `--pad-test` after any game) checks the pads from a terminal, without a window: it says which pads the system shows and which it may not open, prints each pad's state live, cycles the light bar colours, lights the player LEDs, rumbles, sets resistances on the triggers (TRIANGLE changes them, CROSS rumbles, SQUARE lights the mute button), and holding PS for two seconds stops it.
 
 ### Actions
 

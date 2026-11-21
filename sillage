@@ -25,6 +25,7 @@ Sillage: make, run and ship games.
   ./sillage test [MODULE]         the tests (of the engine by default)
   ./sillage qa [OPTIONS]          the quality battery (--rapide, --seulement physique,rendu, ...)
   ./sillage package GAME          one AppImage file holding GAME and its Java runtime
+  ./sillage pad                   try the gamepads plugged in (a DualSense in full: lights, rumble, triggers)
   ./sillage games                 the games of this project
 
 OPTIONS are the game's own: ./sillage run GAME --help lists them (--headless, --capture, ...).
@@ -333,6 +334,7 @@ test) cmd_test "$@" ;;
 qa) cmd_qa "$@" ;;
 package) cmd_package "$@" ;;
 games) games ;;
+pad) cmd_run playground --pad-test "$@" ;;
 help|-h|--help) usage ;;
 *) usage >&2; exit 2 ;;
 esac
