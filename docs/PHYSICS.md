@@ -74,7 +74,7 @@ val body = world.add(shape, position, rotation = Quat.IDENTITY, type = BodyType.
 
 `Body` gives `position`, `rotation`, `velocity`, `angularVelocity` (read and write), `mass`, `friction`, `restitution`, `linearDamping`, `angularDamping`, `gravityScale`, `rollingResistance`, `isSleeping`, `isRemoved`, `shape`, `type` and `tag` (yours: the engine never reads it). `applyImpulse(impulse, point)` changes momentum at once; `world.applyForce(body, force)` acts during the next step. Setting a position, rotation or velocity wakes the body.
 
-A kinematic body is driven with `moveTo(target, dt, targetRotation)`, which sets the velocities that reach the target in `dt` seconds. Call it before each step: a lift moved this way carries what stands on it, and a door pushes what is in its way.
+A kinematic body is driven with `moveTo(target, dt, targetRotation)`, which sets the velocities that reach the target in `dt` seconds. Call it before each step: a lift moved this way carries what stands on it, and a door pushes what is in its way. A dynamic body caught between a kinematic body coming at it and what does not move (a ball under a lift going down to the floor) cannot be held by both: it is moved out sideways, across the squeeze and away from the kinematic body's centre, until it is out from under it, kept out of the floor meanwhile (`squeezes` counts the steps this happened).
 
 `world.remove(body)` takes a body out. Bodies that rested on it wake up. Its id may be given to the next body added, so drop the handle. `body(id)` makes a handle from an id, `bodyCount` counts ids ever used, `liveBodyCount` the bodies in the world.
 

@@ -252,6 +252,28 @@ class PhysicsTest {
         assertEquals(.35f + 2 * .7f, top.y, .03f)
     }
 
+    /**
+     * L'ascenseur du terrain de jeu (boîte cinématique de 2 × 0,3 × 2 m) qui descend jusqu'au sol sur un ballon :
+     * le ballon, que les contacts ne pouvaient tenir entre les deux, finissait enfoncé dans le sol. Il sort de côté.
+     */
+    @Test fun unBallonSousLAscenseurEstChasseDeCote() {
+        for (start in listOf(Vec3(.3f, .25f, -.2f), Vec3(0f, .25f, 0f))) {
+            val w = PhysicsWorld(); ground(w)
+            val ball = w.add(Sphere(.25f), start, restitution = .7f)
+            val lift = w.add(Box(1f, .15f, 1f), Vec3(0f, 1.5f, 0f), type = BodyType.KINEMATIC)
+            var lowest = 1f
+            run(w, 3f) {
+                val y = max(.15f, lift.position.y - 1.2f * dt)
+                lift.moveTo(Vec3(0f, y, 0f), dt)
+                lowest = min(lowest, ball.position.y)
+            }
+            assertTrue(lowest > .2f, "le ballon s'enfonce dans le sol : centre à $lowest m")
+            assertTrue(max(abs(ball.position.x), abs(ball.position.z)) > 1f + .2f, "le ballon est sorti de sous l'ascenseur : ${ball.position}")
+            assertTrue(w.squeezes > 0)
+            if (start.x != 0f) assertTrue(ball.position.x > 0f, "du côté où il était : ${ball.position}")
+        }
+    }
+
     /** Le ballon de la démo, poussé par le héros (capsule cinématique à 4,4 m/s). */
     private fun ballonPousse(): Pair<Float, Float> {
         val w = PhysicsWorld(); ground(w)

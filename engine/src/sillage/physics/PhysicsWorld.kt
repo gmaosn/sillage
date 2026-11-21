@@ -247,6 +247,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         fx[i] = 0f; fy[i] = 0f; fz[i] = 0f; tx[i] = 0f; ty[i] = 0f; tz[i] = 0f; java.util.Arrays.fill(st, i * S, i * S + S, 0f)
         linearDamping[i] = 0f; angularDamping[i] = 0f
         types[i] = type; shapes[i] = shape
+        if (type == BodyType.KINEMATIC) kinematics++
         px[i] = position.x; py[i] = position.y; pz[i] = position.z
         val q = rotation.normalized(); qx[i] = q.x; qy[i] = q.y; qz[i] = q.z; qw[i] = q.w
         st[i * S + DQW] = 1f
@@ -292,6 +293,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
         // Its joints go with it (what they held wakes up).
         if (joints.isNotEmpty()) for (j in joints.filter { it.ia == i || it.ib == i }) removeJoint(j)
+        if (types[i] == BodyType.KINEMATIC) kinematics--
         removed[i] = true; types[i] = BodyType.STATIC; sleeping[i] = false; tags[i] = null
         wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
         queryGrid.valid = false
@@ -707,6 +709,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
         if (wideActive) wide!!.finish()
         restitute()
+        unsqueeze(dt)
         if (continuous) continuous()
         updateSleep(dt); lap(7)
         if (waters.isNotEmpty() || wetList.size > 0) finishWet()
@@ -1700,6 +1703,104 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             if (i != 0f) push(a, b, o, nx * i, ny * i, nz * i)
         }
     }
+
+    // ------------------------------------------------------------------ bodies caught by a kinematic body
+
+    private var squeezeK = IntArray(0); private var squeezeS = IntArray(0)      // per body: its deepest point with a kinematic, a static (index + 1, 0: none)
+    private var squeezeKSign = BooleanArray(0); private var squeezeSSign = BooleanArray(0)   // whether that point's normal points at it
+    private val squeezed = IntList()
+
+    /**
+     * A dynamic body caught between a kinematic body coming at it (a lift going down, a door closing) and what
+     * does not move (the floor, a wall): the contacts cannot hold both, the kinematic one wins and the body was
+     * pressed into the floor (a ball under the playground's lift ended with its centre in the ground). It is
+     * moved out sideways instead, across the squeeze, away from the kinematic body's centre, by what the
+     * kinematic body's speed (twice it, at least [contactSpeed]) allows each step, until it is out from under it,
+     * and kept out of what does not move (it overlaps the kinematic body meanwhile). Runs only when
+     * such a pair of contacts overlaps by more than a centimetre: nothing else changes.
+     */
+    private var kinematics = 0
+    private fun unsqueeze(dt: Float) {
+        if (kinematics == 0) return
+        val c = points; val d = c.d
+        var any = false
+        for (k in 0 until c.size) {
+            val a = c.a[k]; val b = c.b[k]
+            if ((a >= 0 && types[a] == BodyType.KINEMATIC) || types[b] == BodyType.KINEMATIC) { any = true; break }
+        }
+        if (!any) return
+        if (squeezeK.size < count) { squeezeK = IntArray(capacity); squeezeS = IntArray(capacity); squeezeKSign = BooleanArray(capacity); squeezeSSign = BooleanArray(capacity) }
+        squeezed.clear()
+        // The deepest point of each dynamic body with a kinematic body and with static geometry.
+        for (k in 0 until c.size) {
+            val a = c.a[k]; val b = c.b[k]
+            for (side in 0..1) {
+                val i = if (side == 0) b else a
+                val other = if (side == 0) a else b
+                if (i < 0 || types[i] != BodyType.DYNAMIC) continue
+                val kind = if (other < 0) BodyType.STATIC else types[other]
+                if (kind == BodyType.DYNAMIC) continue
+                if (squeezeK[i] == 0 && squeezeS[i] == 0) squeezed.add(i)
+                if (kind == BodyType.KINEMATIC) { if (squeezeK[i] == 0 || c.sep[k] < c.sep[squeezeK[i] - 1]) { squeezeK[i] = k + 1; squeezeKSign[i] = side == 0 } }
+                else if (squeezeS[i] == 0 || c.sep[k] < c.sep[squeezeS[i] - 1]) { squeezeS[i] = k + 1; squeezeSSign[i] = side == 0 }
+            }
+        }
+        for (n in 0 until squeezed.size) {
+            val i = squeezed[n]
+            val pk = squeezeK[i] - 1; val ps = squeezeS[i] - 1
+            if (pk < 0 || ps < 0) continue
+            if (-c.sep[pk] - c.sep[ps] < .01f) continue
+            // Normals pointing at the body: from the kinematic one (nk) and from the static one (ns).
+            val fk = if (squeezeKSign[i]) 1f else -1f; val fs = if (squeezeSSign[i]) 1f else -1f
+            val nkx = d[pk * C + CNX] * fk; val nky = d[pk * C + CNX + 1] * fk; val nkz = d[pk * C + CNX + 2] * fk
+            val nsx = d[ps * C + CNX] * fs; val nsy = d[ps * C + CNX + 1] * fs; val nsz = d[ps * C + CNX + 2] * fs
+            if (nkx * nsx + nky * nsy + nkz * nsz > -.5f) continue
+            val kin = if (squeezeKSign[i]) c.a[pk] else c.b[pk]
+            val ok = kin * S
+            val approach = st[ok] * nkx + st[ok + 1] * nky + st[ok + 2] * nkz
+            if (approach <= 1e-4f && -c.sep[pk] - c.sep[ps] < .03f) continue
+            // Across the squeeze, away from the kinematic body's centre (a fixed way when right under it).
+            var ux = nsx - nkx; var uy = nsy - nky; var uz = nsz - nkz
+            val ul = sqrt(ux * ux + uy * uy + uz * uz); ux /= ul; uy /= ul; uz /= ul
+            val rx = px[i] - px[kin]; val ry = py[i] - py[kin]; val rz = pz[i] - pz[kin]
+            val ru = rx * ux + ry * uy + rz * uz
+            var dx = rx - ru * ux; var dy = ry - ru * uy; var dz = rz - ru * uz
+            var dl = sqrt(dx * dx + dy * dy + dz * dz)
+            if (dl < 1e-4f) {
+                if (abs(ux) >= .57735f) { dx = uy; dy = -ux; dz = 0f } else { dx = 0f; dy = uz; dz = -uy }
+                dl = sqrt(dx * dx + dy * dy + dz * dz)
+            }
+            dx /= dl; dy /= dl; dz /= dl
+            // How far until it is out from under the kinematic body (its bounds), and how far this step.
+            val b0 = 6 * kin
+            var exit = -Float.MAX_VALUE
+            for (corner in 0 until 8) {
+                val cx = box[b0 + if (corner and 1 == 0) 0 else 3]; val cy = box[b0 + if (corner and 2 == 0) 1 else 4]; val cz = box[b0 + if (corner and 4 == 0) 2 else 5]
+                exit = max(exit, (cx - px[i]) * dx + (cy - py[i]) * dy + (cz - pz[i]) * dz)
+            }
+            exit += shapes[i]!!.boundingRadius
+            if (exit <= 0f) continue
+            val speed = max(contactSpeed, 2f * sqrt(st[ok] * st[ok] + st[ok + 1] * st[ok + 1] + st[ok + 2] * st[ok + 2]))
+            val move = min(exit, speed * dt)
+            val o = i * S
+            // Out of what does not move, as far as this step's motion took it in (the kinematic body pushed it there).
+            val inside = -c.sep[ps] - (st[o + DPX] * ux + st[o + DPX + 1] * uy + st[o + DPX + 2] * uz)
+            val lift = max(0f, inside - .001f)
+            px[i] += dx * move + ux * lift; py[i] += dy * move + uy * lift; pz[i] += dz * move + uz * lift
+            // Its velocity is left as it was (set to the pace of the move, a ball caught under a running character
+            // was shot off at 13 m/s), but for nothing into what does not move.
+            val vu = st[o] * ux + st[o + 1] * uy + st[o + 2] * uz
+            if (vu < 0f) { st[o] -= ux * vu; st[o + 1] -= uy * vu; st[o + 2] -= uz * vu }
+            squeezes++
+            wake(i)
+            queryGrid.valid = false
+        }
+        for (n in 0 until squeezed.size) { val i = squeezed[n]; squeezeK[i] = 0; squeezeS[i] = 0 }
+    }
+
+    /** Steps in which a body caught by a kinematic body was moved out sideways, since the world was made (diagnostics). */
+    var squeezes = 0L
+        private set
 
     // ------------------------------------------------------------------ continuous collision
 

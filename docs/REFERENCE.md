@@ -298,6 +298,7 @@ See [PHYSICS.md](PHYSICS.md) for a tour.
 | `addWater(level, minX = −∞, minZ = −∞, maxX = ∞, maxZ = ∞, density = 1000)`, `removeWater(water)`, `waterList`, `waterEntries` | water volumes; the bodies that went into water during the last step |
 | `gravity`, `substeps`, `contactHertz`, `contactDampingRatio`, `contactSpeed`, `restitutionThreshold`, `speculativeDistance`, `supportRatio`, `sleepLinearSpeed`, `timeToSleep`, `gyroscopic`, `parallel`, `vectorized`, `jointHertz`, `jointDampingRatio`, `continuous` | settings (see PHYSICS.md) |
 | `continuousHits` | bodies put back by continuous collision so far |
+| `squeezes` | steps in which a body caught between a kinematic body and static geometry was moved out sideways |
 | `lastStepVectorized` | whether the last step solved its contacts on SIMD lanes (`--add-modules jdk.incubator.vector`) |
 | `profiling`, `phaseNanos` | time per phase, accumulated while `profiling` |
 
