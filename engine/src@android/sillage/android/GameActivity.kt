@@ -132,27 +132,47 @@ open class GameActivity(private val start: () -> Unit) : Activity() {
 
         override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) { gl = AndroidGl(); fresh = true }
 
+        @Volatile private var built: FrameLoop? = null      // the scene, built beside the screen's thread
+        @Volatile private var broken: Throwable? = null
+        private var building = false
+
         override fun onSurfaceChanged(unused: GL10?, width: Int, height: Int) {
             surface.resize(width, height)
             val g = gl ?: return
-            try {
-                val running = loop
-                if (running == null) {
-                    AndroidGame.pending = null
-                    start()
-                    val request = AndroidGame.pending ?: error("The game's main did not call game(…)")
-                    surface.title = request.title
-                    val audio = if ("--mute" in request.args) null else Audio.open()
-                    loop = FrameLoop(request.args, request.setup, surface, platformRenderer(g, width, height), audio)
-                    surface.consumeResize()
-                } else if (fresh) { running.renderer = platformRenderer(g, width, height); surface.consumeResize() }
-                fresh = false
-            } catch (e: Throwable) { fail(e) }
+            val running = loop
+            if (running == null) {
+                // Building the scene takes seconds (models, textures, physics): the system must not wait for it here,
+                // or it declares the application frozen. A thread builds it; the screen stays dark meanwhile.
+                if (!building) {
+                    building = true
+                    Thread({
+                        try {
+                            AndroidGame.pending = null
+                            start()
+                            val request = AndroidGame.pending ?: error("The game's main did not call game(…)")
+                            surface.title = request.title
+                            val audio = if ("--mute" in request.args) null else Audio.open()
+                            built = FrameLoop(request.args, request.setup, surface, NoRenderer, audio)
+                        } catch (e: Throwable) { broken = e }
+                    }, "sillage-start").start()
+                }
+            } else if (fresh) {
+                try { running.renderer = platformRenderer(g, width, height); surface.consumeResize() } catch (e: Throwable) { fail(e) }
+            }
+            if (running != null) fresh = false
         }
 
         override fun onDrawFrame(unused: GL10?) {
-            val game = loop ?: return
             if (failed) return
+            broken?.let { fail(it); return }
+            val g = gl ?: return
+            var game = loop
+            if (game == null) {
+                android.opengl.GLES30.glClearColor(.02f, .05f, .07f, 1f); android.opengl.GLES30.glClear(android.opengl.GLES30.GL_COLOR_BUFFER_BIT)
+                game = built ?: return
+                try { val size = surface.size(); game.renderer = platformRenderer(g, size[0], size[1]); surface.consumeResize() } catch (e: Throwable) { fail(e); return }
+                loop = game; fresh = false; last = 0L
+            }
             val now = System.nanoTime()
             val dt = if (last == 0L) 1f / 60f else ((now - last) / 1e9).toFloat()
             last = now
@@ -175,4 +195,16 @@ open class GameActivity(private val start: () -> Unit) : Activity() {
             runOnUiThread { android.widget.Toast.makeText(this@GameActivity, "Sillage: " + (e.message ?: e.toString()), android.widget.Toast.LENGTH_LONG).show() }
         }
     }
+}
+
+/** Stands in while the scene is built, before the screen's thread makes the real renderer. */
+private object NoRenderer : sillage.Renderer {
+    override val width = 1; override val height = 1
+    override fun resize(width: Int, height: Int) {}
+    override fun draw(nodes: List<sillage.Node>, viewProjection: sillage.math.Mat4, hud: sillage.HudMesh, eye: sillage.math.Vec3, time: Float, hidden: sillage.Node?,
+                      focus: sillage.math.Vec3?, lighting: sillage.Lighting, extras: sillage.FrameExtras?, capture: ((Int, Int, ByteArray) -> Unit)?) {}
+    override fun forget() {}
+    override fun close() {}
+    override var cull = true
+    override val drawn = 0; override val culled = 0
 }
