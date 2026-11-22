@@ -1,0 +1,10 @@
+# The sleeping oracle on Android: the same sources as temple/ (src/Main.kt is a link), played by the engine's GameActivity.
+product: android/app
+
+dependencies:
+  - //engine
+
+settings:
+  android:
+    applicationId: sillage.temple
+    namespace: sillage.temple

@@ -8,3 +8,5 @@ modules:
   - playground
   - qa
   - temple
+  - temple-android
+  - temple-web

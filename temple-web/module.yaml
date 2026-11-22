@@ -1,0 +1,5 @@
+# The sleeping oracle in a web page: the same sources as temple/ (src is a link to demo/src), built for WebAssembly.
+product: wasm-js/app
+
+dependencies:
+  - //engine
