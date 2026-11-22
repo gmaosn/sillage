@@ -8,9 +8,7 @@ import kotlin.math.sqrt
 
 // What a renderer decides before drawing, whatever draws: which shadow squares are drawn again this frame,
 // which copies the camera sees and which cast into each square, grouped by mesh; and the frame's uniform
-// block. The OpenGL ES renderer uses it; the Vulkan renderer has the same decisions written in its own
-// file (VulkanRenderer.gather, writeFrame), from which these were taken operation for operation: a change
-// to one goes to the other, so that the two pictures stay the same.
+// block. The Vulkan renderer and the OpenGL ES renderer both use it, so that the two draw the same things.
 
 /** Floats of the frame's uniform block (frame.glsl): fourteen vectors, the shadow squares, then the lights' places and colours. */
 internal const val FRAME_FLOATS = (14 + CASCADES + 2 * MAX_LIGHTS) * 4
