@@ -8,6 +8,8 @@ import sillage.audio.OnePole
 import sillage.audio.Sounds
 import sillage.audio.Synth
 import sillage.math.Vec3
+import sillage.math.toDegrees
+import sillage.math.toRadians
 import sillage.physics.Sphere
 import kotlin.math.*
 
@@ -130,7 +132,7 @@ private fun Scene.lightsAndLife(village: Node, port: Node) {
 
     // La guitare du feu de camp, à la nuit tombante : un fichier Ogg Vorbis (tools/create_music.py) lu par le
     // décodeur du moteur, à côté du jeu (un dixième de seconde) ; elle résonne un peu en plein air.
-    val song = java.util.concurrent.CompletableFuture.supplyAsync { Sound.load("sons/guitare.ogg") }
+    val song = background { Sound.load("sons/guitare.ogg") }
     var guitar: Ambience? = null
 
     // Les lucioles sortent à la nuit, au-dessus de l'herbe.
@@ -223,7 +225,7 @@ private fun Scene.interfaceAlizes(stage: Stage) {
         text({ "Coquillages${nb}${nb}${pickups.count { it.collected }}${nb}/${nb}${pickups.size}" }, 1.5, paper, bold)
         text({
             val m = ((lighting.time ?: 12f) * 60).toInt()
-            if (m != minute) { minute = m; hour = "%d${nb}h${nb}%02d".format(m / 60 % 24, m % 60) }
+            if (m != minute) { minute = m; hour = "%d${nb}h${nb}%02d".fmt(m / 60 % 24, m % 60) }
             hour
         }, 1.25, gold)
     }
@@ -257,7 +259,7 @@ private fun Scene.interfaceAlizes(stage: Stage) {
         val fadeHelp = if (time < stage.helpFrom || stage.show) 0f else ((stage.helpUntil - time) / .6f).coerceIn(0f, 1f)
         help.opacity = fadeHelp; help.visible = fadeHelp > 0f
         helpKey.visible = fadeHelp < 1f && !stage.show
-        counter.root.background = ink.mix(Color.hex(0x3D6E7C), Math.round(lighting.night * 16) / 16f)   // la nuit, le panneau se détache du ciel
+        counter.root.background = ink.mix(Color.hex(0x3D6E7C), (lighting.night * 16).roundToInt() / 16f)   // la nuit, le panneau se détache du ciel
         hud.mouseHint = if (stage.show || stage.fireworks) null else hint
     }
 }
@@ -267,7 +269,7 @@ private fun smooth(x: Float): Float { val t = x.coerceIn(0f, 1f); return t * t *
 /** Où la caméra à la troisième personne se tiendra derrière [p] (même calcul que le moteur, sans obstacle). */
 private fun Scene.behind(p: Player): Pair<Vec3, Vec3> {
     val aim = p.position + vec(0, camera.targetHeight, 0)
-    val az = Math.toRadians(camera.yaw.toDouble()).toFloat(); val el = Math.toRadians(camera.elevation.toDouble()).toFloat()
+    val az = toRadians(camera.yaw.toDouble()).toFloat(); val el = toRadians(camera.elevation.toDouble()).toFloat()
     return aim + vec(sin(az) * cos(el), sin(el), cos(az) * cos(el)) * camera.distance to aim
 }
 
@@ -290,7 +292,7 @@ private fun Scene.arrive(stage: Stage) {
         t += dt * rate
         val u = smooth(t / length)
         val (home, aim) = behind(p)
-        val az = Math.toRadians(camera.yaw.toDouble()).toFloat()
+        val az = toRadians(camera.yaw.toDouble()).toFloat()
         val turn = az + 4.1f * (1 - u)                // 235° autour de l'île
         val flat = sqrt((home.x - aim.x) * (home.x - aim.x) + (home.z - aim.z) * (home.z - aim.z))
         val far = flat + (32f - flat) * (1 - u).pow(1.5f)
@@ -320,7 +322,7 @@ private fun Scene.seaAndSky() {
         val f = camera.forward
         val bearing = atan2(f.x, f.z) + (leaps % 3 - 1) * .2f
         val out = vec(sin(bearing), 0, cos(bearing)); val along = vec(cos(bearing), 0, -sin(bearing)) * (if (leaps % 2 == 0) 1f else -1f)
-        val heading = Math.toDegrees(atan2(along.x, along.z).toDouble())
+        val heading = toDegrees(atan2(along.x, along.z).toDouble())
         leaps++
         for ((k, d) in pod.withIndex()) script {
             wait(k * .42)
@@ -330,7 +332,7 @@ private fun Scene.seaAndSky() {
             val arc = tween(1.25, Ease.LINEAR) { s ->
                 val y = SEA - .55f + 8.6f * s * (1 - s)                       // 1,6 m au-dessus de l'eau au sommet
                 d.position = start + along * (4.6f * s) + vec(0, y, 0)
-                d.rotation = rotation(x = -Math.toDegrees(atan(8.6 * (1 - 2 * s) / 4.6)), y = heading)
+                d.rotation = rotation(x = -toDegrees(atan(8.6 * (1 - 2 * s) / 4.6)), y = heading)
                 if ((y < SEA) != under) {
                     under = !under
                     val at = vec(d.position.x, SEA + .05f, d.position.z)
@@ -357,7 +359,7 @@ private fun Scene.seaAndSky() {
     every(14) {
         if (lighting.night > .7f) {
             val f = camera.forward
-            val b = atan2(f.x, f.z) + (shots % 5 - 2) * .3f; val up = Math.toRadians(9.0 + shots % 3 * 5).toFloat()      // bas sur l'horizon : la caméra regarde un peu vers le bas
+            val b = atan2(f.x, f.z) + (shots % 5 - 2) * .3f; val up = toRadians(9.0 + shots % 3 * 5).toFloat()      // bas sur l'horizon : la caméra regarde un peu vers le bas
             val start = camera.position + vec(sin(b) * cos(up), sin(up), cos(b) * cos(up)) * 85f
             val way = vec(cos(b), 0, -sin(b)) * (if (shots % 2 == 0) 34f else -34f) + vec(0, -9, 0)
             shots++

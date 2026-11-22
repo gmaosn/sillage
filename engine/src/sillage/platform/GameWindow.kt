@@ -29,6 +29,8 @@ internal interface GameWindow {
     fun consumeScroll(): Float
     /** True once after the drawable size changed. */
     fun consumeResize(): Boolean
+    /** The drawable's size in pixels: width, height. */
+    fun size(): IntArray
 
     /** Pointer position in pixels of the drawable, NaN when it is outside the window. */
     val pointerX: Float

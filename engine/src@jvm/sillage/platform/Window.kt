@@ -8,7 +8,9 @@ import sillage.SurfaceSource
  */
 
 /** A desktop window that Vulkan can present to, with keyboard and mouse input. */
-internal interface Window : GameWindow, SurfaceSource, AutoCloseable
+internal interface Window : GameWindow, SurfaceSource, AutoCloseable {
+    override fun size(): IntArray = framebufferSize()
+}
 
 /**
  * Opens a window on the running desktop: Wayland when WAYLAND_DISPLAY is set, X11 (XCB) otherwise.

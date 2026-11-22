@@ -25,6 +25,8 @@ Sillage: make, run and ship games.
   ./sillage test [MODULE]         the tests (of the engine by default)
   ./sillage qa [OPTIONS]          the quality battery (--rapide, --seulement physique,rendu, ...)
   ./sillage package GAME          one AppImage file holding GAME and its Java runtime
+  ./sillage web GAME [--serve [PORT]]   GAME for a web page (WebAssembly + WebGL 2), from its module GAME-web,
+                                  in build/web/GAME; --serve shows it at http://127.0.0.1:PORT (8080)
   ./sillage pad                   try the gamepads plugged in (a DualSense in full: lights, rumble, triggers)
   ./sillage games                 the games of this project
 
@@ -128,6 +130,27 @@ cmd_run() {
 	check_game "${1:-}"; game=$1; shift
 	build "$game"
 	exec "$(jdk_home)/bin/java" $(java_options) -cp "$(classpath "$game")" "$(main_class "$game")" "$@"
+}
+
+# GAME-web is a wasm-js/app module whose sources are links to GAME's: the toolchain builds the page, then
+# the files the game reads (models, sounds, images) are listed in assets.list, which the page loads first.
+cmd_web() {
+	[ -n "${1:-}" ] || die "which game?"
+	game=$1; shift
+	[ -f "$root/$game-web/module.yaml" ] || die "no module '$game-web' (a wasm-js/app module beside '$game', see demo-web/)"
+	(cd "$root" && ./kotlin build -m "$game-web") || exit 1
+	built="$root/build/tasks/_${game}-web_buildWasmJsAppWasmJsDebug"
+	[ -f "$built/index.html" ] || die "the toolchain did not leave the page in $built"
+	out="$root/build/web/$game"
+	rm -rf "$out"; mkdir -p "$out"
+	cp -RL "$built/." "$out/"
+	(cd "$out" && find . -type f ! -name '*.html' ! -name '*.mjs' ! -name '*.js' ! -name '*.wasm' ! -name '*.map' ! -name 'assets.list' | sed 's|^\./||' | LC_ALL=C sort > assets.list)
+	echo "sillage: $game for the web is in $out ($(du -sh "$out" | cut -f1), $(wc -l < "$out/assets.list") files to load)"
+	if [ "${1:-}" = "--serve" ]; then
+		port=${2:-8080}
+		echo "sillage: http://127.0.0.1:$port/ (Ctrl+C stops)"
+		cd "$out" && exec python3 -m http.server "$port" --bind 127.0.0.1
+	fi
 }
 
 cmd_dev() {
@@ -333,6 +356,7 @@ dev) cmd_dev "$@" ;;
 test) cmd_test "$@" ;;
 qa) cmd_qa "$@" ;;
 package) cmd_package "$@" ;;
+web) cmd_web "$@" ;;
 games) games ;;
 pad) cmd_run playground --pad-test "$@" ;;
 help|-h|--help) usage ;;
