@@ -123,7 +123,7 @@ def main():
     home = jdk()
     run = subprocess.run([os.path.join(home, "bin", "java"), "--sun-misc-unsafe-memory-access=allow", "-cp", cp,
                           "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", src, "-d", os.path.join(work, "out"),
-                          "-classpath", engine + ":" + stdlib, "-no-stdlib", "-no-reflect", "-jdk-home", home,
+                          "-classpath", engine + ":" + engine.replace("enginejvm", "corejvm") + ":" + stdlib, "-no-stdlib", "-no-reflect", "-jdk-home", home,
                           "-nowarn"], capture_output=True, text=True)
     errors = {}
     for l in (run.stdout + run.stderr).splitlines():
