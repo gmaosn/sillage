@@ -97,6 +97,16 @@ Non vérifié, à faire par le propriétaire : un vrai navigateur avec GPU (flui
 
 Seconde démo, `temple/` (« L'oracle endormi ») : à la première personne, une île sous la lune et la brume, un temple dorique en ruine ; cinq braseros à rallumer (feu vert d'eau, une note chacun) ; au cinquième la vasque s'illumine, la brume recule et les tambours tombés refont leur colonne. Lumière réglée à la main (pas d'horloge), sans trait d'encre, peu de couleur, beaucoup de halo ; sons synthétisés (cloche, vent, bourdon, chouette). Modèles : `tools/create_temple.py` (`tools/glbkit.py` est la boîte à outils GLB partagée avec l'île). Trajet d'essai des cinq feux : `./sillage run temple --headless --frames 9000 --route "-2.2,26.6 2.2,26.6 4.8,24 4.8,14.6 5.3,14.1 0,13.3 -5.3,14.1 -1,13 0,11.5 0,7.5 0,4 0,-1 1.4,-2.4 p30" --capture x.png`.
 
+## Des graphismes moins naïfs pour le temple (22 novembre 2026)
+
+Le propriétaire, après avoir vu « L'oracle endormi » : « des graphismes moins naïfs, moins à la Minecraft ». Trois causes, trois réponses.
+- **Éclairage** : `Lighting.softness` (0 par défaut : les deux aplats du dessin, l'île ne change pas d'un pixel ; vers 1 : la lumière tourne autour des formes, plus d'ambiante dans l'ombre, un léger reflet rasant). Dans `toon.frag`, passé par `zenith.w` du bloc d'image ; shaders OpenGL régénérés. Le temple est à 0,9.
+- **Couleurs par sommet** : le chargeur GLB moyennait `COLOR_0` par triangle ; il garde maintenant une couleur par sommet (`ModelNode.tints`, `MeshBuilder.triangle` à trois couleurs) : les dégradés sont lisses. `tools/glbkit.py` écrit `COLOR_0` quand un maillage a une fonction `shade` (les GLB de l'île, sans teintes, sortent identiques).
+- **Modèles** (`tools/create_temple.py` récrit) : fûts à vingt cannelures, galbés, en tambours à joints ; chapiteaux tournés (annelets, échine courbe) ; entablement à triglyphes et corniche ; murs de la cella en assises de blocs à joints croisés dont la ruine suit un profil lissé ; degrés parementés, stylobate dallé ; blocs tombés et gravats érodés par du bruit ; statue au drapé plissé ; cyprès et oliviers bosselés ; teintes de patine (pied sali, coulures, mousse sur les dessus, fond des cannelures assombri). 150 000 triangles pour le temple, 42 000 pour l'île (GLB de 10,7 et 3 Mo : positions et couleurs sans index, à alléger si le web le demande).
+- Marbre veiné et dallage peints par la démo (`Texture.paint`).
+- On marche sur des volumes nets : dalles, parement des degrés et gravats ont leurs propres matières (`parement`, `parement_clair`, `gravat`), hors collision ; sinon le marcheur butait sur des rebords d'un centimètre (trouvé par le trajet scripté).
+- Coût : mesuré pendant qu'un jeu occupait le GPU (l'île elle-même mesurait le double de sa valeur au calme) : le temple ≈ 1,4 fois l'île ; deux cascades d'ombre au lieu de trois (la brume cache le lointain). À remesurer au calme.
+
 ## Effet « whaou » de la démo (22 novembre 2026)
 
 Demandé par le propriétaire après la passe du moteur ; tout est dans `demo/` et passe par l'API existante (rien d'ajouté au moteur).

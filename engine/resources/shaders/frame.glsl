@@ -9,7 +9,7 @@ layout(set = 0, binding = 1) uniform Frame {
     vec4 groundAmb;   // ambient light from the ground; w: side of the shadow map in texels
     vec4 horizon;     // the sky at the horizon, and the haze
     vec4 middle;      // the sky a quarter of the way up
-    vec4 zenith;      // the sky straight up
+    vec4 zenith;      // the sky straight up; w: softness of the shading (0 drawn steps … 1 smooth)
     vec4 sun;         // the sun itself: direction (xyz), how much of it shows (w)
     vec4 moon;        // the moon: direction, how much of it shows
     vec4 wind;        // xy: the wind on the ground plane (x, z), its strength as length

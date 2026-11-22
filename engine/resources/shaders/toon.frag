@@ -31,15 +31,21 @@ void main() {
     float ndl = dot(n, fr.sunDir.xyz);
     // Two softened steps: the terminator, then a brighter band facing the light. Cast shadows take it away.
     float shade = sunlight(world, dot(normal, normal) > 1e-8 ? normalize(normal) : vec3(0.0));
-    float lit = smoothstep(-0.06, 0.12, ndl) * shade;
-    float high = smoothstep(0.62, 0.78, ndl) * shade;
+    // Softness (Lighting.softness): 0 keeps the two drawn steps; towards 1 the light falls off smoothly round the
+    // shape, as on stone or clay, the sky and the ground light the shaded sides more, and a faint sheen shows
+    // where the light glances.
+    float soft = fr.zenith.w;
+    float lit = mix(smoothstep(-0.06, 0.12, ndl), clamp(ndl * 0.9 + 0.1, 0.0, 1.0), soft) * shade;
+    float high = smoothstep(0.62, 0.78, ndl) * shade * (1.0 - soft);
     vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, lit) + fr.sunColor.rgb * high * 0.10;
     // Ambient light: the sky above, the ground below; then the lamps around.
-    vec3 ambient = mix(fr.groundAmb.rgb, fr.skyAmb.rgb, n.y * 0.5 + 0.5) * 0.22;
+    vec3 ambient = mix(fr.groundAmb.rgb, fr.skyAmb.rgb, n.y * 0.5 + 0.5) * (0.22 + 0.55 * soft);
     vec3 c = albedo * (light * 0.86 + ambient + pointLights(n, world));
     // Rim: the edges of shapes brighten a little, mostly on the light's side. Only on silhouettes: a floor
     // seen at a grazing angle (normal towards the sky) must not turn white.
     float rim = pow(1.0 - max(dot(n, v), 0.0), 4.0) * (1.0 - smoothstep(0.35, 0.8, n.y));
-    c += rim * (0.03 + 0.09 * lit) * fr.sunColor.rgb * vec3(1.0, 0.96, 0.88);
+    c += rim * (1.0 - 0.75 * soft) * (0.03 + 0.09 * lit) * fr.sunColor.rgb * vec3(1.0, 0.96, 0.88);
+    float sheen = pow(max(dot(n, normalize(fr.sunDir.xyz + v)), 0.0), 26.0);
+    c += albedo * fr.sunColor.rgb * (sheen * 0.35 * soft * lit);
     outColor = vec4(hazed(c + glow, world), far);
 }

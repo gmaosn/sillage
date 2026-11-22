@@ -23,12 +23,22 @@ def norm(a):
 
 
 class Mesh:
-    def __init__(self): self.groups = {}
+    def __init__(self):
+        self.groups = {}
+        # Teintes par sommet (COLOR_0), facultatives : `shade(point, normale de la face, matière)` rend un facteur
+        # (r, v, b) qui multiplie la couleur de la matière (salissures, mousse, creux assombris) ; `mul` le
+        # multiplie encore (un réglage du moment : le fond d'une cannelure). Sans `shade`, rien n'est écrit.
+        self.colors = {}; self.shade = None; self.mul = 1.0
 
-    def tri(self, a, b, c, mat):
+    def tri(self, a, b, c, mat, col=None):
         n = cross(sub(b, a), sub(c, a))
         if dot(n, n) < 1e-16: return              # triangle sans aire (pointe d'un cône, pôle d'une sphère)
         self.groups.setdefault(mat, []).extend([a, b, c])
+        if self.shade is not None or col is not None:
+            if col is None:
+                nn = norm(n); col = [self.shade(p, nn, mat) for p in (a, b, c)]
+            if self.mul != 1.0: col = [mul(k, self.mul) for k in col]
+            self.colors.setdefault(mat, []).extend(col)
     def quad(self, a, b, c, d, mat): self.tri(a, b, c, mat); self.tri(a, c, d, mat)
 
     def face(self, pts, mat, toward):
@@ -190,7 +200,12 @@ class Asset:
                     if key not in matidx:
                         matidx[key] = len(materials)
                         materials.append({'name': key, 'pbrMetallicRoughness': {'baseColorFactor': [*COLORS[key], 1], 'metallicFactor': 0, 'roughnessFactor': 1}})
-                    prims.append({'attributes': {'POSITION': accessor(points, 'VEC3', 34962)}, 'material': matidx[key], 'mode': 4})
+                    attributes = {'POSITION': accessor(points, 'VEC3', 34962)}
+                    tints = mesh.colors.get(key)
+                    if tints:
+                        assert len(tints) == len(points), (nd['name'], key, 'teintes données à une partie seulement des triangles')
+                        attributes['COLOR_0'] = accessor([tuple(min(4.0, max(0.0, v)) for v in t) for t in tints], 'VEC3', 34962)
+                    prims.append({'attributes': attributes, 'material': matidx[key], 'mode': 4})
                     triangles += len(points) // 3
                 meshes.append({'name': nd['name'], 'primitives': prims}); j['mesh'] = len(meshes) - 1
             nodes.append(j)

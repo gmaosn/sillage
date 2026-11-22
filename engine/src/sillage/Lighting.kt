@@ -88,6 +88,12 @@ class Lighting {
     var vignette: Float = .22f
     /** Colour saturation of the finished picture: 1 as is, more to make colours richer. */
     var saturation: Float = 1.06f
+    /**
+     * How the light falls on shapes: 0 (the default) draws it in two soft steps, like a cartoon; towards 1 it
+     * fades smoothly round them, the shaded sides take more of the sky's and the ground's light, and a faint
+     * sheen shows where the light glances — stone, clay, a less drawn and more modelled look.
+     */
+    var softness: Float = 0f
 
     /** Moves the hour on by [dt] seconds of play (when the day has a length). */
     internal fun advance(dt: Float) {

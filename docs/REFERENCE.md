@@ -340,6 +340,7 @@ Light and air of a scene. Every value can change at any time, `shadows` included
 | `sunrise`, `sunTilt` | where the sun rises (a direction on the ground) and how far from the zenith it passes at noon (30°) |
 | `night`, `moonDirection` | read only: 0 by day, 1 at night; towards the moon |
 | `wind` | on the ground plane (x, z), its length the strength (0 calm, 1 a strong breeze) |
+| `softness` | how the light falls on shapes: 0 (default) two drawn steps, like a cartoon; towards 1 a smooth fall-off, more ambient light in the shade and a faint sheen (stone, clay) |
 | `glow`, `outlines`, `vignette`, `saturation` | halo around what is brighter than white (0.8), ink along silhouettes (0.85), darker corners (0.22), colour richness (1.06) |
 
 ### Lamps and particles

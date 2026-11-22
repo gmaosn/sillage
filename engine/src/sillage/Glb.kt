@@ -150,9 +150,10 @@ object Glb {
          * Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; their
          * texture coordinates (6 floats each); their skin weights (24 floats each: per vertex 4 joints, 4 weights).
          */
-        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray)
+        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray, val tints: FloatArray)
         fun triangles(meshIndex: Int): Read {
             val out = ArrayList<Float>(); val uvOut = ArrayList<Float>(); val skinOut = ArrayList<Float>(); val nOut = ArrayList<Float>()
+            val tintOut = ArrayList<Float>(); var tinted = false; var triangleCount = 0
             var everyNormal = true
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
@@ -191,6 +192,12 @@ object Glb {
                     for (v in intArrayOf(a, b, c)) for (j in 0..2) out.add(positions[v][j])
                     out.add(vc.r); out.add(vc.g); out.add(vc.b)
                     out.add((p.int("material") ?: -1).toFloat())
+                    // Vertex colours (COLOR_0) keep one colour per vertex: gradients stay smooth across a face.
+                    if (colors != null) {
+                        if (!tinted) { tinted = true; repeat(triangleCount) { for (q in 0..2) { tintOut.add(out[13 * it + 9]); tintOut.add(out[13 * it + 10]); tintOut.add(out[13 * it + 11]) } } }
+                        for (v in intArrayOf(a, b, c)) { tintOut.add(color.r * colors[v][0]); tintOut.add(color.g * colors[v][1]); tintOut.add(color.b * colors[v][2]) }
+                    } else if (tinted) repeat(3) { tintOut.add(vc.r); tintOut.add(vc.g); tintOut.add(vc.b) }
+                    triangleCount++
                     for (v in intArrayOf(a, b, c)) { uvOut.add(uvs?.get(v)?.get(0) ?: 0f); uvOut.add(uvs?.get(v)?.get(1) ?: 0f) }
                     if (fileNormals != null) for (v in intArrayOf(a, b, c)) for (j in 0..2) nOut.add(fileNormals[v][j])
                     if (joints != null) for (v in intArrayOf(a, b, c)) {
@@ -202,7 +209,7 @@ object Glb {
                 }
             }
             // Normals from the file only when every primitive of the mesh has them.
-            return Read(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray(), if (everyNormal) nOut.toFloatArray() else FloatArray(0))
+            return Read(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray(), if (everyNormal) nOut.toFloatArray() else FloatArray(0), tintOut.toFloatArray())
         }
 
         val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
@@ -241,6 +248,7 @@ object Glb {
                 triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) }.triangles } ?: FloatArray(0),
                 uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).uvs } ?: FloatArray(0),
                 normals = node.int("mesh")?.let { m -> meshCache.getValue(m).normals } ?: FloatArray(0),
+                tints = node.int("mesh")?.let { m -> meshCache.getValue(m).tints } ?: FloatArray(0),
                 skin = node.int("skin")?.also { require(it in 0 until (doc.arr("skins")?.size ?: 0)) { "GLB: node $i uses a missing skin" } } ?: -1,
                 skinWeights = node.int("mesh")?.let { m -> meshCache.getValue(m).skin } ?: FloatArray(0),
                 properties = node.obj("extras")?.fields?.mapValues { plain(it.value) } ?: emptyMap(),

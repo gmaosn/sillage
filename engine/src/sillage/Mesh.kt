@@ -302,6 +302,14 @@ class MeshBuilder {
         put(a, n, color); put(b, n, color); put(c, n, color)
         return this
     }
+    /** One triangle with a colour at each corner (the colours blend across it). */
+    fun triangle(a: Vec3, b: Vec3, c: Vec3, colorA: Color, colorB: Color, colorC: Color): MeshBuilder {
+        val cross = (b - a) cross (c - a)
+        if (cross.lengthSquared() < 1e-12f) return this
+        val n = cross.normalized()
+        put(a, n, colorA); put(b, n, colorB); put(c, n, colorC)
+        return this
+    }
     fun quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3, color: Color): MeshBuilder { triangle(a, b, c, color); triangle(a, c, d, color); return this }
     /** A box with its base centred on (x, y, z). */
     fun box(x: Float, y: Float, z: Float, width: Float, height: Float, depth: Float, color: Color): MeshBuilder {

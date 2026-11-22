@@ -288,7 +288,7 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         o = colour(u, o, l.shadeColor, l.fogEnd)
         o = colour(u, o, l.skyAmbient, lights.toFloat())
         o = colour(u, o, l.groundAmbient, shadowSize.toFloat())
-        o = colour(u, o, l.horizon, 0f); o = colour(u, o, l.skyMiddle, 0f); o = colour(u, o, l.zenith, 0f)
+        o = colour(u, o, l.horizon, 0f); o = colour(u, o, l.skyMiddle, 0f); o = colour(u, o, l.zenith, l.softness)
         val sun = l.sunDirection.normalized()
         u[o++] = sun.x; u[o++] = sun.y; u[o++] = sun.z; u[o++] = l.sunShows()
         val moon = l.moonDirection

@@ -738,13 +738,16 @@ void main() {
     vec3 v = normalize(pc.eye.xyz - v2);
     float ndl = dot(n, fr.sunDir.xyz);
     float shade = sunlight(v2, dot(v0, v0) > 1e-8 ? normalize(v0) : vec3(0.0));
-    float lit = smoothstep(-0.06, 0.12, ndl) * shade;
-    float high = smoothstep(0.62, 0.78, ndl) * shade;
+    float soft = fr.zenith.w;
+    float lit = mix(smoothstep(-0.06, 0.12, ndl), clamp(ndl * 0.9 + 0.1, 0.0, 1.0), soft) * shade;
+    float high = smoothstep(0.62, 0.78, ndl) * shade * (1.0 - soft);
     vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, lit) + fr.sunColor.rgb * high * 0.10;
-    vec3 ambient = mix(fr.groundAmb.rgb, fr.skyAmb.rgb, n.y * 0.5 + 0.5) * 0.22;
+    vec3 ambient = mix(fr.groundAmb.rgb, fr.skyAmb.rgb, n.y * 0.5 + 0.5) * (0.22 + 0.55 * soft);
     vec3 c = albedo * (light * 0.86 + ambient + pointLights(n, v2));
     float rim = pow(1.0 - max(dot(n, v), 0.0), 4.0) * (1.0 - smoothstep(0.35, 0.8, n.y));
-    c += rim * (0.03 + 0.09 * lit) * fr.sunColor.rgb * vec3(1.0, 0.96, 0.88);
+    c += rim * (1.0 - 0.75 * soft) * (0.03 + 0.09 * lit) * fr.sunColor.rgb * vec3(1.0, 0.96, 0.88);
+    float sheen = pow(max(dot(n, normalize(fr.sunDir.xyz + v)), 0.0), 26.0);
+    c += albedo * fr.sunColor.rgb * (sheen * 0.35 * soft * lit);
     outColor = vec4(hazed(c + v4, v2), far);
 }
 """

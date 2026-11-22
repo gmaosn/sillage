@@ -21,6 +21,8 @@ class ModelNode internal constructor(
     internal val uvs: FloatArray = FloatArray(0),
     /** Per triangle, the normals of a, b, c as the file gives them (9 floats); empty when it has none. */
     internal val normals: FloatArray = FloatArray(0),
+    /** Per triangle, the colours of a, b, c (9 floats) when the file gives a colour per vertex (COLOR_0); empty otherwise. */
+    internal val tints: FloatArray = FloatArray(0),
     /** The skin that deforms its mesh ([Model.skins]), −1: none. */
     val skin: Int = -1,
     /** Per triangle, per vertex 4 joints (indices in the skin) then 4 weights (24 floats); empty without a skin. */
@@ -105,6 +107,15 @@ class Clip internal constructor(val name: String, val channels: List<Channel>) {
 /** Floats per model triangle: 9 positions, r, g, b, material index. */
 internal const val TRI = 13
 
+/** Adds the triangle at [k] of [n]'s triangles to [g], placed at a, b, c: with its vertices' own colours when the file gave some, its one colour otherwise. */
+private fun tinted(g: MeshBuilder, n: ModelNode, k: Int, a: Vec3, b: Vec3, c: Vec3, mirrored: Boolean) {
+    val t = n.triangles
+    if (n.tints.isEmpty()) { val color = Color(t[k + 9], t[k + 10], t[k + 11]); if (mirrored) g.triangle(a, c, b, color) else g.triangle(a, b, c, color); return }
+    val q = n.tints; val o = k / TRI * 9
+    val ca = Color(q[o], q[o + 1], q[o + 2]); val cb = Color(q[o + 3], q[o + 4], q[o + 5]); val cc = Color(q[o + 6], q[o + 7], q[o + 8])
+    if (mirrored) g.triangle(a, c, b, ca, cc, cb) else g.triangle(a, b, c, ca, cb, cc)
+}
+
 /** A GLB scene kept as a hierarchy, with its animations. */
 class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray, val clips: Map<String, Clip>,
                                  /** Material names of the GLB, by index (as named in Blender). */
@@ -175,7 +186,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                 val a = m.transformPoint(Vec3(t[k], t[k + 1], t[k + 2])); val b = m.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
                 val c = m.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
                 val before = g.triangleCount
-                if (mirrored) g.triangle(a, c, b, Color(t[k + 9], t[k + 10], t[k + 11])) else g.triangle(a, b, c, Color(t[k + 9], t[k + 10], t[k + 11]))
+                tinted(g, n, k, a, b, c, mirrored)
                 if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); keptNode.add(j); keptTri.add(k / TRI); keptMirrored.add(mirrored) }
             }
             for (c in n.children) visit(c, m * nodes[c].local)
@@ -250,8 +261,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             val g = MeshBuilder(); val t = nodes[i].triangles; val mats = ArrayList<Int>(); val kept = ArrayList<Int>()
             for (k in t.indices step TRI) {
                 val before = g.triangleCount
-                g.triangle(Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]),
-                    Color(t[k + 9], t[k + 10], t[k + 11]))
+                tinted(g, nodes[i], k, Vec3(t[k], t[k + 1], t[k + 2]), Vec3(t[k + 3], t[k + 4], t[k + 5]), Vec3(t[k + 6], t[k + 7], t[k + 8]), false)
                 if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); kept.add(k / TRI) }
             }
             val mesh = normalsOf(g.build(), List(kept.size) { i }, kept, null) { null }.withMaterials(mats.toIntArray())
@@ -279,10 +289,9 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                 val a = if (skinned) skinnedRest(i, k / TRI, 0) else world.transformPoint(Vec3(t[k], t[k + 1], t[k + 2]))
                 val b = if (skinned) skinnedRest(i, k / TRI, 1) else world.transformPoint(Vec3(t[k + 3], t[k + 4], t[k + 5]))
                 val c = if (skinned) skinnedRest(i, k / TRI, 2) else world.transformPoint(Vec3(t[k + 6], t[k + 7], t[k + 8]))
-                val color = Color(t[k + 9], t[k + 10], t[k + 11])
                 // Face normals recomputed, also after a negative scale; degenerate triangles are skipped.
                 val before = g.triangleCount
-                if (mirrored) g.triangle(a, c, b, color) else g.triangle(a, b, c, color)
+                tinted(g, n, k, a, b, c, mirrored)
                 if (g.triangleCount > before) { mats.add(t[k + 12].toInt()); keptNode.add(i); keptTri.add(k / TRI); keptMirrored.add(mirrored) }
             }
             for (e in n.children) visit(e, world)

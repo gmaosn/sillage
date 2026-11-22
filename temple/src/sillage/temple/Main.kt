@@ -30,11 +30,11 @@ val oracle: Scene.() -> Unit = {
     reverb = Reverb.HALL                              // la pierre et le vide : chaque pas résonne un peu
 
     // Le sol et le temple sont solides tels qu'ils sont dessinés (les degrés font 30 cm : on les monte en marchant).
-    model("models/ile.glb").solid()
+    model("models/ile.glb").solid().texture(SLABS, "dalle")
     val temple = model("models/temple.glb")
-    temple.solid("marbre", "marbre_use", "marbre_sombre", "bronze", "bronze_vert", "mousse")
-    temple.texture(Textures.PLASTER, "marbre", "marbre_use", "marbre_sombre", tile = 1.6, strength = .9)
-    temple.texture(Textures.LEAVES, "lierre", "mousse")
+    temple.solid("marbre", "marbre_use", "marbre_sombre", "bronze_vert")
+    temple.texture(Textures.LEAVES, "lierre")
+    temple.texture(MARBLE, "marbre", "marbre_use", "marbre_sombre", "parement", "parement_clair", "gravat")
     temple.sway(.05, "touffe", "fleur_*", reach = .4)
     temple.sway(.02, "lierre", reach = .25)
 
@@ -55,6 +55,36 @@ val oracle: Scene.() -> Unit = {
     onKey(Key.F3) { hud.showFps = !hud.showFps }
 }
 
+// Deux textures peintes pour ce lieu (elles se raccordent à leurs bords : sommes de sinus à fréquences entières).
+private fun ripple(u: Float, v: Float, a: Int, b: Int, phase: Float) = sin(2 * PI.toFloat() * (a * u + b * v) + phase)
+
+/** Un marbre : un grain fin, de larges nuages, quelques veines sombres qui serpentent. */
+private val MARBLE: Texture by lazy {
+    Texture.paint("marbre", tile = 2.6, strength = .85, size = 512) { u, v ->
+        val cloud = .5f * ripple(u, v, 1, 2, 0f) * ripple(u, v, 2, -1, 1.3f) + .3f * ripple(u, v, 3, 1, 2.1f)
+        val wander = .9f * ripple(u, v, 2, 3, .7f) + .5f * ripple(u, v, 5, -2, 2.9f)
+        val vein = abs(sin(2 * PI.toFloat() * (2 * u + v) + wander * 1.6f)).pow(.35f)          // 0 sur la veine
+        val fine = .5f * ripple(u, v, 23, 17, 1f) * ripple(u, v, 19, -29, 2f) + .5f * ripple(u, v, 41, 37, .4f)
+        val k = (.5f + .05f * cloud + .018f * fine - .13f * (1f - vein).coerceAtLeast(0f).pow(3)).coerceIn(.2f, .8f)
+        Color(k, k, k * 1.01f)
+    }
+}
+
+/** Un dallage de grandes dalles inégales à joints sombres. */
+private val SLABS: Texture by lazy {
+    Texture.paint("dalles", tile = 2.4, strength = .9, size = 512, mapping = Texture.Mapping.FACES) { u, v ->
+        val row = (v * 3).toInt().coerceIn(0, 2)
+        val cuts = arrayOf(floatArrayOf(0f, .46f, 1f), floatArrayOf(.22f, .7f, 1.22f), floatArrayOf(.1f, .58f, 1.1f))[row]
+        val x = if (u < cuts[0]) u + 1f else u
+        val slab = if (x < cuts[1]) 0 else 1
+        val edge = minOf(abs(v * 3 - row), abs(v * 3 - row - 1)) / 3f
+        val joint = minOf(edge, abs(x - cuts[0]), abs(x - cuts[1]), abs(x - cuts[2]))
+        val tone = .5f + .07f * sin(row * 2.3f + slab * 4.1f + 1f) + .025f * ripple(u, v, 7, 5, 1f) * ripple(u, v, 11, -6, 2f) + .015f * ripple(u, v, 31, 27, .5f)
+        val k = tone * (1f - .5f * (1f - (joint / .012f).coerceIn(0f, 1f)))
+        Color(k, k, k)
+    }
+}
+
 /** Ce que les parties de la scène se disent. */
 private class Stage {
     var lit = 0                                       // braseros allumés
@@ -69,9 +99,9 @@ private class Stage {
  */
 private fun Scene.night() {
     lighting.sunDirection = Vec3(.42f, .62f, .66f).normalized()
-    lighting.sunColor = Color(.36f, .46f, .72f)
-    lighting.shadeColor = Color(.035f, .055f, .11f)
-    lighting.skyAmbient = Color(.045f, .075f, .13f)
+    lighting.sunColor = Color(.58f, .70f, 1.0f)
+    lighting.shadeColor = Color(.02f, .035f, .075f)
+    lighting.skyAmbient = Color(.03f, .05f, .09f)
     lighting.groundAmbient = Color(.03f, .045f, .05f)
     lighting.zenith = Color(.003f, .006f, .022f)
     lighting.skyMiddle = Color(.012f, .028f, .06f)
@@ -80,8 +110,9 @@ private fun Scene.night() {
     lighting.night = 1f                               // les étoiles, les lueurs de nuit
     lighting.fogStart = 3f; lighting.fogEnd = 40f
     lighting.outlines = 0f; lighting.saturation = .8f; lighting.vignette = .55f; lighting.glow = 1.5f
+    lighting.softness = .9f                           // la lumière tourne autour des formes : de la pierre, pas un dessin
     lighting.wind = Vec3(.22f, 0f, .1f)
-    lighting.shadowRange = 30f
+    lighting.shadowRange = 26f; lighting.shadowCascades = 2            // la brume cache le lointain : deux carrés d'ombre suffisent
 }
 
 /** Les cyprès de la voie, des oliviers sur les pentes, deux statues sans tête qui gardent l'entrée. */
@@ -99,7 +130,7 @@ private fun Scene.grove() {
     }
     for (side in floatArrayOf(-1f, 1f))
         model("models/statue.glb").onGround(side * 4.3f, 23.6f).rotate(y = if (side < 0) 90 else -90)
-            .also { it.texture(Textures.PLASTER, "marbre", "marbre_use", "marbre_sombre", tile = 1.6, strength = .9); it.solid() }
+            .also { it.texture(MARBLE, "marbre", "marbre_use", "marbre_sombre"); it.solid() }
 }
 
 /** La flamme d'un brasero : un feu grégeois, vert d'eau, qui ne chauffe pas. */
@@ -138,7 +169,7 @@ private fun Scene.brazier(k: Int, at: Vec3, stage: Stage): Brazier {
 private fun Scene.mist() {
     val veil = ParticleStyle(Color(.30f, .40f, .44f), Color(.22f, .30f, .36f), size = 1.4f, endSize = 3.2f, life = 11f, lifeSpread = .3f, speed = .12f,
         spread = 80f, area = 13f, gravity = -.01f, drag = .4f, wander = .06f, wind = .5f, opacity = .075f)
-    for (at in listOf(vec(0, 1.2, 2), vec(0, .5, 19), vec(-9, .4, 8), vec(10, .4, -6), vec(0, .3, 30))) emit(veil, at, rate = 1.6)
+    for (at in listOf(vec(0, 1.2, 2), vec(0, .5, 19), vec(-9, .4, 8), vec(10, .4, -6), vec(0, .3, 30))) emit(veil, at, rate = 1.1)
     val wisp = ParticleStyle(TEAL, Color(.3f, .6f, 1f), size = .045f, endSize = .02f, life = 7f, lifeSpread = .4f, speed = .25f, spread = 180f,
         area = 9f, drag = .5f, wander = .5f, glow = true, brightness = 4.5f, twinkle = .9f)
     emit(wisp, vec(0, 2.6, 0), rate = 2.2)
@@ -192,13 +223,13 @@ private fun Scene.awakening(stage: Stage, fires: List<Brazier>) {
     val drums = lying.mapIndexed { k, (xz, turn) ->
         val h = 1.08f
         model("models/tambour.glb", scale = 1f).also { d ->
-            d.texture(Textures.PLASTER, "marbre", "marbre_sombre", tile = 1.6, strength = .9)
+            d.texture(MARBLE, "marbre", "marbre_sombre")
             d.rotation = turn
             d.at(groundAt(xz.x, xz.z) + vec(0, if (k == 4) h / 2 else .5, 0)); d.kinematic()
         }
     }
     val capital = model("models/chapiteau.glb").also { c ->
-        c.texture(Textures.PLASTER, "marbre", tile = 1.6, strength = .9)
+        c.texture(MARBLE, "marbre")
         c.rotation = rotation(x = 100, y = 30); c.at(groundAt(3.2, 16.9) + vec(0, .45, 0)); c.kinematic()
     }
     val pillar = ParticleStyle(GOLD, TEAL, size = .09f, endSize = .02f, life = 3.2f, speed = 3.2f, spread = 6f, area = .35f, gravity = -1.2f, drag = .2f,
