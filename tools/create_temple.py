@@ -316,8 +316,8 @@ def wall(x0, z0, x1, z1, top, seed, gap=None):
             cx = x0 + (x1 - x0) * mid; cz = z0 + (z1 - z0) * mid; ln = (b - a) * L + .012        # les blocs se recouvrent d'un rien : des joints, pas des jours
             # Le cœur du mur, derrière le parement : par un joint entrouvert on voit de la pierre sombre, jamais le jour.
             T.mul = .55
-            if along_x: T.box(cx, y, cz, ln + .3, course, .4, 'marbre_sombre')
-            else: T.box(cx, y, cz, .4, course, ln + .3, 'marbre_sombre')
+            if along_x: T.box(cx, y, cz, ln, course, .4, 'marbre_sombre')
+            else: T.box(cx, y, cz, .4, course, ln, 'marbre_sombre')
             T.mul = .86 + .26 * hash3(seed + 9, row, q)
             jitter = .02 * (hash3(seed + 2, row, q) - .5)
             if along_x: ashlar(T, cx, y, cz + jitter, ln, course + .006, .56, 'marbre' if (row + q) % 4 else 'marbre_use', seed=seed * 13 + row * 5 + q, n=8, rings=4, e=.055)
