@@ -92,4 +92,9 @@ internal class AlsaOutput(override val device: String, private val mixer: Mixer,
     }
 }
 
-internal actual fun platformAudioOutput(device: String, mixer: Mixer, rate: Int, latencyMs: Int): AudioOutput = AlsaOutput(device, mixer, rate, latencyMs)
+/** The system's sound output: ALSA on Linux, the sound device on the BSDs. « default » is each system's usual one. */
+internal actual fun platformAudioOutput(device: String, mixer: Mixer, rate: Int, latencyMs: Int): AudioOutput = when {
+    sillage.platform.Os.freebsd -> OssOutput(if (device == "default") "/dev/dsp" else device, mixer, rate, latencyMs)
+    sillage.platform.Os.linux -> AlsaOutput(device, mixer, rate, latencyMs)
+    else -> throw IllegalStateException("no sound output yet on " + sillage.platform.Os.label)
+}

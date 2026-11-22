@@ -24,7 +24,10 @@ Sillage: make, run and ship games.
                                   images, sounds), keeping the player and the camera where they are
   ./sillage test [MODULE]         the tests (of the engine by default)
   ./sillage qa [OPTIONS]          the quality battery (--rapide, --seulement physique,rendu, ...)
-  ./sillage package GAME          one AppImage file holding GAME and its Java runtime
+  ./sillage package GAME [--arch aarch64]   one AppImage file holding GAME and its Java runtime; --arch aarch64
+                                  makes the one for a Raspberry Pi 4, 5 or 500 from an x86 computer
+  ./sillage package GAME --portable   a folder with GAME's jars and a launcher, for any system that has a Java 25
+                                  of its own (FreeBSD, NetBSD...): copy it there and run ./GAME
   ./sillage web GAME [--serve [PORT]]   GAME for a web page (WebAssembly + WebGL 2), from its module GAME-web,
                                   in build/web/GAME; --serve shows it at http://127.0.0.1:PORT (8080)
   ./sillage pad                   try the gamepads plugged in (a DualSense in full: lights, rumble, triggers)
@@ -266,19 +269,55 @@ cmd_qa() {
 	exec "$(jdk_home)/bin/java" $(java_options) -Xmx2g -cp "$(classpath qa)" "$(main_class qa)" "$@"
 }
 
+# The game as jars and a launcher: nothing of this computer's processor or system in it. It runs wherever a Java 25
+# and the system's own libraries are (Vulkan, X11 or Wayland): Linux, FreeBSD, NetBSD.
+package_portable() {
+	game=$1; jdk=$(jdk_home); main=$(main_class "$game")
+	out="$root/build/package/$game-portable"
+	rm -rf "$out"; mkdir -p "$out/lib"
+	set --
+	for m in $(closure "$game"); do
+		for d in "$artifacts/${m}jvm/kotlin-output" "$artifacts/${m}jvm/resources-output"; do
+			[ -d "$d" ] && set -- "$@" -C "$d" .
+		done
+	done
+	"$jdk/bin/jar" --create --file "$out/lib/$game.jar" "$@"
+	cp "$(stdlib_jar)" "$out/lib/kotlin-stdlib.jar"
+	sed -e "s/@GAME@/$game/g" -e "s/@MAIN@/$main/g" "$root/tools/portable-launcher.sh" > "$out/$game"
+	chmod 755 "$out/$game"
+	echo "Portable: $out ($(du -sh "$out" | cut -f1)) - copy the folder, then ./$game"
+}
+
 cmd_package() {
-	check_game "${1:-}"; game=$1
+	check_game "${1:-}"; game=$1; shift
+	host=$(uname -m); arch=$host; portable=
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--arch) [ $# -ge 2 ] || die "package: --arch takes x86_64 or aarch64"; arch=$2; shift 2 ;;
+		--portable) portable=1; shift ;;
+		*) die "package: unknown option $1" ;;
+		esac
+	done
+	[ "$arch" = arm64 ] && arch=aarch64
 	build "$game"
 	jdk=$(jdk_home)
 	out="$root/build/package/$game"
+	[ "$arch" = "$host" ] || out="$out-$arch"
+	if [ -n "$portable" ]; then package_portable "$game"; return; fi
 	app="$out/$game.AppDir"
 	tools="$root/build/appimage-tools"
 	rm -rf "$out"
 	mkdir -p "$app/usr/lib" "$tools"
-	case $(uname -m) in
-	x86_64) arch=x86_64; tool_sum=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0; runtime_sum=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;;
-	aarch64) arch=aarch64; tool_sum=; runtime_sum=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;;
-	*) die "no AppImage tools for $(uname -m)" ;;
+	# appimagetool runs here (the host); the AppImage's own runtime is the target's.
+	case $host in
+	x86_64) tool_sum=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 ;;
+	aarch64) tool_sum= ;;
+	*) die "no AppImage tools for $host" ;;
+	esac
+	case $arch in
+	x86_64) runtime_sum=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;;
+	aarch64) runtime_sum=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;;
+	*) die "no AppImage runtime for $arch (x86_64 or aarch64)" ;;
 	esac
 
 	# The game in one jar (the JVM's AOT cache only keeps classes that come from jars), the Kotlin
@@ -298,16 +337,60 @@ cmd_package() {
 	echo "sillage: a Java runtime for it (jlink)"
 	mods=$("$jdk/bin/jdeps" --multi-release 25 --ignore-missing-deps --print-module-deps \
 		--class-path "$app/usr/lib/kotlin-stdlib.jar" "$app/usr/lib/$game.jar")
-	"$jdk/bin/jlink" --add-modules "$mods" --strip-debug --no-man-pages --no-header-files \
-		--compress=zip-6 --output "$app/usr/runtime"
+	if [ "$arch" = "$host" ]; then
+		"$jdk/bin/jlink" --add-modules "$mods" --strip-debug --no-man-pages --no-header-files \
+			--compress=zip-6 --output "$app/usr/runtime"
+	else
+		# Another processor: jlink links the same JDK's modules built for it (fetched once, checksum checked).
+		version=$(sed -n 's/^JAVA_RUNTIME_VERSION="\([0-9.]*+[0-9]*\).*/\1/p' "$jdk/release")
+		[ -n "$version" ] || die "cannot read the JDK's version in $jdk/release"
+		cross="$root/build/cross"; mkdir -p "$cross"
+		name="OpenJDK25U-jmods_${arch}_linux_hotspot_$(echo "$version" | tr + _).tar.gz"
+		url="https://github.com/adoptium/temurin25-binaries/releases/download/jdk-$(echo "$version" | sed 's/+/%2B/')/$name"
+		if [ ! -d "$cross/jmods-$arch-$version" ]; then
+			echo "sillage: the JDK's modules for $arch ($name)"
+			[ -f "$cross/$name" ] || curl -fsSL -o "$cross/$name" "$url" || die "cannot fetch $url"
+			[ -f "$cross/$name.sha256.txt" ] || curl -fsSL -o "$cross/$name.sha256.txt" "$url.sha256.txt" || die "cannot fetch its checksum"
+			(cd "$cross" && sha256sum -c --quiet "$name.sha256.txt") || die "$name: checksum mismatch"
+			mkdir -p "$cross/jmods-$arch-$version.tmp" && tar -xzf "$cross/$name" -C "$cross/jmods-$arch-$version.tmp" --strip-components=1 &&
+				mv "$cross/jmods-$arch-$version.tmp" "$cross/jmods-$arch-$version"
+		fi
+		jmods="$cross/jmods-$arch-$version"; [ -d "$jmods/jmods" ] && jmods="$jmods/jmods"
+		# --strip-java-debug-attributes, not --strip-debug: the latter runs this computer's objcopy on the other processor's libraries.
+		"$jdk/bin/jlink" --module-path "$jmods" --add-modules "$mods" --strip-java-debug-attributes --no-man-pages --no-header-files \
+			--compress=zip-6 --output "$app/usr/runtime"
+	fi
 
 	# The AOT cache: a run without a window records what the game loads and compiles, so that it
 	# starts faster. The paths are recorded relative to the AppDir, where the game runs from.
-	echo "sillage: training run for the AOT cache (no window, no sound)"
 	main=$(main_class "$game")
-	(cd "$app" && ./usr/runtime/bin/java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=usr/lib/$game.aot \
-		-cp "$cp_rel" "$main" --headless --mute --frames 900 --size 256x256 --capture "$out/icon.png" >"$out/training.log" 2>&1) ||
-		{ cat "$out/training.log" >&2; die "the training run failed (log above)"; }
+	if [ "$arch" = "$host" ]; then
+		echo "sillage: training run for the AOT cache (no window, no sound)"
+		(cd "$app" && ./usr/runtime/bin/java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=usr/lib/$game.aot \
+			-cp "$cp_rel" "$main" --headless --mute --frames 900 --size 256x256 --capture "$out/icon.png" >"$out/training.log" 2>&1) ||
+			{ cat "$out/training.log" >&2; die "the training run failed (log above)"; }
+	else
+		# The icon from this computer's JVM; the training run needs the target's processor: Docker and QEMU
+		# emulate it (tools/arm64/Dockerfile: a Debian with Mesa's software Vulkan), very slowly (a software renderer on an
+		# emulated processor: seconds per frame), so the run is a dozen small frames: enough to record the classes loaded.
+		# Without Docker the AppImage has no cache: it works, and starts a little slower.
+		(cd "$app" && "$jdk/bin/java" --enable-native-access=ALL-UNNAMED -cp "$cp_rel" "$main" --headless --mute --frames 120 --size 256x256 \
+			--capture "$out/icon.png" >"$out/icon.log" 2>&1) || { cat "$out/icon.log" >&2; die "the run for the icon failed (log above)"; }
+		image="sillage-$arch"; platform="linux/$([ "$arch" = aarch64 ] && echo arm64 || echo amd64)"
+		if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+			docker image inspect "$image" >/dev/null 2>&1 || {
+				echo "sillage: building the $arch image to try the game in (once, a few minutes)"
+				docker build --platform "$platform" -t "$image" "$root/tools/arm64" >"$out/image.log" 2>&1 || { tail -n 20 "$out/image.log" >&2; die "docker build failed"; }
+			}
+			echo "sillage: training run for the AOT cache, on an emulated $arch (slow)"
+			docker run --rm --platform "$platform" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$app":/app -w /app "$image" \
+				./usr/runtime/bin/java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=usr/lib/$game.aot \
+				-cp "$cp_rel" "$main" --headless --mute --frames 12 --size 64x64 --quality low >"$out/training.log" 2>&1 ||
+				{ tail -n 30 "$out/training.log" >&2; die "the training run on $arch failed (log above)"; }
+		else
+			echo "sillage: no Docker here, the AppImage is made without its AOT cache"
+		fi
+	fi
 
 	cat > "$app/AppRun" <<EOF
 #!/bin/sh
@@ -315,7 +398,8 @@ cmd_package() {
 # The cache was recorded from the AppDir; the JVM finds its jars again wherever the AppImage is
 # mounted, and the game keeps the caller's working directory (for --capture and the like).
 here=\$(dirname "\$(readlink -f "\$0")")
-exec "\$here/usr/runtime/bin/java" --enable-native-access=ALL-UNNAMED -XX:AOTCache="\$here/usr/lib/$game.aot" \\
+aot=; [ -f "\$here/usr/lib/$game.aot" ] && aot="-XX:AOTCache=\$here/usr/lib/$game.aot"
+exec "\$here/usr/runtime/bin/java" --enable-native-access=ALL-UNNAMED \$aot \\
 	-cp "\$here/usr/lib/$game.jar:\$here/usr/lib/kotlin-stdlib.jar" $main "\$@"
 EOF
 	chmod 755 "$app/AppRun"

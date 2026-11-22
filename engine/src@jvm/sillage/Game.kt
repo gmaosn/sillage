@@ -54,6 +54,7 @@ internal class Runtime(private val title: String, private val args: Array<String
   --seed N                the scene's random numbers from seed N (the same run again)
   --debug physics,free,paused   start with the physics drawn (F5), the free camera (F6), paused (F7)
   --no-cull               draw everything, even what the camera cannot see (comparisons)
+  --quality low|medium|high   how much the picture costs (default: by the graphics card; medium on a Raspberry Pi)
   --renderer vulkan|gl    what draws: Vulkan (the default), or the OpenGL ES 3 renderer of the web and of
                           phones, through EGL (only with --headless: to compare its pictures)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
@@ -66,6 +67,7 @@ internal class Runtime(private val title: String, private val args: Array<String
         if ("--pad-test" in args) { padTest(args); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-sounds")?.let { exportSounds(it); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-textures")?.let { exportTextures(it); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
+        option("--quality")?.let { System.setProperty("sillage.quality", it) }
         val headless = "--headless" in args
         val smoke = "--smoke" in args
         val frames = option("--frames")?.toInt()?.also { require(it > 0) } ?: if (headless || smoke) 180 else Int.MAX_VALUE

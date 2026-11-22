@@ -59,3 +59,25 @@ internal interface Renderer {
     val drawn: Int
     val culled: Int
 }
+
+/**
+ * How much the renderer spends on a picture: the side of the shadow maps and the samples of the anti-aliasing.
+ * Chosen once from the graphics card's name — a Raspberry Pi's (« V3D ») gets [MEDIUM] — unless the launch
+ * says otherwise: `--quality low|medium|high`, the setting `sillage.quality` or the variable SILLAGE_QUALITY.
+ */
+internal class RenderQuality private constructor(val name: String, val shadowTexels: Int, val samples: Int) {
+    companion object {
+        val HIGH = RenderQuality("high", SHADOW_TEXELS, 4)
+        val MEDIUM = RenderQuality("medium", SHADOW_TEXELS / 2, 4)
+        val LOW = RenderQuality("low", SHADOW_TEXELS / 2, 1)
+
+        fun choose(gpuName: String): RenderQuality {
+            val asked = (sillage.io.Storage.setting("sillage.quality") ?: sillage.io.Storage.environment("SILLAGE_QUALITY"))?.lowercase()
+            return when (asked) {
+                "high" -> HIGH; "medium" -> MEDIUM; "low" -> LOW
+                null, "", "auto" -> if ("V3D" in gpuName) MEDIUM else HIGH
+                else -> throw IllegalArgumentException("Quality is low, medium or high (got $asked)")
+            }
+        }
+    }
+}

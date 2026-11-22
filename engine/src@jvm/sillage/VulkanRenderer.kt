@@ -104,7 +104,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var pipelineUp=0L
     private var pipelineComposite=0L
     // Cast shadows: a depth map seen from the main light, drawn first each frame, then sampled by the shaders.
-    private val shadowSize=if(shadows) SHADOW_TEXELS else 1
+    private var shadowSize=if(shadows) SHADOW_TEXELS else 1     // then the quality's, once the card is known
+    private var depthFormat=VK_FORMAT_D32_SFLOAT
+    /** How much is spent on this card (see [RenderQuality]). */
+    var quality=RenderQuality.HIGH; private set
     private var shadowMap: Image?=null
     private var shadowPass=0L
     private var shadowFramebuffers=LongArray(0)
@@ -208,7 +211,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             syncTextures(target==null)
             createPipelines()
             if(surface != 0L) recreateSwapchain() else createTargets()
-            println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " msaa=" + echantillons + " validation=" + validation)
+            println("SILLAGE_VULKAN_OK GPU=" + nomGpu + " target=" + largeur + "x" + hauteur + " msaa=" + echantillons + " shadows=" + shadowSize + " quality=" + quality.name + " validation=" + validation)
         } catch(e: Throwable) { close(); throw e }
     }
 
@@ -279,8 +282,18 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             }
         }
         require(best>=0) { "No Vulkan graphics queue can present to the window" }
-        val fp=s.struct(VkFormatProperties); vk.getPhysicalDeviceFormatProperties(physical,VK_FORMAT_D32_SFLOAT,fp)
-        require(fp.u32(VkFormatProperties,"optimalTilingFeatures") and VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT != 0) { "D32 depth format not supported" }
+        // What the card can do, asked rather than assumed (small GPUs: a Raspberry Pi's, a phone's).
+        fun offers(format: Int, wanted: Int): Boolean {
+            val fp=s.struct(VkFormatProperties); vk.getPhysicalDeviceFormatProperties(physical,format,fp)
+            return fp.u32(VkFormatProperties,"optimalTilingFeatures") and wanted == wanted
+        }
+        depthFormat=intArrayOf(VK_FORMAT_D32_SFLOAT,VK_FORMAT_X8_D24_UNORM_PACK32,VK_FORMAT_D24_UNORM_S8_UINT,VK_FORMAT_D16_UNORM)
+            .firstOrNull { offers(it,VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) } ?: error("This GPU ($nomGpu) offers no depth format Sillage can draw into")
+        check(offers(hdrFormat,VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT or VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT or VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT or
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) { "This GPU ($nomGpu) cannot draw into 16-bit float pictures (R16G16B16A16_SFLOAT), which the engine's light needs" }
+        quality=RenderQuality.choose(nomGpu)
+        echantillons=minOf(echantillons,quality.samples)
+        if(shadowSize>1) shadowSize=quality.shadowTexels
         val mp=s.struct(VkPhysicalDeviceMemoryProperties); vk.getPhysicalDeviceMemoryProperties(physical,mp)
         memoryFlags=IntArray(mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypeCount")) {
             mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypes[$it].propertyFlags") }
@@ -407,7 +420,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         var a=s.structs(VkAttachmentDescription,3)
         attachment(a,0,hdrFormat,echantillons,VK_ATTACHMENT_LOAD_OP_CLEAR,
             if(multi) VK_ATTACHMENT_STORE_OP_DONT_CARE else VK_ATTACHMENT_STORE_OP_STORE, if(multi) VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL else read)
-        attachment(a,1,VK_FORMAT_D32_SFLOAT,echantillons,VK_ATTACHMENT_LOAD_OP_CLEAR,VK_ATTACHMENT_STORE_OP_DONT_CARE,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        attachment(a,1,depthFormat,echantillons,VK_ATTACHMENT_LOAD_OP_CLEAR,VK_ATTACHMENT_STORE_OP_DONT_CARE,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
         if(multi) attachment(a,2,hdrFormat,VK_SAMPLE_COUNT_1_BIT,VK_ATTACHMENT_LOAD_OP_DONT_CARE,VK_ATTACHMENT_STORE_OP_STORE,read)
         var d=s.structs(VkSubpassDependency,2)
         dependency(d,0,VK_SUBPASS_EXTERNAL,0,fragment or colourOut or VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
@@ -672,7 +685,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val c=image(colorFormat,colourUse or VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT); color=c
         val h=image(hdrFormat,colourUse or VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT); hdr=h
         val m=if(echantillons>1) image(hdrFormat,colourUse,VK_IMAGE_ASPECT_COLOR_BIT,echantillons) else null; msaa=m
-        val d=image(VK_FORMAT_D32_SFLOAT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,echantillons); depth=d
+        val d=image(depthFormat,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,echantillons); depth=d
         framebuffer=if(m!=null) framebuffer(s,renderPass,s.longs(m.view,d.view,h.view),3,largeur,hauteur)
             else framebuffer(s,renderPass,s.longs(h.view,d.view),2,largeur,hauteur)
         compositeFramebuffer=framebuffer(s,compositePass,s.longs(c.view),1,largeur,hauteur)
