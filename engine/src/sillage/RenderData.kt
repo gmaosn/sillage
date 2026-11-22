@@ -26,3 +26,36 @@ internal class FrameExtras {
 
 /** Floats per debug line vertex: position, colour and opacity. */
 internal const val LINE_FLOATS = 7
+
+/**
+ * What draws a scene, whatever is under it. The loop hands it, each frame, the nodes to draw (already
+ * chosen by the scene: [Scene.drawList]), the camera, the interface's triangles, the light and the extras.
+ * The desktop's Vulkan renderer does the same job with its own entry points (windows, captures to files).
+ */
+internal interface Renderer {
+    /** Size of the picture in pixels. */
+    val width: Int
+    val height: Int
+    /** The surface changed size (a window resized, a phone turned). */
+    fun resize(width: Int, height: Int)
+
+    /**
+     * Draws one frame. [viewProjection]: the camera (as [sillage.math.Mat4.perspective] × view gives it: depth 0 to 1,
+     * y down, as Vulkan); [eye] and [focus]: where the camera is and what it is about (the shadows are
+     * drawn around it; null: no cast shadows this frame); [hidden]: a node not to draw (the player seen
+     * through its own eyes). [capture], when given, receives the finished picture: width, height, RGB bytes
+     * from the top row down.
+     */
+    fun draw(nodes: List<Node>, viewProjection: sillage.math.Mat4, hud: HudMesh, eye: sillage.math.Vec3, time: Float, hidden: Node?,
+             focus: sillage.math.Vec3?, lighting: Lighting, extras: FrameExtras?, capture: ((Int, Int, ByteArray) -> Unit)? = null)
+
+    /** A new scene: forget the meshes and textures of the last one. */
+    fun forget()
+    fun close()
+
+    /** Whether what the camera cannot see is left out (true by default). */
+    var cull: Boolean
+    /** Batches drawn and left out in the last frame. */
+    val drawn: Int
+    val culled: Int
+}
