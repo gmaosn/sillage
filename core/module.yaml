@@ -1,0 +1,31 @@
+# The portable heart of Sillage: maths, physics, file decoders, sound synthesis and mixing.
+# Pure Kotlin, the same code on every platform; nothing here draws or opens a window.
+product:
+  type: kmp/lib
+  platforms: [jvm, android, wasmJs]
+
+aliases:
+  - threads: [jvm, android]
+
+settings:
+  kotlin:
+    freeCompilerArgs:
+      - -Xexpect-actual-classes
+  jvm:
+    jdk:
+      version: 25
+
+settings@jvm:
+  kotlin:
+    freeCompilerArgs:
+      - -Xexpect-actual-classes
+      - -Xadd-modules=jdk.incubator.vector
+      # No null checks on values from Java calls: on vector results they made every vector escape and be
+      # allocated (the solver on SIMD lanes ran 3.5 times slower than the scalar one).
+      - -Xno-call-assertions
+      - -Xno-receiver-assertions
+      - -Xno-param-assertions
+  jvm:
+    test:
+      freeJvmArgs:
+        - --add-modules=jdk.incubator.vector

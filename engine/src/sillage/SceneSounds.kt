@@ -247,7 +247,7 @@ internal fun exportSounds(dir: java.nio.file.Path) {
     for (v in 0..3) all["gull-$v"] = Sounds.gull(v)
     all["scrape"] = Sounds.scrape()
     for (v in 0..3) all["splash-$v"] = Sounds.splash(v / 3f, v)
-    for ((name, s) in all) s.save(dir.resolve("$name.wav"))
+    for ((name, s) in all) s.save(dir.resolve("$name.wav").toString())
     println("SILLAGE_SOUNDS ${all.size} files in $dir")
 }
 

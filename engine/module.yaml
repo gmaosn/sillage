@@ -16,3 +16,6 @@ settings:
       freeJvmArgs:
         - --enable-native-access=ALL-UNNAMED
         - --add-modules=jdk.incubator.vector
+
+dependencies:
+  - //core: exported

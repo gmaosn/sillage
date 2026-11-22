@@ -62,7 +62,7 @@ class Font private constructor(internal val face: FontFace?, val family: String,
         fun load(path: String, index: Int = 0): Font = load(Path.of(path), index)
 
         internal fun load(path: Path, index: Int): Font = loaded.getOrPut(path.toAbsolutePath() to index) {
-            val face = FontFace.load(path, index)
+            val face = FontFace.load(path.toString(), index)
             Font(face, face.family, face.subfamily, path.toAbsolutePath(), index)
         }
 
@@ -122,7 +122,7 @@ internal object FontLibrary {
             Files.walk(d).use { s -> s.filter { p -> val n = p.fileName.toString().lowercase(); (n.endsWith(".ttf") || n.endsWith(".otf") || n.endsWith(".ttc")) && Files.isRegularFile(p) }
                 .forEach { files.add(it.toRealPath()) } }
         }
-        files.toList().parallelStream().map { p -> runCatching { FontFace.scan(p) }.getOrDefault(emptyList()) }.toList().flatten()
+        files.toList().parallelStream().map { p -> runCatching { FontFace.scan(p.toString()) }.getOrDefault(emptyList()) }.toList().flatten()
     }
 
     private fun key(s: String) = s.lowercase().filter { it.isLetterOrDigit() }

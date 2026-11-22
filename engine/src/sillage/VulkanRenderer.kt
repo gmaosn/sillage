@@ -1500,7 +1500,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val all=bytes.toArray(JAVA_BYTE)
             val rgb=ByteArray(largeur*hauteur*3)
             for(i in 0 until largeur*hauteur) { rgb[3*i]=all[4*i]; rgb[3*i+1]=all[4*i+1]; rgb[3*i+2]=all[4*i+2] }
-            sillage.io.PngWriter.write(destination,largeur,hauteur,rgb)
+            sillage.io.PngWriter.write(destination.toString(),largeur,hauteur,rgb)
             println("SILLAGE_CAPTURE=" + destination.toAbsolutePath())
         } finally { dev.unmapMemory(b.memory) }
     }

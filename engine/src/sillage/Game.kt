@@ -257,7 +257,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 "ms gpu=" + "%.2f".format(gpu) + "ms first-frame=" + firstFrame + "ms drawn=" + r.drawn + " culled=" + r.culled)
             if (System.getenv("SILLAGE_FRAME_TIMES") != null) println("SILLAGE_FRAME_TIMES " + frameTimes.list().withIndex().sortedByDescending { it.value }.take(12).joinToString { "#" + it.index + "=" + "%.1f".format(it.value) })
             if (recording != null && recordedCount > 0) {
-                Sound(recorded.copyOf(recordedCount), 2, rate).save(recording)
+                Sound(recorded.copyOf(recordedCount), 2, rate).save(recording.toString())
                 println("SILLAGE_AUDIO_RECORDED " + recording + " " + "%.1f".format(recordedCount / 2f / rate) + " s")
             }
             val sorted = frameTimes.list().drop(min(60, frameTimes.size / 4)).sorted()        // without the first frames (compilation)

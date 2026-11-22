@@ -41,8 +41,8 @@ die() { echo "sillage: $*" >&2; exit 1; }
 # The modules listed in project.yaml.
 modules() { sed -n 's/^ *- *\([A-Za-z0-9_-]*\) *$/\1/p' "$root/project.yaml"; }
 
-# A module's direct dependencies on other modules of the project (the "- //name" lines).
-direct_deps() { sed -n 's|^ *- *//\([A-Za-z0-9_-]*\) *$|\1|p' "$root/$1/module.yaml"; }
+# A module's direct dependencies on other modules of the project (the "- //name" and "- //name: exported" lines).
+direct_deps() { sed -n 's|^ *- *//\([A-Za-z0-9_-]*\) *\(: *exported\)\{0,1\} *$|\1|p' "$root/$1/module.yaml"; }
 
 # The module and everything it depends on, each once.
 closure() {

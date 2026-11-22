@@ -544,8 +544,8 @@ internal fun exportTextures(dir: java.nio.file.Path) {
             for (oy in 0..1) for (ox in 0..1) set(preview, 2 * s, x + ox * s, y + oy * s, rgb)
         }
         val file = t.name.replace(' ', '-')
-        sillage.io.PngWriter.write(dir.resolve("$file.png"), s, s, raw)
-        sillage.io.PngWriter.write(dir.resolve("$file-preview.png"), 2 * s, 2 * s, preview)
+        sillage.io.PngWriter.write(dir.resolve("$file.png").toString(), s, s, raw)
+        sillage.io.PngWriter.write(dir.resolve("$file-preview.png").toString(), 2 * s, 2 * s, preview)
     }
     println("SILLAGE_TEXTURES ${Textures.ALL.size} textures in $dir")
 }

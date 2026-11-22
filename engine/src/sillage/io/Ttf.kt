@@ -1,10 +1,5 @@
 package sillage.io
 
-import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 
 /**
  * An outline as drawing commands, in font units (y up) once read, or in pixels (y down) once placed:
@@ -45,11 +40,11 @@ internal class FontBytes(val b: ByteArray) {
     fun u16(o: Int) = ((b[o].toInt() and 255) shl 8) or (b[o + 1].toInt() and 255)
     fun i16(o: Int) = (((b[o].toInt() and 255) shl 8) or (b[o + 1].toInt() and 255)).toShort().toInt()
     fun u32(o: Int) = ((b[o].toInt() and 255) shl 24) or ((b[o + 1].toInt() and 255) shl 16) or ((b[o + 2].toInt() and 255) shl 8) or (b[o + 3].toInt() and 255)
-    fun tag(o: Int) = String(CharArray(4) { (b[o + it].toInt() and 255).toChar() })
+    fun tag(o: Int) = latin1(b, o, 4)
 }
 
 /** What the font finder needs from a file without reading it whole: its faces' names and styles. */
-internal class FaceInfo(val path: Path, val index: Int, val family: String, val subfamily: String, val weight: Int,
+internal class FaceInfo(val path: String, val index: Int, val family: String, val subfamily: String, val weight: Int,
                         val italic: Boolean, val variable: Boolean, val outlines: Boolean)
 
 /**
@@ -347,7 +342,7 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
         val gpos = tables["GPOS"]
         if (gpos != null && lengths.getValue("GPOS") >= 10) {
             val features = gpos + d.u16(gpos + 6); val lookups = gpos + d.u16(gpos + 8)
-            val found = java.util.TreeSet<Int>()
+            val found = HashSet<Int>()
             val nf = d.u16(features)
             for (i in 0 until nf) {
                 if (d.tag(features + 2 + 6 * i) != "kern") continue
@@ -356,7 +351,7 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
                 for (k in 0 until n) found.add(d.u16(feature + 4 + 2 * k))
             }
             val count = d.u16(lookups)
-            val ok = found.filter { it < count }.map { lookups + d.u16(lookups + 2 + 2 * it) }
+            val ok = found.sorted().filter { it < count }.map { lookups + d.u16(lookups + 2 + 2 * it) }
             if (ok.isNotEmpty()) gposLookups = ok.toIntArray()
         }
         val kern = tables["kern"] ?: return
@@ -410,11 +405,11 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
         return 0
     }
 
-    private fun valueSize(format: Int) = 2 * Integer.bitCount(format and 0xFF)
+    private fun valueSize(format: Int) = 2 * (format and 0xFF).countOneBits()
     /** The x advance in a value record of [format] at [at]. */
     private fun xAdvance(format: Int, at: Int): Int {
         if (format and 4 == 0) return 0
-        return d.i16(at + 2 * Integer.bitCount(format and 3))
+        return d.i16(at + 2 * (format and 3).countOneBits())
     }
 
     private fun pairValue(sub: Int, left: Int, right: Int): Int? {
@@ -477,7 +472,7 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
 
     companion object {
         /** Reads face [index] of the font file at [path] (a .ttf, .otf, or a .ttc collection). */
-        fun load(path: Path, index: Int = 0): FontFace = FontFace(Files.readAllBytes(path), index)
+        fun load(path: String, index: Int = 0): FontFace = FontFace(Storage.file(path) ?: error("Font not found: $path"), index)
         fun of(bytes: ByteArray, index: Int = 0): FontFace = FontFace(bytes, index)
 
         /** Family and style of a face: the typographic names (16, 17) when present, else 1 and 2, in English when possible. */
@@ -492,8 +487,8 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
                 val len = d.u16(r + 8); val at = strings + d.u16(r + 10)
                 if (at + len > d.b.size) continue
                 val text = when {
-                    p == 3 || p == 0 -> String(d.b, at, len, Charsets.UTF_16BE)
-                    p == 1 && e == 0 -> String(d.b, at, len, Charsets.ISO_8859_1)
+                    p == 3 || p == 0 -> CharArray(len / 2) { (((d.b[at + 2 * it].toInt() and 255) shl 8) or (d.b[at + 2 * it + 1].toInt() and 255)).toChar() }.concatToString()
+                    p == 1 && e == 0 -> latin1(d.b, at, len)
                     else -> continue
                 }
                 val score = when { p == 3 && lang == 0x409 -> 3; p == 3 -> 1; p == 0 -> 2; else -> 0 }
@@ -508,14 +503,9 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
          * The names and styles of every face in [path], reading only the table directory, `name` and `OS/2`
          * (a scan of hundreds of files must not read them whole). Empty if it is not a font.
          */
-        fun scan(path: Path): List<FaceInfo> {
-            FileChannel.open(path, StandardOpenOption.READ).use { ch ->
-                fun read(at: Long, n: Int): FontBytes? {
-                    if (at < 0 || n <= 0 || at + n > ch.size()) return null
-                    val buf = ByteBuffer.allocate(n); var p = at
-                    while (buf.hasRemaining()) { val k = ch.read(buf, p); if (k <= 0) return null; p += k }
-                    return FontBytes(buf.array())
-                }
+        fun scan(path: String): List<FaceInfo> {
+            run {
+                fun read(at: Long, n: Int): FontBytes? = Storage.fileRange(path, at, n)?.let { FontBytes(it) }
                 val head = read(0, 12) ?: return emptyList()
                 val offsets = if (head.tag(0) == "ttcf") {
                     val n = head.u32(8).coerceIn(0, 256)

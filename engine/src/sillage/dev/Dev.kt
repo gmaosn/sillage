@@ -58,7 +58,7 @@ internal class DevHost(all: Array<String>) {
 
     fun run(): Int {
         DevLink.enabled = true
-        if (Files.isDirectory(resources)) Assets.roots = listOf(resources)
+        if (Files.isDirectory(resources)) Assets.roots = listOf(resources.toString())
         Files.createDirectories(work)
         Files.list(work).use { s -> s.filter { it.fileName.toString().startsWith("classes-") }.forEach { delete(it) } }
         Thread({ watch() }, "sillage-dev-watch").apply { isDaemon = true; start() }

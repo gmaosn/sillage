@@ -141,7 +141,7 @@ internal class Cff(bytes: ByteArray, private val start: Int, length: Int, unitsP
         }
         /** The first stem operator may carry the advance width before its pairs (an odd count): drop it. */
         fun stemWidth() { if (!widthSeen) { widthSeen = true; if (sp % 2 == 1) shift() } }
-        fun shift() { System.arraycopy(stack, 1, stack, 0, sp - 1); sp-- }
+        fun shift() { stack.copyInto(stack, 0, 1, 1 + (sp - 1)); sp-- }
 
         fun run(range: Pair<Int, Int>, depth: Int) {
             require(depth <= 10) { "CFF subroutines nested too deep" }
@@ -278,7 +278,7 @@ internal class Cff(bytes: ByteArray, private val start: Int, length: Int, unitsP
                     val j = pop().toInt(); val n = pop().toInt()
                     if (n in 1..sp) {
                         val base = sp - n; val tmp = DoubleArray(n) { s[base + it] }
-                        for (k in 0 until n) s[base + Math.floorMod(k + j, n)] = tmp[k]
+                        for (k in 0 until n) s[base + (k + j).mod(n)] = tmp[k]
                     }
                 }
                 else -> sp = 0

@@ -15,7 +15,7 @@ class DevTest {
             Files.createDirectories(dir.resolve("models"))
             Files.write(dir.resolve("models/a.bin"), byteArrayOf(1, 2, 3))
             assertNull(Assets.bytesOrNull("models/a.bin"))
-            Assets.roots = listOf(dir)
+            Assets.roots = listOf(dir.toString())
             assertContentEquals(byteArrayOf(1, 2, 3), Assets.bytes("models/a.bin", "Test"))
             // A changed file is read again: no cache between the disk and the scene.
             Files.write(dir.resolve("models/a.bin"), byteArrayOf(4))

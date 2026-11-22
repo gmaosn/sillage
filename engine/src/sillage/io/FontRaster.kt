@@ -26,7 +26,7 @@ internal class FontRaster {
              out: ByteArray, outOffset: Int = 0, stride: Int = width) {
         w = width; h = height
         val n = w * h + w + 2
-        if (acc.size < n) acc = FloatArray(n) else java.util.Arrays.fill(acc, 0, n, 0f)
+        if (acc.size < n) acc = FloatArray(n) else acc.fill(0f, 0, n)
         val c = path.coords
         var k = 0; var p = 0
         var sx = 0f; var sy = 0f; var x = 0f; var y = 0f

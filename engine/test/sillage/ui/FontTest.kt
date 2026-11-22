@@ -49,7 +49,7 @@ class FontTest {
                 }
             }
         }
-        val face = FontFace.load(path, head[2].toInt())
+        val face = FontFace.load(path.toString(), head[2].toInt())
         if (face.checksum != head[4].toLong(16).toInt()) { println("autre version de la police, passée : $path"); return null }
         return Reference(path, head[2].toInt(), head[3].toLong(), head[4].toLong(16).toInt(), metrics, chars, kern, gpos, glyphs)
     }
@@ -60,7 +60,7 @@ class FontTest {
         var checked = 0
         for (name in fonts) {
             val r = reference(name) ?: continue
-            val face = FontFace.load(r.path, r.index)
+            val face = FontFace.load(r.path.toString(), r.index)
             assertEquals(r.metrics[0], face.unitsPerEm, "$name : unitsPerEm")
             assertEquals(r.metrics[4], face.glyphCount, "$name : nombre de glyphes")
             assertEquals(r.metrics[1], face.ascent, "$name : ascendante")
@@ -83,16 +83,16 @@ class FontTest {
     @Test fun lesNomsEtLesStyles() {
         val noto = Path.of("/usr/share/fonts/noto/NotoSans-Bold.ttf")
         if (Files.exists(noto)) {
-            val f = FontFace.load(noto)
+            val f = FontFace.load(noto.toString())
             assertEquals("Noto Sans", f.family); assertEquals("Bold", f.subfamily); assertEquals(700, f.weight); assertFalse(f.italic)
             assertTrue(f.capHeight > 600, "hauteur des capitales lue dans OS/2")
         }
         val cjk = Path.of("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc")
         if (Files.exists(cjk)) {
-            val faces = FontFace.scan(cjk)
+            val faces = FontFace.scan(cjk.toString())
             assertTrue(faces.size >= 5, "une collection : ${faces.size} faces")
             assertTrue(faces.any { it.family == "Noto Sans CJK JP" }, faces.joinToString { it.family })
-            assertEquals(faces[3].family, FontFace.load(cjk, 3).family)
+            assertEquals(faces[3].family, FontFace.load(cjk.toString(), 3).family)
         }
     }
 
@@ -112,7 +112,7 @@ class FontTest {
         var glyphs = 0
         for (name in fonts) {
             val r = reference(name) ?: continue
-            val face = FontFace.load(r.path, r.index)
+            val face = FontFace.load(r.path.toString(), r.index)
             var worst = 0; var total = 0L; var count = 0L; var ink = 0L; var refInk = 0L
             for (g in r.glyphs) {
                 val m = 2
