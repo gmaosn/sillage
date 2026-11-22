@@ -68,9 +68,11 @@ class Lighting {
     var sunrise: Vec3 = Vec3(.33f, 0f, .94f)
     var sunTilt: Float = 30f
 
-    /** 0 by day, 1 at night, in between at dusk and dawn. Lamps light up with it, stars come out. */
+    /**
+     * 0 by day, 1 at night, in between at dusk and dawn. Lamps light up with it, stars come out. It follows the
+     * hour ([time]); without a clock it is yours to set (a scene lit by hand that wants stars sets it to 1).
+     */
     var night: Float = 0f
-        private set
     /** Towards the moon (it shows at night when it is above the horizon). */
     var moonDirection: Vec3 = Vec3(.4f, -.6f, -.7f)
         private set
