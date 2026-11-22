@@ -11,9 +11,11 @@ import java.nio.file.Path
 import javax.imageio.ImageIO
 import kotlin.math.*
 
-/** Rend l'île sans fenêtre et sans son ; rend le bilan, l'image est écrite dans [capture]. */
-fun rendreIle(capture: Path?, images: Int, vue: String? = null, taille: String? = null, heure: Float? = null): RunReport {
+/** Rend l'île sans fenêtre et sans son ; rend le bilan, l'image est écrite dans [capture]. [moteur] : « gl » pour le moteur OpenGL ES (Vulkan sinon). */
+fun rendreIle(capture: Path?, images: Int, vue: String? = null, taille: String? = null, heure: Float? = null, moteur: String? = null, debogage: String? = null): RunReport {
     val args = ArrayList(listOf("--headless", "--mute", "--frames", images.toString()))
+    if (moteur != null) args += listOf("--renderer", moteur)
+    if (debogage != null) args += listOf("--debug", debogage)
     if (heure != null) args += listOf("--hour", heure.toString())
     if (capture != null) { Files.createDirectories(capture.parent); args += listOf("--capture", capture.toString()) }
     if (vue != null) args += listOf("--look-at", vue)
@@ -62,12 +64,12 @@ fun Qa.rendu() {
     // Une plaque à 1,5 m du sol, moitié peinte, moitié découpée (alpha 0) : son ombre n'est que celle de la moitié
     // peinte. La scène commence sans ombres portées et les allume en route (les cartes sont faites à ce moment),
     // puis une autre les éteint en route.
-    controle("ombres : découpe alpha respectée, allumées et éteintes en cours de jeu", "sous la moitié peinte sombre, sous la découpe et sans ombres clair") {
+    fun ombresDecoupees(moteur: String?) = controle("ombres${if (moteur == null) "" else " ($moteur)"} : découpe alpha respectée, allumées et éteintes en cours de jeu", "sous la moitié peinte sombre, sous la découpe et sans ombres clair") {
         val plaque = dossier.resolve("plaque.glb"); Files.createDirectories(dossier); Files.write(plaque, plaqueDecoupee())
         fun centre(nom: String, x: Float, ombres: Boolean): Int {
-            val img = dossier.resolve("decoupe-$nom.png")
+            val img = dossier.resolve("decoupe-$nom${if (moteur == null) "" else "-$moteur"}.png")
             game("QA", arrayOf("--headless", "--mute", "--frames", "40", "--size", "160x120", "--capture", img.toString(),
-                "--look-at", "$x,1.2,2.5,$x,0,-0.75")) {     // de côté, sous la plaque
+                "--look-at", "$x,1.2,2.5,$x,0,-0.75") + (if (moteur == null) emptyArray() else arrayOf("--renderer", moteur))) {     // de côté, sous la plaque
                 ground(color = sillage.Color(.8f, .8f, .8f)); autoTextures = false
                 lighting.shadows = !ombres; lighting.outlines = 0f; lighting.vignette = 0f
                 model(plaque.toString())
@@ -82,6 +84,7 @@ fun Qa.rendu() {
         "peinte $peinte, découpe $decoupe, plein soleil $loin, ombres éteintes $eteinte (0–255)" to
             (peinte < loin - 25 && abs(decoupe - loin) <= 4 && abs(eteinte - loin) <= 4)
     }
+    ombresDecoupees(null)
 
     controle("rendu reproductible (même vue deux fois)", "identique au pixel") {
         val a = dossier.resolve("repro-a.png"); val b = dossier.resolve("repro-b.png")
@@ -115,6 +118,58 @@ fun Qa.rendu() {
             if (couleurs.size < 4) faux.add("$t presque uni (${couleurs.size} couleurs)")
         }
         (if (faux.isEmpty()) "4 tailles justes" else faux.joinToString()) to faux.isEmpty()
+    }
+
+    // Le second moteur de rendu (OpenGL ES 3.0 / WebGL 2, ici par EGL sans fenêtre) : les mêmes shaders, les mêmes
+    // passes ; ses images sont comparées à celles de Vulkan. Les écarts attendus sont ceux de l'anticrénelage (place
+    // des échantillons) et du filtrage, sur quelques pixels de bord : mesurés le 22 novembre 2026 sur Arc (Mesa 26.3),
+    // au plus 0,0025 % de pixels à plus de 16 et un écart moyen de 0,004. Une ombre absente, une eau fausse, une image
+    // retournée ou une couleur décalée dépassent ces seuils de très loin.
+    fun fin(x: Double) = "%.4f %%".format(x * 100)
+    for ((nom, vue) in vues) controle("OpenGL ES : vue « $nom » comparée à la référence de Vulkan", "≤ 0,02 % de pixels, écart moyen ≤ 0,05") {
+        val img = dossier.resolve("gl-vue-$nom.png")
+        rendreIle(img, 60, vue, heure = heures[nom], moteur = "gl")
+        val (part, moyen) = comparer(ImageIO.read(img.toFile()), ImageIO.read(refs.resolve("vue-$nom.png").toFile()))
+        "${fin(part)} de pixels différents, écart moyen ${f3(moyen)}" to (part <= .0002 && moyen <= .05)
+    }
+    ombresDecoupees("gl")
+    // Les lignes ne sont pas tracées de la même façon par OpenGL ES et par Vulkan dans une image à plusieurs échantillons
+    // (les deux normes diffèrent là-dessus) : des points épars le long des traits, 0,34 % de pixels et 0,10 d'écart moyen
+    // mesurés, avec un nombre du panneau de débogage qui dépend du temps de calcul. Des lignes absentes changent 22 % de l'image.
+    controle("OpenGL ES : lignes de débogage (F5) comme Vulkan", "≤ 1 % de pixels, écart moyen ≤ 0,3 ; les lignes y sont") {
+        val a = dossier.resolve("lignes-vulkan.png"); val b = dossier.resolve("lignes-gl.png")
+        rendreIle(a, 30, vues["maison"], debogage = "physics"); rendreIle(b, 30, vues["maison"], debogage = "physics", moteur = "gl")
+        val sans = dossier.resolve("lignes-sans.png"); rendreIle(sans, 30, vues["maison"], moteur = "gl")
+        val (part, moyen) = comparer(ImageIO.read(a.toFile()), ImageIO.read(b.toFile()))
+        val (lignes, _) = comparer(ImageIO.read(sans.toFile()), ImageIO.read(b.toFile()))
+        "${fin(part)} de pixels différents, écart moyen ${f3(moyen)} ; les lignes changent ${fin(lignes)} de l'image" to (part <= .01 && moyen <= .3 && lignes > .05)
+    }
+    controle("OpenGL ES : rendu reproductible, tailles extrêmes", "identique au pixel d'une fois à l'autre ; 17×13 à 3840×2160 comme Vulkan (≤ 0,5 % de pixels)") {
+        val a = dossier.resolve("gl-repro-a.png"); val b = dossier.resolve("gl-repro-b.png")
+        rendreIle(a, 45, vues["maison"], moteur = "gl"); rendreIle(b, 45, vues["maison"], moteur = "gl")
+        val (part, moyen) = comparer(ImageIO.read(a.toFile()), ImageIO.read(b.toFile()))
+        val faux = ArrayList<String>(); val mesures = ArrayList<String>()
+        if (part != 0.0 || moyen != 0.0) faux.add("deux rendus diffèrent (${fin(part)})")
+        for (t in listOf("17x13", "333x211", "1920x1080", "3840x2160")) {
+            val f = dossier.resolve("gl-taille-$t.png")
+            rendreIle(f, 3, vues["ile"], t, moteur = "gl")
+            val img = ImageIO.read(f.toFile()); val vulkan = ImageIO.read(dossier.resolve("taille-$t.png").toFile())
+            val (l, h) = t.split('x').map { it.toInt() }
+            if (img.width != l || img.height != h) { faux.add("$t rendu en ${img.width}×${img.height}"); continue }
+            val (p, m) = comparer(img, vulkan)
+            mesures.add("$t ${fin(p)}")
+            if (p > .005 || m > .2) faux.add("$t : ${fin(p)} de pixels, écart moyen ${f2(m)}")
+        }
+        (if (faux.isEmpty()) "reproductible ; écarts avec Vulkan : " + mesures.joinToString() else faux.joinToString()) to faux.isEmpty()
+    }
+    controle("OpenGL ES : pas de fuite (16 moteurs de rendu ouverts et fermés)", "mémoire résidente +≤ 40 Mo (médianes), descripteurs stables") {
+        val rss = ArrayList<Long>(); val fds = ArrayList<Int>()
+        repeat(16) { rendreIle(null, 2, taille = "320x200", moteur = "gl"); System.gc(); Thread.sleep(50); rss.add(statut("VmRSS:")); fds.add(descripteurs()) }
+        fun median(xs: List<Long>) = xs.sorted().let { (it[1] + it[2]) / 2 }
+        val debut = median(rss.subList(2, 6)); val fin = median(rss.subList(12, 16))
+        val croissance = (fin - debut) / 1024.0
+        "mémoire ${debut / 1024} → ${fin / 1024} Mo (${"%+.1f".format(croissance)}), descripteurs ${fds[2]} → ${fds.last()}" to
+            (croissance <= 40 && fds.last() <= fds[2])
     }
 
     // Géométrie des modèles de la démo.

@@ -87,5 +87,5 @@ internal class GlDrawing(width: Int, height: Int, shadows: Boolean) : Drawing {
         check(e == 0) { "OpenGL ES error 0x" + e.toString(16) + " in the frame" }
     }
     override fun forget() = r.forget()
-    override fun close() { r.close(); gl.close() }
+    override fun close() { gl.finish(); r.close(); gl.close() }
 }
