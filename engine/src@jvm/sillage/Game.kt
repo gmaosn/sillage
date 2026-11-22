@@ -54,6 +54,8 @@ internal class Runtime(private val title: String, private val args: Array<String
   --seed N                the scene's random numbers from seed N (the same run again)
   --debug physics,free,paused   start with the physics drawn (F5), the free camera (F6), paused (F7)
   --no-cull               draw everything, even what the camera cannot see (comparisons)
+  --renderer vulkan|gl    what draws: Vulkan (the default), or the OpenGL ES 3 renderer of the web and of
+                          phones, through EGL (only with --headless: to compare its pictures)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers
@@ -113,12 +115,18 @@ internal class Runtime(private val title: String, private val args: Array<String
         }
         val frameTimes = Times(); val gpuTimes = Times(); var firstFrame = 0L
         var window: Window? = null
-        var renderer: VulkanRenderer? = null
+        var renderer: Drawing? = null
+        val wanted = option("--renderer") ?: "vulkan"
+        require(wanted == "vulkan" || wanted == "gl") { "--renderer takes vulkan or gl (got $wanted)" }
+        require(wanted == "vulkan" || headless) { "--renderer gl draws without a window only: add --headless" }
+        fun open(shadows: Boolean): Drawing =
+            if (wanted == "gl") GlDrawing(size?.get(0) ?: 1280, size?.get(1) ?: 800, shadows)
+            else VulkanDrawing(VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, shadows))
         try {
             audio?.device?.let { println("SILLAGE_AUDIO device=" + it + " latency=" + (audio.latency * 1000).roundToInt() + " ms") }
             if (!headless) window = openWindow(title, 1280, 800)
-            var r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, scene.lighting.shadows)
-            renderer = r; r.ouvrir()
+            var r = open(scene.lighting.shadows)
+            renderer = r
             r.cull = "--no-cull" !in args
             window?.mouseCaptured = true
             scene.input.source = KeySource { k -> window?.isDown(k) ?: false }
@@ -131,13 +139,13 @@ internal class Runtime(private val title: String, private val args: Array<String
             while (frame < frames && (window == null || !window.shouldClose) && route?.done != true && DevLink.quitCode == null) {
                 if (window != null) {
                     window.poll()
-                    if (window.consumeResize() && !r.recreateSwapchain()) { window.waitEvents(.05); continue }
+                    if (window.consumeResize() && !r.resized()) { window.waitEvents(.05); continue }
                     // Paused without focus, but never before the first frame: under Wayland the window only exists after it.
                     if (!window.focused && !smoke && frame > 0) { window.waitEvents(.05); last = System.nanoTime(); continue }
                 }
                 // Waits until the last frame is on screen, then reads what came meanwhile: the keys and the mouse act
                 // on the very next picture, instead of waiting behind the frames queued for the screen.
-                if (!r.attendre()) continue
+                if (!r.waitForFrame()) continue
                 if (window != null) {
                     window.poll()
                     val (dx, dy) = window.consumeMouseDelta().let { it[0] to it[1] }
@@ -155,7 +163,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 window?.clearPresses()                 // a tap between two frames counted once
                 // The interface: menus, buttons and fields get the pointer, the keys and the text typed; Escape
                 // opens the pause menu, which stops the game's time and frees the mouse.
-                scene.hud.interact(scene, dt, r.largeur, r.hauteur, window)
+                scene.hud.interact(scene, dt, r.width, r.height, window)
                 if (scene.hud.quitting) break
                 scene.input.mouseCaptured = window?.mouseCaptured ?: false
                 if (window != null && scene.input.pressed(Key.TAB) && !scene.hud.usesKeys) window.mouseCaptured = !window.mouseCaptured
@@ -185,19 +193,19 @@ internal class Runtime(private val title: String, private val args: Array<String
                 val free = scene.debug.freeCamera
                 // Cast shadows turned on in a scene that began without them: the maps are made now, once.
                 if (scene.lighting.shadows && !r.shadowMaps) {
-                    r.oublier(); r.close()
-                    r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, true); renderer = r; r.ouvrir(); r.cull = "--no-cull" !in args
+                    r.forget(); r.close()
+                    r = open(true); renderer = r; r.cull = "--no-cull" !in args
                 }
                 val view = scene.camera.view(dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0], it[1], it[2]), Vec3(it[3], it[4], it[5])) } ?: if (free) scene.debug.freeView() else v }
                 val eye = lookAt?.let { Vec3(it[0], it[1], it[2]) } ?: if (free) scene.debug.freePosition else scene.camera.position
                 val looking = lookAt?.let { (Vec3(it[3], it[4], it[5]) - eye).normalized() } ?: if (free) scene.debug.freeForward() else scene.camera.forward
                 scene.debug.panels(eye, looking)
                 val c = scene.camera
-                val projection = Mat4.perspective(Math.toRadians(c.fov.toDouble()).toFloat(), r.largeur.toFloat() / r.hauteur, c.near, c.far)
+                val projection = Mat4.perspective(Math.toRadians(c.fov.toDouble()).toFloat(), r.width.toFloat() / r.height, c.near, c.far)
                 fpsFrames++; fpsTime += dt
                 if (fpsTime >= .5f) { fps = (fpsFrames / fpsTime).roundToInt(); fpsTime = 0f; fpsFrames = 0; scene.fps = fps }
                 val capture = if (frame == frames - 1 || route?.done == true) screenshot else null
-                r.dessiner(scene.drawList(eye), projection * view, scene.hud.mesh(r.largeur.toFloat() / r.hauteur, fps, window?.mouseCaptured ?: true), capture, eye, scene.time,
+                r.draw(scene.drawList(eye), projection * view, scene.hud.mesh(r.width.toFloat() / r.height, fps, window?.mouseCaptured ?: true), capture, eye, scene.time,
                     scene.hiddenNode, lookAt?.let { Vec3(it[3], it[4], it[5]) } ?: if (free) eye + looking * 12f else scene.camera.focus, scene.lighting, scene.frameExtras(eye))
                 frameTimes.add((System.nanoTime() - frameStart) / 1e6)
                 if (r.gpuMs > 0.0) gpuTimes.add(r.gpuMs)
@@ -210,9 +218,9 @@ internal class Runtime(private val title: String, private val args: Array<String
                     fresh.input.source = scene.input.source
                     fresh.input.adoptPads(scene.input)
                     fresh.audio = audio
-                    r.oublier()
+                    r.forget()
                     if (fresh.lighting.shadows && !r.shadowMaps) {
-                        r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting.shadows); renderer = r; r.ouvrir(); r.cull = "--no-cull" !in args
+                        r.close(); r = open(fresh.lighting.shadows); renderer = r; r.cull = "--no-cull" !in args
                     }
                     scene = fresh
                 }
@@ -240,7 +248,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 check(highest - lowest > .5f) { "The jump or gravity was not exercised" }
                 check(p.position.isFinite()) { "Player position not finite" }
             }
-            check(r.erreursValidation == 0) { "Vulkan validation errors: " + r.erreursValidation }
+            check(r.validationErrors == 0) { "Vulkan validation errors: " + r.validationErrors }
             val gpu = gpuTimes.list().drop(min(60, gpuTimes.size / 4)).sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
             val cpu = frameTimes.list().drop(min(60, frameTimes.size / 4)).sorted()
             println("SILLAGE_RUN_OK frames=" + frame + " smoke=" + smoke + " position=" + (p?.position ?: Vec3.ZERO) + " ground=" + (p?.onGround ?: false) +

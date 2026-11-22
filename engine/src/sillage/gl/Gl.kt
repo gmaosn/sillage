@@ -59,6 +59,8 @@ interface Gl {
     /** Float attributes from the bound ARRAY_BUFFER. */
     fun vertexAttribPointer(index: Int, size: Int, type: Int, normalized: Boolean, stride: Int, offset: Int)
     fun vertexAttribDivisor(index: Int, divisor: Int)
+    /** What attribute [index] reads for every vertex while its array is disabled (context state, not the vertex array's). */
+    fun vertexAttrib4f(index: Int, x: Float, y: Float, z: Float, w: Float)
     fun drawArrays(mode: Int, first: Int, count: Int)
     fun drawArraysInstanced(mode: Int, first: Int, count: Int, instances: Int)
 
