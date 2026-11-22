@@ -8,7 +8,7 @@ Choix du propriétaire (18 novembre 2026) : API publique en anglais ; Linux d'ab
 
 Dépôt public GitHub `gmaosn/sillage` (licence Apache 2.0, NOTICE), publié le 21 novembre à la demande du propriétaire ; pousser `main` seulement (`git push`), jamais la branche locale `avant-publication` (l'historique d'avant le nettoyage des détails personnels).
 
-Construire uniquement avec `./kotlin` (Kotlin Toolchain 0.14.0), jamais Gradle. Le JDK 25 du système n'a pas de javac : la toolchain fournit le sien.
+Construire uniquement avec `./kotlin` (Kotlin Toolchain 0.14.0), jamais Gradle. Depuis le 22 novembre le moteur vise aussi le web et Android : lire « Portage » plus bas avant de toucher à `core/` ou `engine/` (le code de `src/` doit rester du Kotlin commun). Le JDK 25 du système n'a pas de javac : la toolchain fournit le sien.
 
 ```sh
 ./sillage run demo                     # construit ce qui a changé (rien : moins d'une seconde), puis joue
@@ -78,6 +78,24 @@ Demandée par le propriétaire avant de retravailler la démo ; trois lots propo
 - Contrôle qa « ombres : découpe alpha respectée, allumées et éteintes en cours de jeu » (plaque à moitié découpée fabriquée par le contrôle ; contre-épreuve faite : sans le `discard`, il échoue).
 - **Bases de vitesse** remesurées à charge 3 à 5 (cœurs 4 à 11) : celles de la physique gardées, rendu et île refaites (`rendu.1280` 1,05 ms, `rendu.2560` 0,89, `rendu.caisses10000` 1,05, `ile.miseajour` 0,16 ms et 24 Kio : la hausse des allocations de l'île date de la passe du 21 novembre, l'ancien code mesuré en alternance donne la même).
 - Non reproduit : les neuf avertissements du moteur à la construction d'un jeu (ici, le moteur compile sans avertissement).
+
+## Portage : web, Android, et une seconde démo (22 novembre 2026)
+
+Demandé par le propriétaire : « fais en sorte que Sillage puisse être utilisé sur d'autres systèmes (Android, WASM…), il faut probablement séparer la bibliothèque en plusieurs morceaux (reste compatible avec l'API) », puis « une autre démo avec un autre style graphique dans un environnement mystérieux post-classique (temple grec abandonné) ».
+
+Morceaux :
+- `core/` (kmp/lib : JVM, Android, WASM) : `sillage.math`, `sillage.physics`, `sillage.io` (JSON, PNG, JPEG), `sillage.audio` (Sound, Synth, Mixer, Reverb, Vorbis), en Kotlin commun, sans rien de Java. Couture : `Storage` (fichiers, ressources, réglages), `locked`, `Workers` (fils sur JVM et Android, seul sur le web), solveur vectoriel dans `core/src@jvm` (`Wide`). `String.fmt` remplace `String.format` partout.
+- `engine/` (kmp/lib, dépend de core en l'exportant : les jeux gardent `dependencies: - //engine`) : la scène en commun dans `src/` ; `src@jvm/` le dessous Linux (Vulkan, Wayland, X11, ALSA, manettes, mode dev, EGL pour l'essai) ; `src@wasmJs/` la page (WebGL 2, clavier par position, verrou du pointeur, Web Audio, ressources chargées avant le départ par `assets.list`, options par l'adresse `?hour=21&mute`) ; `src@android/` (`GameActivity`, GLES30, AudioTrack, clavier attaché, Retour = Échap) ; `src@java/` ce que JVM et Android partagent.
+- Deux moteurs de rendu : Vulkan (bureau) et `GlRenderer` (OpenGL ES 3.0 / WebGL 2, en commun, shaders générés depuis ceux de Vulkan par `tools/shaders_gl.py`), voir « Rendu OpenGL ES (portage) » ; `RenderBatches` porte les décisions communes (tri, lots, cascades).
+- `FrameLoop` : la boucle commune, une image à la fois (web, Android) ; `Touches` : l'écran tactile en manette (stick sous le pouce gauche, caméra au glisser, bouton de saut, pincement).
+- Jeux : `demo-web`, `demo-android`, `temple-web`, `temple-android` n'ont qu'un lien vers le `Main.kt` du jeu (un lien de fichier : la toolchain ne suit pas un lien de dossier). `./sillage web demo [--serve]` assemble la page dans `build/web/demo` ; `./kotlin build -m demo-android` fait l'APK (`build/tasks/_demo-android_buildAndroidDebug/gradle-project-debug.apk` ; la toolchain se sert de Gradle en interne pour l'empaquetage Android, rien à nous).
+- API : inchangée pour les jeux, à trois détails près (types Java sortis du code commun) : `Assets.roots` et `Font.path` sont des textes, `Sound.save` et `PngWriter.write` prennent un chemin en texte (variantes `Path` gardées côté JVM). Ajouts : `String.fmt`, `background { }`/`Pending`, `Storage`, `Lighting.night` réglable à la main, `toRadians`/`toDegrees`, `GameActivity`.
+
+Vérifié : tests du cœur sur JVM (170), Android (81, sur la JVM hôte) et WASM (dans Chromium, physique et déterminisme compris) ; moteur 176 ; qa 128 contrôles, 0 échec ; capture smoke Vulkan identique au pixel à la référence ; mode dev et AppImage refaits. Web : les deux démos dans Chromium sans écran (première image, capture regardée). Android : l'île dans l'émulateur `aster-phone` lancé en lecture seule, sans fenêtre ni son (rendu complet, marin mené au stick tactile).
+
+Non vérifié, à faire par le propriétaire : un vrai navigateur avec GPU (fluidité, son, verrou de la souris), un vrai téléphone (fluidité, son, toucher à deux pouces), le temple sous Android (APK construit, pas lancé). Sur le web il n'y a pas de polices du système : l'interface retombe sur la police de pixels (embarquer une police demande l'accord du propriétaire). Manettes : pas encore lues sur le web ni sous Android. La vitesse du rendu Vulkan après la mise en commun (`RenderBatches`) est à remesurer machine calme (mesures sous charge : même ordre ; `git revert 1affc7f` rend son code propre à Vulkan).
+
+Seconde démo, `temple/` (« L'oracle endormi ») : à la première personne, une île sous la lune et la brume, un temple dorique en ruine ; cinq braseros à rallumer (feu vert d'eau, une note chacun) ; au cinquième la vasque s'illumine, la brume recule et les tambours tombés refont leur colonne. Lumière réglée à la main (pas d'horloge), sans trait d'encre, peu de couleur, beaucoup de halo ; sons synthétisés (cloche, vent, bourdon, chouette). Modèles : `tools/create_temple.py` (`tools/glbkit.py` est la boîte à outils GLB partagée avec l'île). Trajet d'essai des cinq feux : `./sillage run temple --headless --frames 9000 --route "-2.2,26.6 2.2,26.6 4.8,24 4.8,14.6 5.3,14.1 0,13.3 -5.3,14.1 -1,13 0,11.5 0,7.5 0,4 0,-1 1.4,-2.4 p30" --capture x.png`.
 
 ## Effet « whaou » de la démo (22 novembre 2026)
 

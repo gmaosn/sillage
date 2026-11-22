@@ -14,7 +14,9 @@ This page is for those who read or change the engine itself. To make games, star
 
 | Module | |
 |---|---|
-| `engine` | the engine (`product: jvm/lib`) and its unit tests (`engine/test`) |
+| `core` | maths, physics, file decoders, sound synthesis and mixing: Kotlin common code (`kmp/lib`: jvm, android, wasmJs), usable alone |
+| `engine` | the scene API in common code (`src/`) and one backend per platform (`src@jvm` Linux: Vulkan, Wayland, ALSA; `src@wasmJs` a web page: WebGL 2, Web Audio; `src@android`: OpenGL ES 3, AudioTrack); depends on `core` and exports it |
+| `temple`, `*-web`, `*-android` | the second demo; the web and Android applications of both demos (a link to the game's `Main.kt`, nothing else) |
 | `playground` | a game made of shapes only: crates, balls, a ramp, a lift, stars; B drops 400 crates |
 | `demo` | the island: glTF scenery, animated boat and seagulls, shells to find, sea sounds |
 | `bench` | physics benches: `pyramid`, `pile N`, `solver N`, `threads N`, `determinism`, `settle` |

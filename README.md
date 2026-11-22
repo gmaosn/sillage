@@ -51,6 +51,9 @@ The `./sillage` command at the root drives everything (it uses the Kotlin Toolch
 ./sillage dev demo            # the island, reloaded each time you save a file
 ./sillage new mygame          # a game of your own, ready to change
 ./sillage package demo        # one AppImage file with the game and its Java runtime
+./sillage run temple          # the second demo: a ruined temple at night, in first person
+./sillage web demo --serve    # the island in a web page (WebAssembly + WebGL 2), at http://127.0.0.1:8080
+./kotlin build -m demo-android   # the island as an Android application (touch controls)
 ./sillage test                # the engine's tests
 ```
 
