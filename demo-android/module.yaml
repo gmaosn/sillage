@@ -1,0 +1,10 @@
+# The island on Android: the same sources as demo/ (src/Main.kt is a link), played by the engine's GameActivity.
+product: android/app
+
+dependencies:
+  - //engine
+
+settings:
+  android:
+    applicationId: sillage.demo
+    namespace: sillage.demo

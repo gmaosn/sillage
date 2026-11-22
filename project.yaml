@@ -2,6 +2,7 @@ modules:
   - bench
   - core
   - demo
+  - demo-android
   - demo-web
   - engine
   - playground

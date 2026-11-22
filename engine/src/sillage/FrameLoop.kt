@@ -15,7 +15,12 @@ import kotlin.math.roundToInt
  * portable ones of the desktop (`--hour`, `--seed`, `--debug`, `--mute` is the caller's business).
  */
 internal class FrameLoop(private val args: Array<String>, private val setup: Scene.() -> Unit, private val window: GameWindow,
-                         private val renderer: Renderer, private val audio: Audio?) {
+                         renderer: Renderer, private val audio: Audio?) {
+    /** What draws; replaced when the system takes the graphics context away and gives another (a phone coming back from sleep). */
+    var renderer: Renderer = renderer
+        set(v) { v.cull = field.cull; field = v }
+    /** The touch screen, if the platform has one: its window reports the fingers here. */
+    val touches = Touches()
     var scene: Scene = build(setup)
         private set
     /** Frames drawn so far. */
@@ -59,6 +64,7 @@ internal class FrameLoop(private val args: Array<String>, private val setup: Sce
         scene.input.mouseDelta = dx to dy
         if (dx != 0f || dy != 0f) { if (scene.debug.freeCamera) scene.debug.turnFree(dx, dy) else scene.camera.turn(dx, dy) }
         window.consumeScroll().let { scene.input.wheel = it; if (it != 0f) scene.camera.zoom(it) }
+        touches.apply(scene, renderer.width, renderer.height, dt)
         scene.input.poll()
         scene.debug.handleKeys(scene.input)
         if (scene.debug.freeCamera) scene.debug.flyFree(scene.input, dt)
@@ -79,7 +85,7 @@ internal class FrameLoop(private val args: Array<String>, private val setup: Sce
         fpsFrames++; fpsTime += dt
         if (fpsTime >= .5f) { fps = (fpsFrames / fpsTime).roundToInt(); fpsTime = 0f; fpsFrames = 0; scene.fps = fps }
         val shot = capture; capture = null
-        renderer.draw(scene.drawList(eye), projection * view, scene.hud.mesh(aspect, fps, window.mouseCaptured), eye, scene.time,
+        renderer.draw(scene.drawList(eye), projection * view, scene.hud.mesh(aspect, fps, window.mouseCaptured || touches.used), eye, scene.time,
             scene.hiddenNode, if (free) eye + looking * 12f else scene.camera.focus, scene.lighting, scene.frameExtras(eye), shot)
         frames++
         // Another scene asked for: build it, forget the old meshes on the GPU, keep the window and the sound.

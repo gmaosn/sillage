@@ -2,7 +2,10 @@
 # platform — and under it one backend per platform (windows, drawing, sound, pads).
 product:
   type: kmp/lib
-  platforms: [jvm, wasmJs]
+  platforms: [jvm, android, wasmJs]
+
+aliases:
+  - java: [jvm, android]
 
 settings:
   kotlin:
