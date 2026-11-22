@@ -107,8 +107,8 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
         ascent = asc; descent = desc; lineGap = gap
         weight = if (os2 != null) d.u16(os2 + 4) else 400
         val version2 = os2 != null && d.u16(os2) >= 2 && lengths.getValue("OS/2") >= 90
-        capHeight = if (version2) d.i16(os2!! + 88) else 0
-        xHeight = if (version2) d.i16(os2!! + 86) else 0
+        capHeight = if (version2) d.i16(os2 + 88) else 0
+        xHeight = if (version2) d.i16(os2 + 86) else 0
         italic = (os2 != null && d.u16(os2 + 62) and 1 != 0) || d.u16(head + 44) and 2 != 0
         val names = readNames(d, tables["name"] ?: -1)
         family = names.first; subfamily = names.second

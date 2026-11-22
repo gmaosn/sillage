@@ -82,7 +82,7 @@ internal fun Int.vkCheck(operation: String): Int {
 /** The loader library and the functions available before an instance exists. */
 internal object VkLoader {
     private val library: SymbolLookup by lazy {
-        val names = listOf("libvulkan.so.1", "libvulkan.so")
+        val names = if (sillage.platform.Os.windows) listOf("vulkan-1.dll", "vulkan-1") else listOf("libvulkan.so.1", "libvulkan.so")
         names.firstNotNullOfOrNull { n -> runCatching { SymbolLookup.libraryLookup(n, Arena.global()) }.getOrNull() }
             ?: throw IllegalStateException("No Vulkan loader found (${names.joinToString()}). Install vulkan-icd-loader.")
     }
@@ -144,6 +144,7 @@ internal class VkInstanceApi(val handle: MemorySegment) {
     private val pDestroySurfaceKHR = optional("vkDestroySurfaceKHR")
     private val pCreateWaylandSurfaceKHR = optional("vkCreateWaylandSurfaceKHR")
     private val pCreateXcbSurfaceKHR = optional("vkCreateXcbSurfaceKHR")
+    private val pCreateWin32SurfaceKHR = optional("vkCreateWin32SurfaceKHR")
     private val pCreateDebugUtilsMessengerEXT = optional("vkCreateDebugUtilsMessengerEXT")
     private val pDestroyDebugUtilsMessengerEXT = optional("vkDestroyDebugUtilsMessengerEXT")
 
@@ -191,6 +192,9 @@ internal class VkInstanceApi(val handle: MemorySegment) {
     fun createWaylandSurfaceKHR(info: MemorySegment, out: MemorySegment) =
         (Sig.I_PPPP.invokeExact(need(pCreateWaylandSurfaceKHR, "vkCreateWaylandSurfaceKHR"), handle, info, NULL, out) as Int)
             .vkCheck("vkCreateWaylandSurfaceKHR")
+    fun createWin32SurfaceKHR(info: MemorySegment, out: MemorySegment) =
+        (Sig.I_PPPP.invokeExact(need(pCreateWin32SurfaceKHR, "vkCreateWin32SurfaceKHR"), handle, info, NULL, out) as Int)
+            .vkCheck("vkCreateWin32SurfaceKHR")
     fun createXcbSurfaceKHR(info: MemorySegment, out: MemorySegment) =
         (Sig.I_PPPP.invokeExact(need(pCreateXcbSurfaceKHR, "vkCreateXcbSurfaceKHR"), handle, info, NULL, out) as Int)
             .vkCheck("vkCreateXcbSurfaceKHR")

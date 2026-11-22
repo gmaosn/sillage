@@ -231,7 +231,6 @@ object Glb {
         fun plain(j: Json): Any? = when (j) {
             is Json.Str -> j.value; is Json.Num -> j.toDouble(); is Json.Bool -> j.value; is Json.Null -> null
             is Json.Arr -> j.items.map { plain(it) }; is Json.Obj -> j.fields.mapValues { plain(it.value) }
-            else -> j.toString()
         }
         val meshCache = HashMap<Int, Read>()
         val nodes = List(nodesJson.size) { i ->

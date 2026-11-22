@@ -49,9 +49,10 @@ internal object Native {
     fun SymbolLookup.fn(name: String): MemorySegment = find(name).orElseThrow { IllegalStateException("Missing symbol $name") }
 
     private val libc = PSig.linker.defaultLookup()
-    private val pPoll = libc.fn("poll")
-    private val pClose = libc.fn("close")
-    private val pFree = libc.fn("free")
+    // Looked up when first used: Windows has none of them, and the code that calls them never runs there.
+    private val pPoll by lazy { libc.fn("poll") }
+    private val pClose by lazy { libc.fn("close") }
+    private val pFree by lazy { libc.fn("free") }
 
     /** poll(2) on one descriptor; returns the revents bits (0 on timeout). */
     fun pollIn(fd: Int, timeoutMs: Int, scratch: MemorySegment): Int {

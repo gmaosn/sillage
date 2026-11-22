@@ -26,6 +26,7 @@ Sillage: make, run and ship games.
   ./sillage qa [OPTIONS]          the quality battery (--rapide, --seulement physique,rendu, ...)
   ./sillage package GAME [--arch aarch64]   one AppImage file holding GAME and its Java runtime; --arch aarch64
                                   makes the one for a Raspberry Pi 4, 5 or 500 from an x86 computer
+  ./sillage package GAME --os windows   a folder (and its .zip) for 64-bit Windows: the game, its Java runtime, GAME.bat
   ./sillage package GAME --portable   a folder with GAME's jars and a launcher, for any system that has a Java 25
                                   of its own (FreeBSD, NetBSD...): copy it there and run ./GAME
   ./sillage web GAME [--serve [PORT]]   GAME for a web page (WebAssembly + WebGL 2), from its module GAME-web,
@@ -288,13 +289,62 @@ package_portable() {
 	echo "Portable: $out ($(du -sh "$out" | cut -f1)) - copy the folder, then ./$game"
 }
 
+# The game for 64-bit Windows, made here: its jars, a Java runtime linked from the same JDK's Windows modules
+# (fetched once, checksum checked), and a launcher. With Wine at hand, a training run records the start-up cache.
+package_windows() {
+	game=$1; jdk=$(jdk_home); main=$(main_class "$game")
+	out="$root/build/package/$game-windows"; app="$out/$game"
+	rm -rf "$out"; mkdir -p "$app/lib"
+	set --
+	for m in $(closure "$game"); do
+		for d in "$artifacts/${m}jvm/kotlin-output" "$artifacts/${m}jvm/resources-output"; do
+			[ -d "$d" ] && set -- "$@" -C "$d" .
+		done
+	done
+	"$jdk/bin/jar" --create --file "$app/lib/$game.jar" "$@"
+	cp "$(stdlib_jar)" "$app/lib/kotlin-stdlib.jar"
+	echo "sillage: a Java runtime for Windows (jlink)"
+	version=$(sed -n 's/^JAVA_RUNTIME_VERSION="\([0-9.]*+[0-9]*\).*/\1/p' "$jdk/release")
+	[ -n "$version" ] || die "cannot read the JDK's version in $jdk/release"
+	cross="$root/build/cross"; mkdir -p "$cross"
+	name="OpenJDK25U-jmods_x64_windows_hotspot_$(echo "$version" | tr + _).zip"
+	url="https://github.com/adoptium/temurin25-binaries/releases/download/jdk-$(echo "$version" | sed 's/+/%2B/')/$name"
+	if [ ! -d "$cross/jmods-windows-$version" ]; then
+		[ -f "$cross/$name" ] || curl -fsSL -o "$cross/$name" "$url" || die "cannot fetch $url"
+		[ -f "$cross/$name.sha256.txt" ] || curl -fsSL -o "$cross/$name.sha256.txt" "$url.sha256.txt" || die "cannot fetch its checksum"
+		(cd "$cross" && sha256sum -c --quiet "$name.sha256.txt") || die "$name: checksum mismatch"
+		rm -rf "$cross/jmods-windows-$version.tmp"; mkdir -p "$cross/jmods-windows-$version.tmp"
+		unzip -q "$cross/$name" -d "$cross/jmods-windows-$version.tmp" && mv "$cross/jmods-windows-$version.tmp" "$cross/jmods-windows-$version"
+	fi
+	jmods=$(find "$cross/jmods-windows-$version" -name java.base.jmod -exec dirname {} \; | head -n 1)
+	[ -n "$jmods" ] || die "no Windows modules found in $cross/jmods-windows-$version"
+	mods=$("$jdk/bin/jdeps" --multi-release 25 --ignore-missing-deps --print-module-deps \
+		--class-path "$app/lib/kotlin-stdlib.jar" "$app/lib/$game.jar")
+	"$jdk/bin/jlink" --module-path "$jmods" --add-modules "$mods" --strip-java-debug-attributes --no-man-pages --no-header-files \
+		--compress=zip-6 --output "$app/runtime"
+	sed -e "s/@GAME@/$game/g" -e "s/@MAIN@/$main/g" "$root/tools/windows-launcher.bat" > "$app/$game.bat"
+	if command -v wine >/dev/null 2>&1; then
+		# Wine in a prefix of its own, with no screen and no sound: nothing of the user's Wine is touched.
+		echo "sillage: training run for the start-up cache, under Wine (no window, no sound)"
+		(cd "$app" && env -u DISPLAY -u WAYLAND_DISPLAY WINEPREFIX="$root/build/wine" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+			wine runtime/bin/java.exe --enable-native-access=ALL-UNNAMED "-XX:AOTCacheOutput=lib/$game.aot" \
+			-cp "lib/$game.jar;lib/kotlin-stdlib.jar" "$main" --headless --mute --frames 300 --size 256x256 >"$out/training.log" 2>&1) ||
+			{ tail -n 20 "$out/training.log" >&2; echo "sillage: the training run failed: no start-up cache (the game runs without)" >&2; rm -f "$app/lib/$game.aot"; }
+	else
+		echo "sillage: no Wine here, made without its start-up cache"
+	fi
+	(cd "$out" && rm -f "$game-windows.zip" && zip -qr "$game-windows.zip" "$game")
+	echo "Windows: $out/$game-windows.zip ($(du -h "$out/$game-windows.zip" | cut -f1)) - unzip it there, then double-click $game.bat"
+}
+
 cmd_package() {
 	check_game "${1:-}"; game=$1; shift
-	host=$(uname -m); arch=$host; portable=
+	host=$(uname -m); arch=$host; portable=; windows=
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--arch) [ $# -ge 2 ] || die "package: --arch takes x86_64 or aarch64"; arch=$2; shift 2 ;;
 		--portable) portable=1; shift ;;
+		--os) [ $# -ge 2 ] || die "package: --os takes windows"; [ "$2" = windows ] || die "package: --os takes windows (Linux is the default)"; windows=1; shift 2 ;;
 		*) die "package: unknown option $1" ;;
 		esac
 	done
@@ -304,6 +354,7 @@ cmd_package() {
 	out="$root/build/package/$game"
 	[ "$arch" = "$host" ] || out="$out-$arch"
 	if [ -n "$portable" ]; then package_portable "$game"; return; fi
+	if [ -n "$windows" ]; then package_windows "$game"; return; fi
 	app="$out/$game.AppDir"
 	tools="$root/build/appimage-tools"
 	rm -rf "$out"

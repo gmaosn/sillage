@@ -40,6 +40,8 @@ internal val VkWaylandSurfaceCreateInfoKHR = t("VkWaylandSurfaceCreateInfoKHR", 
     "flags" to U32, "display" to Ptr, "surface" to Ptr)
 internal val VkXcbSurfaceCreateInfoKHR = t("VkXcbSurfaceCreateInfoKHR", VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
     "flags" to U32, "connection" to Ptr, "window" to U32)
+internal val VkWin32SurfaceCreateInfoKHR = t("VkWin32SurfaceCreateInfoKHR", VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+    "flags" to U32, "hinstance" to Ptr, "hwnd" to Ptr)
 
 internal val VkQueueFamilyProperties = s("VkQueueFamilyProperties",
     "queueFlags" to U32, "queueCount" to U32, "timestampValidBits" to U32, "minImageTransferGranularity" to n(VkExtent3D))
@@ -252,7 +254,7 @@ internal val VkWriteDescriptorSet = t("VkWriteDescriptorSet", VK_STRUCTURE_TYPE_
 internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D, VkRect2D, VkComponentMapping,
     VkImageSubresourceRange, VkImageSubresourceLayers, VkApplicationInfo, VkInstanceCreateInfo, VkLayerProperties,
     VkExtensionProperties, VkDebugUtilsMessengerCreateInfoEXT, VkDebugUtilsMessengerCallbackDataEXT,
-    VkWaylandSurfaceCreateInfoKHR, VkXcbSurfaceCreateInfoKHR, VkQueueFamilyProperties, VkPhysicalDeviceLimits,
+    VkWaylandSurfaceCreateInfoKHR, VkXcbSurfaceCreateInfoKHR, VkWin32SurfaceCreateInfoKHR, VkQueueFamilyProperties, VkPhysicalDeviceLimits,
     VkPhysicalDeviceSparseProperties, VkPhysicalDeviceProperties, VkFormatProperties, VkMemoryType, VkMemoryHeap,
     VkPhysicalDeviceMemoryProperties, VkMemoryRequirements, VkDeviceQueueCreateInfo, VkDeviceCreateInfo,
     VkCommandPoolCreateInfo, VkCommandBufferAllocateInfo, VkSemaphoreCreateInfo, VkFenceCreateInfo, VkQueryPoolCreateInfo, VkBufferCreateInfo,

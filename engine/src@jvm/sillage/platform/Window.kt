@@ -17,6 +17,7 @@ internal interface Window : GameWindow, SurfaceSource, AutoCloseable {
  * SILLAGE_PLATFORM=wayland or x11 forces one.
  */
 internal fun openWindow(title: String, width: Int, height: Int): Window {
+    if (Os.windows) return Win32Window(title, width, height)
     val forced = System.getenv("SILLAGE_PLATFORM")?.lowercase()
     val wayland = when (forced) {
         "wayland" -> true

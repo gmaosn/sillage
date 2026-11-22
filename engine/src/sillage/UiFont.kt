@@ -115,7 +115,8 @@ internal object FontLibrary {
         val home = Storage.setting("user.home") ?: Storage.environment("HOME") ?: ""
         val dataHome = Storage.environment("XDG_DATA_HOME")?.takeIf { it.isNotEmpty() } ?: "$home/.local/share"
         val dataDirs = (Storage.environment("XDG_DATA_DIRS")?.takeIf { it.isNotEmpty() } ?: "/usr/local/share:/usr/share").split(':')
-        (listOf("$dataHome/fonts", "$home/.fonts") + dataDirs.map { "$it/fonts" } + listOf("/usr/share/fonts", "/usr/local/share/fonts", "/system/fonts"))
+        (listOf("$dataHome/fonts", "$home/.fonts") + dataDirs.map { "$it/fonts" } + listOf("/usr/share/fonts", "/usr/local/share/fonts", "/system/fonts") +
+            listOfNotNull(Storage.environment("WINDIR")?.let { "$it/Fonts" }, Storage.environment("LOCALAPPDATA")?.let { "$it/Microsoft/Windows/Fonts" }))
             .map { it.replace("//", "/").trimEnd('/') }.distinct()
     }
 

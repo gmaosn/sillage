@@ -10,7 +10,8 @@ One game, one source file; what changes from one system to the next is the engin
 | NetBSD 11 x86-64 | through its Linux emulation: X11, software Vulkan, sound; keyboard and mouse only | `./sillage package GAME --portable` | a virtual machine (window, sound device); slow, see below |
 | A web page | WebAssembly, WebGL 2, Web Audio, touch | `./sillage web GAME` | headless Chromium with a software renderer |
 | Android | OpenGL ES 3, touch, AudioTrack | `./kotlin build -m GAME-android` (APK) | the emulator, software renderer |
-| Windows, macOS, iOS | none | — | — |
+| Windows 10 or 11, 64 bits | Vulkan, a Win32 window, waveOut sound; keyboard and mouse only | `./sillage package GAME --os windows` (a folder and its .zip) | Wine on Linux (window, keyboard, sound sent to a null device, the Windows Java runtime); **not yet on a real Windows** |
+| macOS, iOS | none | — | — |
 
 ## Raspberry Pi
 
@@ -33,6 +34,23 @@ The engine picks the `medium` quality by itself on a Pi (shadow maps of 1024 ins
 and lower the screen's resolution: the picture is drawn at the window's size, and a Pi's GPU is small. F3 shows the frames per second; the line `SILLAGE_RUN_OK … cpu=… gpu=…` printed when the game ends gives the times per frame — worth sending back when reporting how it runs.
 
 What emulation could not tell: the speed, and whether the Pi's driver accepts everything the renderer asks (16-bit float pictures with 4 samples, three shadow layers). The renderer now asks the card what it can do instead of assuming, and says clearly what is missing if something is.
+
+## Windows
+
+On the development computer (Linux):
+
+```sh
+./sillage package demo --os windows        # build/package/demo-windows/demo-windows.zip, about 30 MB
+```
+
+The zip holds a folder with the game's jars, a Java runtime for Windows linked for it, and `demo.bat`. On the Windows computer: unzip, double-click `demo.bat` (no console window; from a terminal, `demo.bat --help` lists the options). Nothing to install besides the graphics card's own driver, which brings Vulkan (Intel, AMD and Nvidia drivers of the last ten years do).
+
+- The window is a plain Win32 one; keys are read by their place on the keyboard, as everywhere (ZQSD on an AZERTY keyboard is WASD on a QWERTY one), text through Windows itself (layouts, dead keys). `SILLAGE_KEYS=1` prints each key as Windows reports it.
+- Sound goes to the user's usual output through `waveOut`.
+- Game pads are not read yet on Windows: keyboard and mouse.
+- With Wine installed, the packaging also records the start-up cache by running the game once without a window (in a Wine prefix of its own, `build/wine`: nothing of your Wine is touched); without Wine the package is made without, and starts a little slower.
+
+What was tried is the Windows build under Wine: the same `java.exe`, `user32`, `winmm` and Vulkan calls, answered by Wine. A real Windows has not run it yet; the first run there is the one to report (the line `SILLAGE_VULKAN_OK …` at the start, `SILLAGE_RUN_OK …` at the end).
 
 ## FreeBSD
 

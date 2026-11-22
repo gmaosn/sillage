@@ -8,5 +8,6 @@ internal object Os {
     val netbsd = name.startsWith("netbsd")
     val openbsd = name.startsWith("openbsd")
     val bsd = freebsd || netbsd || openbsd
+    val windows = name.startsWith("windows")
     val label: String get() = System.getProperty("os.name", "?") + " " + System.getProperty("os.arch", "?")
 }

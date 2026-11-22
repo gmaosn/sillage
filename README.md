@@ -54,8 +54,14 @@ The `./sillage` command at the root drives everything (it uses the Kotlin Toolch
 ./sillage run temple          # the second demo: a ruined temple at night, in first person
 ./sillage web demo --serve    # the island in a web page (WebAssembly + WebGL 2), at http://127.0.0.1:8080
 ./kotlin build -m demo-android   # the island as an Android application (touch controls)
+./sillage package demo --arch aarch64   # an AppImage for a Raspberry Pi 4, 5 or 500
+./sillage package demo --os windows     # a folder for 64-bit Windows
+./sillage package demo --portable       # jars and a launcher for FreeBSD (or any system with a Java 25)
 ./sillage test                # the engine's tests
 ```
+
+Where a game runs, how to get it there and what each platform was tried on: [docs/PLATFORMS.md](docs/PLATFORMS.md).
+
 
 Tab captures and frees the mouse, Escape opens the pause menu. In the playground, B drops 400 crates. On the island, you arrive by air from the open sea while a day goes by (Space skips it); find the six shells and night falls for the fireworks (then F fires a rocket whenever you like); the day goes by in ten minutes, T makes the hours run, and dolphins leap where you look out to sea.
 

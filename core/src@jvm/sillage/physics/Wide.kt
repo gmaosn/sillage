@@ -1,3 +1,5 @@
+@file:Suppress("NOTHING_TO_INLINE")       // the small vector helpers are inlined on purpose (see below: platform types)
+
 package sillage.physics
 
 import jdk.incubator.vector.FloatVector
