@@ -41,7 +41,7 @@ private const val FRAMES = 2
 /** Push constants: view × projection, eye and time, the shadow map's centre and half side, the water's two colours. */
 private const val PUSH_BYTES = 128
 /** Bytes of the frame's uniform block (frame.glsl): fourteen vectors, then the lights' places and colours. */
-private const val FRAME_BYTES = (14 + CASCADES + 2 * MAX_LIGHTS) * 16
+private const val FRAME_BYTES = FRAME_FLOATS * 4
 /** Levels of the glow: half the picture's size, then each half the last. */
 private const val BLOOM_LEVELS = 5
 // Blending: colour source and destination factors, then alpha's. The alpha of the scene image holds the
@@ -164,20 +164,6 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private class Dynamic(val buffers: Array<Buffer>, val versions: IntArray)
     private val dynamicMeshes=IdentityHashMap<Mesh,Dynamic>()
     private var zero: Buffer?=null                             // zeros, read as the effects of every other mesh
-    /** Copies of one mesh to draw this frame: their model rows (12 floats each), reused from frame to frame. */
-    private class Batch(val mesh: Mesh) { var count=0; var rows=FloatArray(12*8); var start=0L; var water: WaterLook?=null }
-    private val batches=IdentityHashMap<Mesh,Batch>()            // copies that cast a shadow
-    private val quietBatches=IdentityHashMap<Mesh,Batch>()       // copies that do not (decals, unlit things…)
-    private val skyBatches=IdentityHashMap<Mesh,Batch>()
-    private val shadowBatches=IdentityHashMap<Mesh,Batch>()      // blob shadows
-    private val waterBatches=IdentityHashMap<Mesh,Batch>()
-    private val casterBatches=Array(CASCADES) { IdentityHashMap<Mesh,Batch>() }   // copies drawn into each cascade's map
-    private val casters=Array(CASCADES) { ArrayList<Batch>() }
-    private val opaque=ArrayList<Batch>()
-    private val quiet=ArrayList<Batch>()
-    private val skies=ArrayList<Batch>()
-    private val shadows=ArrayList<Batch>()
-    private val waters=ArrayList<Batch>()
     private val defaultLighting=Lighting()
     private var ferme=false
     // SILLAGE_LATENCE=1: once a second, how long a key takes to reach the screen and where a frame waits.
@@ -903,9 +889,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         meshes.values.forEach { destroy(it) }; meshes.clear()
         effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
         dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
-        batches.clear(); quietBatches.clear(); skyBatches.clear(); shadowBatches.clear(); waterBatches.clear(); for(m in casterBatches) m.clear()
-        token=Any()                  // what meshes remember of this renderer is forgotten with it
-        cascadeValid.fill(false)     // the next scene draws every shadow map at its first frame
+        lots.forget()                // what meshes remember of this renderer is forgotten with it; the next scene draws every shadow map at its first frame
         for(f in frames) f.hudSent=null
     }
 
@@ -916,264 +900,45 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         f.mapped=stack.frame { s -> val p=s.allocate(ADDRESS); dev.mapMemory(b.memory,0,b.size,p); p.get(ADDRESS,0).reinterpret(b.size) }
     }
 
-    /** Adds one copy of [mesh] with the model rows of [node] (times [pose] for a part of an animated model). */
     /**
-     * Each mesh keeps its batches for this renderer ([Mesh.batches], valid while [Mesh.batchOwner] is
-     * [token]): a world of many copies looks them up without hashing.
+     * What is drawn this frame and what casts into each shadow map, grouped by mesh; the shadow squares; the
+     * frame's uniform block: decided by [RenderBatches], shared with the OpenGL ES renderer so that the two draw
+     * the same things.
      */
-    private var token=Any()
-    private val maps: Array<IdentityHashMap<Mesh,Batch>> by lazy { arrayOf(batches,quietBatches,skyBatches,shadowBatches,waterBatches,*casterBatches) }
-
-    private fun add(map: IdentityHashMap<Mesh,Batch>, order: ArrayList<Batch>, mesh: Mesh, node: Node, pose: Mat4?) {
-        if(mesh.vertices.isEmpty()) return
-        var slots=mesh.batches
-        if(mesh.batchOwner!==token || slots==null) { slots=arrayOfNulls(5+CASCADES); mesh.batches=slots; mesh.batchOwner=token }
-        var slot=0
-        while(maps[slot]!==map) slot++
-        val b=(slots[slot] as Batch?) ?: map.getOrPut(mesh) { Batch(mesh) }.also { slots[slot]=it }
-        if(b.count==0) order.add(b)
-        if(b.rows.size<12*(b.count+1)) b.rows=b.rows.copyOf(b.rows.size*2)
-        val r=b.rows; val o=12*b.count
-        // Node rows: rotation × scale, then the translation (no Mat4 is made).
-        val q=node.rotation; val k=node.scale; val p=node.position
-        val x=q.x; val y=q.y; val z=q.z; val w=q.w
-        val a00=(1-2*(y*y+z*z))*k; val a01=2*(x*y-z*w)*k; val a02=2*(x*z+y*w)*k
-        val a10=2*(x*y+z*w)*k; val a11=(1-2*(x*x+z*z))*k; val a12=2*(y*z-x*w)*k
-        val a20=2*(x*z-y*w)*k; val a21=2*(y*z+x*w)*k; val a22=(1-2*(x*x+y*y))*k
-        if(pose==null) {
-            r[o]=a00; r[o+1]=a01; r[o+2]=a02; r[o+3]=p.x
-            r[o+4]=a10; r[o+5]=a11; r[o+6]=a12; r[o+7]=p.y
-            r[o+8]=a20; r[o+9]=a21; r[o+10]=a22; r[o+11]=p.z
-        } else {
-            // Mat4 names its coefficients column first (m30 m31 m32: the translation).
-            r[o]=a00*pose.m00+a01*pose.m01+a02*pose.m02; r[o+1]=a00*pose.m10+a01*pose.m11+a02*pose.m12
-            r[o+2]=a00*pose.m20+a01*pose.m21+a02*pose.m22; r[o+3]=a00*pose.m30+a01*pose.m31+a02*pose.m32+p.x
-            r[o+4]=a10*pose.m00+a11*pose.m01+a12*pose.m02; r[o+5]=a10*pose.m10+a11*pose.m11+a12*pose.m12
-            r[o+6]=a10*pose.m20+a11*pose.m21+a12*pose.m22; r[o+7]=a10*pose.m30+a11*pose.m31+a12*pose.m32+p.y
-            r[o+8]=a20*pose.m00+a21*pose.m01+a22*pose.m02; r[o+9]=a20*pose.m10+a21*pose.m11+a22*pose.m12
-            r[o+10]=a20*pose.m20+a21*pose.m21+a22*pose.m22; r[o+11]=a20*pose.m30+a21*pose.m31+a22*pose.m32+p.z
-        }
-        b.count++
-    }
-
-    /** Sorts this frame's copies into batches, one per mesh (new meshes go to the GPU once). Apart from [dessiner], so the JIT compiles it on its own. */
-    /** The frame's shadow squares: centre x, y, z and half side per cascade. */
-    private val squares=FloatArray(4*CASCADES)
-    /**
-     * The farther squares are drawn again less often: the finest every frame, the second every two
-     * frames, the third every four (at most two shadow passes per frame). A square not drawn again keeps
-     * the place it was drawn at ([drawnSquares]), so that the shaders read its map where it really is.
-     */
-    private val drawnSquares=FloatArray(4*CASCADES)
-    private val cascadeValid=BooleanArray(CASCADES)
-    private val cascadeNow=BooleanArray(CASCADES)
-    private var cascadeFrames=0L
-
-    /** Frustum planes of the frame (a, b, c, d each, normalised; inside: a·x + b·y + c·z + d ≥ 0). */
-    private val planes=FloatArray(24)
+    private val lots=RenderBatches(::prepare)
     /** Whether what the camera cannot see is left out (true); false draws everything, for comparisons. */
-    var cull=true
+    var cull: Boolean
+        get()=lots.cull
+        set(v) { lots.cull=v }
     /** What culling left out this frame, and kept (counted per copy: a node or a part). */
-    var culled=0; private set
-    var drawn=0; private set
+    val culled: Int get()=lots.culled
+    val drawn: Int get()=lots.drawn
+    private val frameData=FloatArray(FRAME_FLOATS)
 
-    private fun extractPlanes(m: Mat4) {
-        // Gribb & Hartmann: the rows of view × projection added to and taken from the last one.
-        val r0=floatArrayOf(m.m00,m.m10,m.m20,m.m30); val r1=floatArrayOf(m.m01,m.m11,m.m21,m.m31)
-        val r2=floatArrayOf(m.m02,m.m12,m.m22,m.m32); val r3=floatArrayOf(m.m03,m.m13,m.m23,m.m33)
-        val rows=arrayOf(r0,r1)
-        var k=0
-        for(r in rows) for(sign in floatArrayOf(1f,-1f)) {
-            val a=r3[0]+sign*r[0]; val b=r3[1]+sign*r[1]; val c=r3[2]+sign*r[2]; val d=r3[3]+sign*r[3]
-            val l=kotlin.math.sqrt(a*a+b*b+c*c).coerceAtLeast(1e-12f)
-            planes[k++]=a/l; planes[k++]=b/l; planes[k++]=c/l; planes[k++]=d/l
-        }
-        // Vulkan's depth goes from 0 to 1: near is row 2 alone, far is row 3 − row 2.
-        for((a0,b0,c0,d0) in listOf(floatArrayOf(r2[0],r2[1],r2[2],r2[3]), floatArrayOf(r3[0]-r2[0],r3[1]-r2[1],r3[2]-r2[2],r3[3]-r2[3])).map { it.toList() }) {
-            val l=kotlin.math.sqrt(a0*a0+b0*b0+c0*c0).coerceAtLeast(1e-12f)
-            planes[k++]=a0/l; planes[k++]=b0/l; planes[k++]=c0/l; planes[k++]=d0/l
-        }
+    private fun effects(m: Mesh) {
+        val e=m.effects
+        if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
+        else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
     }
 
-    private fun inFrustum(x: Float, y: Float, z: Float, r: Float): Boolean {
-        for(i in 0 until 6) { val o=4*i; if(planes[o]*x+planes[o+1]*y+planes[o+2]*z+planes[o+3] < -r) return false }
-        return true
-    }
-
-    private fun gather(objets: List<Node>, hidden: Node?) = gather(objets,hidden,null,Vec3.ZERO,Float.POSITIVE_INFINITY,FloatArray(4*CASCADES),Vec3.UP)
-
-    /**
-     * The frame's copies, grouped by mesh. With [viewProj], what the camera cannot see (outside its
-     * frustum, past [haze] or past its node's draw distance) is left out, and only what stands in a
-     * cascade's square ([squares]: centre x, y, z and half side for each; half 0: none; seen along
-     * [light]) casts into that cascade's map.
-     */
-    private fun gather(objets: List<Node>, hidden: Node?, viewProj: Mat4?, eye: Vec3, haze: Float, squares: FloatArray, light: Vec3) {
-        fun effects(m: Mesh) {
-            val e=m.effects
-            if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
-            else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
-        }
-        fun prepare(m: Mesh) {
-            if(m.vertices.isEmpty()) return
-            if(m.dynamic) {
-                val d=dynamicMeshes.getOrPut(m) {
-                    effects(m)
-                    Dynamic(Array(FRAMES) { buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) }, IntArray(FRAMES) { -1 })
-                }
-                val v=m.version
-                if(d.versions[frameIndex]!=v) { upload(d.buffers[frameIndex],m.vertices); d.versions[frameIndex]=v }
-                return
+    /** A mesh goes to the GPU the first time it is drawn; one whose vertices change, again when its version moved (in this frame's buffer). */
+    private fun prepare(m: Mesh) {
+        if(m.vertices.isEmpty()) return
+        if(m.dynamic) {
+            val d=dynamicMeshes.getOrPut(m) {
+                effects(m)
+                Dynamic(Array(FRAMES) { buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) }, IntArray(FRAMES) { -1 })
             }
-            if(m.preparedBy===token) return
-            if(meshes.containsKey(m)) { m.preparedBy=token; return }
-            val b=buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
-            upload(b,m.vertices); meshes[m]=b; m.preparedBy=token
-            val e=m.effects
-            if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
-            else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
+            val v=m.version
+            if(d.versions[frameIndex]!=v) { upload(d.buffers[frameIndex],m.vertices); d.versions[frameIndex]=v }
+            return
         }
-        for(list in casters) for(b in list) b.count=0
-        for(b in opaque) b.count=0
-        for(b in quiet) b.count=0
-        for(b in skies) b.count=0
-        for(b in shadows) b.count=0
-        for(b in waters) b.count=0
-        for(list in casters) list.clear()
-        opaque.clear(); quiet.clear(); skies.clear(); shadows.clear(); waters.clear()
-        culled=0; drawn=0
-        if(viewProj!=null) extractPlanes(viewProj)
-        // The shadow square's axes, as light.glsl lays them.
-        val ref=if(kotlin.math.abs(light.y)>.99f) Vec3.Z else Vec3.Y
-        val sRight=(ref cross light).normalized(); val sUp=light cross sRight
-        /** Whether a copy of [mesh] placed by node [o] and [pose] is seen, then whether it casts into the map. */
-        var seen=true; var casting=0                                     // casting: one bit per cascade
-        fun place(o: Node, wx: Float, wy: Float, wz: Float, r: Float) {
-            val dx=wx-eye.x; val dy=wy-eye.y; val dz=wz-eye.z
-            val dist=kotlin.math.sqrt(dx*dx+dy*dy+dz*dz)-r
-            val near=dist<=haze && dist<=o.drawDistance
-            seen=near && inFrustum(wx,wy,wz,r)
-            casting=0
-            if(!near) return
-            for(c in 0 until CASCADES) {
-                val half=squares[4*c+3]
-                if(half<=0f || !cascadeNow[c]) continue
-                val ux=wx-squares[4*c]; val uy=wy-squares[4*c+1]; val uz=wz-squares[4*c+2]
-                if(kotlin.math.abs(ux*sRight.x+uy*sRight.y+uz*sRight.z)<=half+r && kotlin.math.abs(ux*sUp.x+uy*sUp.y+uz*sUp.z)<=half+r) casting=casting or (1 shl c)
-            }
-        }
-        fun test(mesh: Mesh, o: Node, pose: Mat4?) {
-            if(viewProj==null) { seen=true; casting=(1 shl CASCADES)-1; return }
-            if(pose==null) {
-                // A node that has not moved since the last frame keeps its world sphere (its place and mesh are immutable values).
-                val c=o.cullCache
-                if(o.cullPosition!==o.position || o.cullRotation!==o.rotation || o.cullScale!=o.scale || o.cullMesh!==mesh) {
-                    val sp=mesh.sphere
-                    val q=o.rotation; val qx=q.x; val qy=q.y; val qz=q.z; val qw=q.w
-                    val cx=sp[0]; val cy=sp[1]; val cz=sp[2]
-                    val tx=2f*(qy*cz-qz*cy); val ty=2f*(qz*cx-qx*cz); val tz=2f*(qx*cy-qy*cx)
-                    val k=o.scale; val p=o.position
-                    c[0]=(cx+qw*tx+(qy*tz-qz*ty))*k+p.x; c[1]=(cy+qw*ty+(qz*tx-qx*tz))*k+p.y; c[2]=(cz+qw*tz+(qx*ty-qy*tx))*k+p.z
-                    c[3]=sp[3]*(if(mesh.dynamic) 1.5f else 1f)*kotlin.math.abs(k)
-                    o.cullPosition=o.position; o.cullRotation=o.rotation; o.cullScale=o.scale; o.cullMesh=mesh
-                }
-                place(o,c[0],c[1],c[2],c[3])
-                return
-            }
-            val sp=mesh.sphere
-            var cx=sp[0]; var cy=sp[1]; var cz=sp[2]; var r=sp[3]*(if(mesh.dynamic) 1.5f else 1f)
-            if(pose!=null) {
-                val px=pose.m00*cx+pose.m10*cy+pose.m20*cz+pose.m30; val py=pose.m01*cx+pose.m11*cy+pose.m21*cz+pose.m31; val pz=pose.m02*cx+pose.m12*cy+pose.m22*cz+pose.m32
-                cx=px; cy=py; cz=pz
-                val sx=pose.m00*pose.m00+pose.m01*pose.m01+pose.m02*pose.m02; val sy=pose.m10*pose.m10+pose.m11*pose.m11+pose.m12*pose.m12; val sz=pose.m20*pose.m20+pose.m21*pose.m21+pose.m22*pose.m22
-                r*=kotlin.math.sqrt(maxOf(sx,sy,sz))
-            }
-            // The centre turned by the node's rotation (q v q*, written out: nothing allocated), scaled, moved.
-            val q=o.rotation; val qx=q.x; val qy=q.y; val qz=q.z; val qw=q.w
-            val tx=2f*(qy*cz-qz*cy); val ty=2f*(qz*cx-qx*cz); val tz=2f*(qx*cy-qy*cx)
-            val k=o.scale; val p=o.position
-            val wx=(cx+qw*tx+(qy*tz-qz*ty))*k+p.x; val wy=(cy+qw*ty+(qz*tx-qx*tz))*k+p.y; val wz=(cz+qw*tz+(qx*ty-qy*tx))*k+p.z
-            r*=kotlin.math.abs(k)
-            place(o,wx,wy,wz,r)
-        }
-        for(k in objets.indices) {
-            val o=objets[k]
-            if(!o.visible || o===hidden) continue
-            val mesh=o.meshAt(eye)
-            if(o.isSky) { prepare(mesh); add(skyBatches,skies,mesh,o,null); continue }
-            if(mesh.vertices.isNotEmpty()) {
-                test(mesh,o,null)
-                if(seen || casting!=0) prepare(mesh)
-                if(o.isShadow) { if(seen) add(shadowBatches,shadows,mesh,o,null) else culled++; continue }
-                val look=o.water
-                if(look!=null) { if(seen) { add(waterBatches,waters,mesh,o,null); waterBatches[mesh]?.water=look } else culled++; continue }
-                val casts=o.castsShadow && !mesh.unlit
-                if(seen) { drawn++; add(if(casts) batches else quietBatches,if(casts) opaque else quiet,mesh,o,null) } else culled++
-                if(casts && casting!=0) for(c in 0 until CASCADES) if(casting and (1 shl c)!=0) add(casterBatches[c],casters[c],mesh,o,null)
-            }
-            val parts=o.parts
-            val casts=o.castsShadow
-            for(j in parts.indices) {
-                val p=parts[j]
-                test(p.mesh,o,p.pose)
-                if(!seen && casting==0) { culled++; continue }
-                prepare(p.mesh)
-                if(seen) { drawn++; add(if(casts) batches else quietBatches,if(casts) opaque else quiet,p.mesh,o,p.pose) } else culled++
-                if(casts && casting!=0) for(c in 0 until CASCADES) if(casting and (1 shl c)!=0) add(casterBatches[c],casters[c],p.mesh,o,p.pose)
-            }
-        }
-    }
-
-    /**
-     * The shadow map's centre: [focus] moved to the nearest corner of a map texel, so that the shadows' edges
-     * stay still while the camera moves (the basis is the one of light.glsl).
-     */
-    private fun snapped(focus: Vec3, texel: Float, l: Vec3): Vec3 {
-        val ref=if(kotlin.math.abs(l.y)>.99f) Vec3.Z else Vec3.Y
-        val right=(ref cross l).normalized(); val up=l cross right
-        val u=focus dot right; val v=focus dot up
-        return focus + right*(kotlin.math.round(u/texel)*texel-u) + up*(kotlin.math.round(v/texel)*texel-v)
-    }
-
-    /**
-     * The frame's uniform block (frame.glsl): the light of the hour, the sky, the haze, the wind, the camera's
-     * axes (from view × projection: its first row is the camera's right, its last its forward direction) and
-     * the point lights.
-     */
-    private fun writeFrame(f: Frame, l: Lighting, main: Vec3, vp: Mat4, extras: FrameExtras?, squares: FloatArray) {
-        val u=f.uniformMapped
-        var o=0L
-        fun v(x: Float, y: Float, z: Float, w: Float) {
-            u.set(JAVA_FLOAT,o,x); u.set(JAVA_FLOAT,o+4,y); u.set(JAVA_FLOAT,o+8,z); u.set(JAVA_FLOAT,o+12,w); o+=16
-        }
-        fun c(c: Color, w: Float)=v(c.r,c.g,c.b,w)
-        val lights=extras?.lightCount ?: 0
-        v(main.x,main.y,main.z,l.night)
-        c(l.sunColor,l.fogStart)
-        c(l.shadeColor,l.fogEnd)
-        c(l.skyAmbient,lights.toFloat())
-        c(l.groundAmbient,shadowSize.toFloat())
-        c(l.horizon,0f); c(l.skyMiddle,0f); c(l.zenith,0f)
-        val sun=l.sunDirection.normalized(); v(sun.x,sun.y,sun.z,l.sunShows())
-        val moon=l.moonDirection; v(moon.x,moon.y,moon.z,l.moonShows())
-        v(l.wind.x,l.wind.z,0f,0f)
-        val rl=sqrt(vp.m00*vp.m00+vp.m10*vp.m10+vp.m20*vp.m20).coerceAtLeast(1e-6f)
-        val rx=vp.m00/rl; val ry=vp.m10/rl; val rz=vp.m20/rl
-        val fl=sqrt(vp.m03*vp.m03+vp.m13*vp.m13+vp.m23*vp.m23).coerceAtLeast(1e-6f)
-        val fx=vp.m03/fl; val fy=vp.m13/fl; val fz=vp.m23/fl
-        v(rx,ry,rz,0f)
-        v(ry*fz-rz*fy,rz*fx-rx*fz,rx*fy-ry*fx,0f)
-        c(l.sunGlow,0f)
-        for(k in 0 until CASCADES) v(squares[4*k],squares[4*k+1],squares[4*k+2],squares[4*k+3])
-        val a=extras?.lights
-        for(i in 0 until MAX_LIGHTS) {
-            if(a!=null && i<lights) {
-                u.set(JAVA_FLOAT,o,a[8*i]); u.set(JAVA_FLOAT,o+4,a[8*i+1]); u.set(JAVA_FLOAT,o+8,a[8*i+2]); u.set(JAVA_FLOAT,o+12,a[8*i+3])
-                val q=o+16L*MAX_LIGHTS
-                u.set(JAVA_FLOAT,q,a[8*i+4]); u.set(JAVA_FLOAT,q+4,a[8*i+5]); u.set(JAVA_FLOAT,q+8,a[8*i+6]); u.set(JAVA_FLOAT,q+12,0f)
-            }
-            o+=16
-        }
+        val token=lots.token
+        if(m.preparedBy===token) return
+        if(meshes.containsKey(m)) { m.preparedBy=token; return }
+        val b=buffer(m.vertices.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+        upload(b,m.vertices); meshes[m]=b; m.preparedBy=token
+        effects(m)
     }
 
     /**
@@ -1234,26 +999,14 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         }
         val index=image
         syncTextures(surface==0L || capture!=null)
-        // The main light's squares, finest first: each one's centre (snapped to its texels, so that shadows
-        // stay still while the camera moves) and half side; 0 for none.
+        // The main light's squares, finest first (the farther ones drawn again less often), then what is seen and what casts.
         val main=lighting.mainLight()
-        val on=shadowSize>1 && lighting.shadows && focus!=null
-        val n=cascadeFrames++
-        for(c in 0 until CASCADES) {
-            val half=if(on) lighting.cascadeHalf(c) else 0f
-            val due=c==0 || !cascadeValid[c] || (half>0f) != (drawnSquares[4*c+3]>0f) ||
-                (c==1 && n%2L==1L) || (c==2 && n%4L==2L)
-            cascadeNow[c]=due
-            if(due) {
-                val ctr=if(half>0f) snapped(focus!!,2f*half/shadowSize,main) else Vec3.ZERO
-                drawnSquares[4*c]=ctr.x; drawnSquares[4*c+1]=ctr.y; drawnSquares[4*c+2]=ctr.z; drawnSquares[4*c+3]=half
-                cascadeValid[c]=true
-            }
-            for(k in 0..3) squares[4*c+k]=drawnSquares[4*c+k]
-        }
+        lots.schedule(shadowSize>1 && lighting.shadows && focus!=null,lighting,focus,main,shadowSize)
+        val squares=lots.squares; val cascadeNow=lots.cascadeNow
         val range=squares[3]
         val centre=Vec3(squares[0],squares[1],squares[2])
-        gather(objets,hidden,if(cull) camera else null,oeil,if(lighting.fogEnd>0f) lighting.fogEnd else Float.POSITIVE_INFINITY,squares,main)
+        lots.gather(objets,hidden,camera,oeil,lighting.fogEnd,main)
+        val casters=lots.casters; val opaque=lots.opaque; val quiet=lots.quiet; val skies=lots.skies; val shadows=lots.shadows; val waters=lots.waters
         if(hud!==f.hudSent) { hudGpu.send(f,hud); f.hudSent=hud }
         hudGpu.prepare(hud.atlas)
         // Instance rows of every batch, side by side, then the particles.
@@ -1269,7 +1022,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         if(total*4L>f.instances!!.size) growInstances(f,Integer.highestOneBit(total)*2)
         val mapped=f.mapped
         var at=0L
-        fun put(b: Batch) { b.start=at; MemorySegment.copy(b.rows,0,mapped,JAVA_FLOAT,at,12*b.count); at+=48L*b.count }
+        fun put(b: Batch) { b.start=at.toInt(); MemorySegment.copy(b.rows,0,mapped,JAVA_FLOAT,at,12*b.count); at+=48L*b.count }
         for(list in casters) for(b in list) put(b)
         for(b in opaque) put(b)
         for(b in quiet) put(b)
@@ -1280,7 +1033,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         if(particleCount>0) MemorySegment.copy(extras!!.particles,0,mapped,JAVA_FLOAT,at,PARTICLE_FLOATS*particleCount)
         val lineStart=particleStart+4L*PARTICLE_FLOATS*particleCount
         if(lineVertices>0) MemorySegment.copy(extras!!.lines,0,mapped,JAVA_FLOAT,lineStart,LINE_FLOATS*lineVertices)
-        writeFrame(f,lighting,main,camera,extras,squares)
+        lots.writeFrame(frameData,lighting,main,camera,extras,shadowSize)
+        MemorySegment.copy(frameData,0,f.uniformMapped,JAVA_FLOAT,0L,FRAME_FLOATS)
         val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
         val command=f.command
         try {
@@ -1314,7 +1068,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 val m=b.mesh
                 handles.setAtIndex(JAVA_LONG,0,(if(m.dynamic) dynamicMeshes[m]!!.buffers[frameIndex] else meshes[m]!!).buffer)
                 handles.setAtIndex(JAVA_LONG,2,(effectBuffers[m] ?: zero!!).buffer)
-                offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start); offsets.setAtIndex(JAVA_LONG,2,0L)
+                offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start.toLong()); offsets.setAtIndex(JAVA_LONG,2,0L)
                 dev.cmdBindVertexBuffers(command,0,3,handles,offsets)
                 dev.cmdDraw(command,m.vertices.size/9,b.count,0,0)
             }
