@@ -72,6 +72,31 @@ def weather(base):
         return mix3(c, (.42, .62, .30), min(.8, moss))
     return f
 
+def sweep(m, pts, radii, mat, n=12, round_end=True, end_mat=None):
+    """Un membre d'un seul tenant : une peau continue le long d'un chemin (aucun joint entre les tronçons), le
+    premier bout ouvert (il part de l'intérieur de ce qui le porte), le dernier arrondi ou tranché net."""
+    rings = []; u = None
+    for i, c in enumerate(pts):
+        a = pts[max(0, i - 1)]; b = pts[min(len(pts) - 1, i + 1)]; t = norm(sub(b, a))
+        if u is None:
+            ref = (0, 1, 0) if abs(t[1]) < .9 else (1, 0, 0); u = norm(cross(t, ref))
+        else:
+            u = norm(sub(u, mul(t, dot(u, t))))                    # le repère suit le chemin sans vriller
+        v = cross(t, u)
+        rings.append(([add(c, add(mul(u, math.cos(k * TAU / n) * radii[i]), mul(v, math.sin(k * TAU / n) * radii[i]))) for k in range(n)], t))
+    if round_end:                                                  # une calotte : deux anneaux qui se resserrent, puis la pointe
+        c = pts[-1]; t = rings[-1][1]; r = radii[-1]; v = cross(t, u)
+        for ang in (math.pi / 5, 2 * math.pi / 5):
+            cc = add(c, mul(t, math.sin(ang) * r)); rr = math.cos(ang) * r
+            rings.append(([add(cc, add(mul(u, math.cos(k * TAU / n) * rr), mul(v, math.sin(k * TAU / n) * rr))) for k in range(n)], t))
+    for (ra, _), (rb, _) in zip(rings, rings[1:]):
+        for k in range(n):
+            j = (k + 1) % n
+            m.quad_out([ra[k], rb[k], rb[j], ra[j]], mat, mul(add(ra[k], ra[(k + n // 2) % n]), .5))
+    last = rings[-1][0]; t = rings[-1][1]
+    tip = add(pts[-1], mul(t, radii[-1])) if round_end else pts[-1]
+    for k in range(n): m.face([last[k], last[(k + 1) % n], tip], end_mat or mat, t)
+
 # ---------------------------------------------------------------- île
 SIZE = 78.0; CELLS = 150
 def noise(x, z): return (math.sin(x * .37 + 1.3) * math.cos(z * .41 - .7) + .5 * math.sin(x * .9 - z * .7) + .3 * math.cos(x * 1.7 + z * 1.3)) / 1.8
@@ -137,9 +162,9 @@ def ashlar(m, x, y, z, w, h, d, mat, seed=0, chip=.012, n=10, rings=6, e=.09):
         th = -math.pi / 2 + math.pi * i / rings; ph = -math.pi + TAU * j / n
         px = a * sp(math.cos(th), e) * sp(math.cos(ph), e); py = b * sp(math.sin(th), e); pz = c * sp(math.cos(th), e) * sp(math.sin(ph), e)
         k = 1 + chip * (fbm(px * 2.2 + seed, py * 2.2, pz * 2.2 + seed * .61) - .5) * 2 / max(.2, min(a, b, c))
-        return (cx + px * k, cy + py * k, cz + pz * k)
+        return (round(cx + px * k, 5) + 0.0, round(cy + py * k, 5) + 0.0, round(cz + pz * k, 5) + 0.0)   # arrondi : les deux bords de la couture tombent au même point
     for i in range(rings):
-        for j in range(n): m.quad_out([p(i, j), p(i, j + 1), p(i + 1, j + 1), p(i + 1, j)], mat, (cx, cy, cz))
+        for j in range(n): m.quad_out([p(i, j % n), p(i, (j + 1) % n), p(i + 1, (j + 1) % n), p(i + 1, j % n)], mat, (cx, cy, cz))
 
 T = Mesh()
 TOP = .9                                                            # le haut du stylobate
@@ -238,7 +263,7 @@ def beam(a, b):
     along_x = xa != xb
     cx, cz = (xa + xb) / 2, (za + zb) / 2; L = abs(xb - xa) + abs(zb - za)
     def box(y, h, wide, deep, mat, seed, e=.07):
-        w, d = (L + wide, 1.16 + deep) if along_x else (1.16 + deep, L + wide)
+        w, d = (L + wide + .03, 1.16 + deep) if along_x else (1.16 + deep, L + wide + .03)        # chaque poutre mord sur la suivante
         ashlar(T, cx, y, cz, w, h, d, mat, seed=seed + cx * 5 + cz * 3, chip=.008, e=e, n=12)
     box(ENT, .62, 0, 0, 'marbre', 1); box(ENT + .62, .07, .04, .1, 'marbre_use', 2, e=.3)                    # architrave et son listel
     box(ENT + .69, .5, -.02, -.04, 'marbre_use', 3)                                                          # frise
@@ -288,11 +313,15 @@ def wall(x0, z0, x1, z1, top, seed, gap=None):
             if gap and gap[0] < mid < gap[1]: continue
             hgt = top(mid) + .3 * (hash3(seed + 5, row, q) - .5)
             if y + course * .5 > TOP + hgt: continue                                  # au-dessus de la ruine : plus de bloc
-            cx = x0 + (x1 - x0) * mid; cz = z0 + (z1 - z0) * mid; ln = (b - a) * L - .012
+            cx = x0 + (x1 - x0) * mid; cz = z0 + (z1 - z0) * mid; ln = (b - a) * L + .012        # les blocs se recouvrent d'un rien : des joints, pas des jours
+            # Le cœur du mur, derrière le parement : par un joint entrouvert on voit de la pierre sombre, jamais le jour.
+            T.mul = .55
+            if along_x: T.box(cx, y, cz, ln + .3, course, .4, 'marbre_sombre')
+            else: T.box(cx, y, cz, .4, course, ln + .3, 'marbre_sombre')
             T.mul = .86 + .26 * hash3(seed + 9, row, q)
             jitter = .02 * (hash3(seed + 2, row, q) - .5)
-            if along_x: ashlar(T, cx, y, cz + jitter, ln, course - .008, .56, 'marbre' if (row + q) % 4 else 'marbre_use', seed=seed * 13 + row * 5 + q, n=8, rings=4)
-            else: ashlar(T, cx + jitter, y, cz, .56, course - .008, ln, 'marbre' if (row + q) % 4 else 'marbre_use', seed=seed * 13 + row * 5 + q, n=8, rings=4)
+            if along_x: ashlar(T, cx, y, cz + jitter, ln, course + .006, .56, 'marbre' if (row + q) % 4 else 'marbre_use', seed=seed * 13 + row * 5 + q, n=8, rings=4, e=.055)
+            else: ashlar(T, cx + jitter, y, cz, .56, course + .006, ln, 'marbre' if (row + q) % 4 else 'marbre_use', seed=seed * 13 + row * 5 + q, n=8, rings=4, e=.055)
     T.mul = 1.0
 def ruin(*pts):
     """Une ligne brisée lissée : la hauteur de la ruine le long du mur."""
@@ -414,11 +443,10 @@ single(cap, 'chapiteau.glb')
 
 # ---------------------------------------------------------------- brasero
 br = Mesh()
-for k in range(3):                                                  # trois pieds galbés, en pattes de lion
-    a = k * TAU / 3; pts = [(.40, 0), (.30, .25), (.17, .6), (.15, .95)]
-    for (r0, y0), (r1, y1) in zip(pts, pts[1:]):
-        br.tube((math.cos(a) * r0, y0, math.sin(a) * r0), (math.cos(a) * r1, y1, math.sin(a) * r1), .03, .026, 'bronze', 8)
-    br.sphere(math.cos(a) * .41, .03, math.sin(a) * .41, .05, .035, .05, 'bronze', 8, 4)
+for k in range(3):                                                  # trois pieds galbés d'un seul jet, qui entrent dans la vasque
+    a = k * TAU / 3
+    path = [(math.cos(a) * r, y, math.sin(a) * r) for r, y in [(.14, 1.06), (.15, .9), (.18, .6), (.3, .25), (.39, .06), (.43, .03)]]
+    sweep(br, path, [.026, .027, .029, .031, .034, .04], 'bronze', n=10)
 lathe(br, 0, .4, 0, [(.2, 0), (.215, .012), (.2, .025)], 'bronze', 24)                                   # l'entretoise
 lathe(br, 0, .93, 0, [(0, 0), (.1, .0), (.16, .04), (.14, .08), (.24, .13), (.35, .21), (.39, .28), (.375, .3), (.33, .27), (.2, .22), (0, .2)], 'bronze_vert', 28)
 lathe(br, 0, 1.135, 0, [(0, 0), (.3, .0)], 'cendre', 20)
@@ -429,7 +457,7 @@ single(br, 'brasero.glb')
 
 # ---------------------------------------------------------------- statue
 st = Mesh(); st.shade = weather(0.0)
-ashlar(st, 0, 0, 0, 1.16, .24, 1.16, 'marbre_use', seed=3); ashlar(st, 0, .24, 0, .96, .62, .96, 'marbre', seed=4, e=.06); ashlar(st, 0, .86, 0, 1.06, .14, 1.06, 'marbre_use', seed=5, e=.3)
+ashlar(st, 0, 0, 0, 1.16, .26, 1.16, 'marbre_use', seed=3); ashlar(st, 0, .22, 0, .96, .68, .96, 'marbre', seed=4, e=.06); ashlar(st, 0, .84, 0, 1.06, .2, 1.06, 'marbre_use', seed=5, e=.3)   # les trois assises du socle se recouvrent : pas de jour entre elles
 # Le corps : un profil tourné, plus large que profond aux épaules, creusé de plis qui tombent et s'écartent en bas.
 def body(y):
     """(rayon, élargissement en x, déhanchement) à la hauteur y au-dessus du socle (0 à 1,78)."""
@@ -448,12 +476,9 @@ for i in range(RI):
     for j in range(SG):
         st.quad(sp(i, j), sp(i + 1, j), sp(i + 1, j + 1), sp(i, j + 1), 'marbre')
 st.face([sp(RI, j) for j in range(SG)], 'marbre_sombre', (0, 1, 0))                                                    # le cou, sans tête
-def limb(pts, r0, r1, mat='marbre'):
-    for k, (a, b) in enumerate(zip(pts, pts[1:])):
-        t0, t1 = k / (len(pts) - 1), (k + 1) / (len(pts) - 1)
-        st.tube(a, b, r0 + (r1 - r0) * t0, r0 + (r1 - r0) * t1, mat, 12); st.sphere(*b, r0 + (r1 - r0) * t1, r0 + (r1 - r0) * t1, r0 + (r1 - r0) * t1, mat, 10, 5)
-limb([(-.36, 2.52, 0), (-.44, 2.3, .03), (-.47, 2.06, .1), (-.40, 1.88, .24), (-.30, 1.76, .34)], .085, .05)             # un bras replié vers la taille
-limb([(.37, 2.52, 0), (.46, 2.34, .0), (.5, 2.2, .02)], .085, .08, 'marbre_use')                                       # l'autre, brisé au coude
+# Les bras sortent de l'épaule (leur départ est dans le corps) : l'un replié vers la taille, l'autre brisé au coude.
+sweep(st, [(-.2, 2.56, 0), (-.36, 2.53, .0), (-.45, 2.34, .03), (-.48, 2.08, .1), (-.42, 1.9, .23), (-.31, 1.78, .33)], [.1, .1, .09, .078, .066, .055], 'marbre', n=14)
+sweep(st, [(.2, 2.56, 0), (.37, 2.53, 0), (.46, 2.36, .0), (.5, 2.2, .02)], [.1, .1, .09, .085], 'marbre', n=14, round_end=False, end_mat='marbre_sombre')
 single(st, 'statue.glb')
 
 # ---------------------------------------------------------------- arbres
@@ -471,17 +496,18 @@ for i in range(RI):
 single(cy, 'cypres.glb')
 ol = Mesh()
 ol.shade = lambda p, n, mat: (lambda k: (k, k, k))(.6 + .7 * vnoise(p[0] * 4, p[1] * 4, p[2] * 4)) if mat == 'tronc' else (lambda k: (k * .95, k, k * 1.05))(.5 + .45 * smooth(-.6, .9, n[1]) + .4 * vnoise(p[0] * 2.5, p[1] * 2.5, p[2] * 2.5))
-def gnarled(pts, r0, r1, n=10):
-    """Un tronc noueux : une suite de tronçons dont le rayon se tord."""
-    for k, (a, b) in enumerate(zip(pts, pts[1:])):
-        t0, t1 = k / (len(pts) - 1), (k + 1) / (len(pts) - 1)
-        ol.tube(a, b, (r0 + (r1 - r0) * t0) * (1 + .2 * math.sin(k * 2.1)), (r0 + (r1 - r0) * t1) * (1 + .2 * math.sin(k * 2.1 + 2.1)), 'tronc', n)
-gnarled([(0, 0, 0), (.08, .35, .03), (.02, .7, -.04), (.14, 1.0, .05), (.05, 1.3, .1)], .26, .15)
-gnarled([(.05, 1.3, .1), (-.2, 1.65, .2), (-.42, 2.05, .05), (-.6, 2.4, -.1)], .13, .05); gnarled([(.14, 1.0, .05), (.4, 1.35, -.15), (.66, 1.75, -.3), (.8, 2.1, -.25)], .12, .05)
-gnarled([(.05, 1.3, .1), (.12, 1.7, .32), (.05, 2.2, .5)], .1, .04)
+def gnarled(pts, r0, r1, n=12):
+    """Un tronc noueux d'un seul tenant, dont le rayon se tord."""
+    k = len(pts) - 1
+    ol_radii = [(r0 + (r1 - r0) * i / k) * (1 + .16 * math.sin(i * 2.1 + pts[0][0] * 9)) for i in range(k + 1)]
+    sweep(ol, pts, ol_radii, 'tronc', n=n)
+gnarled([(0, -.1, 0), (.03, .15, .0), (.08, .4, .03), (.03, .7, -.04), (.12, 1.0, .05), (.06, 1.32, .1)], .27, .15)
+gnarled([(.08, 1.15, .08), (-.08, 1.45, .16), (-.25, 1.75, .18), (-.44, 2.08, .05), (-.6, 2.42, -.08)], .135, .05)
+gnarled([(.1, .9, .03), (.28, 1.2, -.08), (.46, 1.45, -.2), (.66, 1.78, -.3), (.8, 2.12, -.25)], .125, .05)
+gnarled([(.06, 1.2, .1), (.1, 1.5, .24), (.1, 1.85, .38), (.05, 2.22, .5)], .105, .04)
 for q, (x, y, z, s) in enumerate([(-.6, 2.5, -.05, .85), (.75, 2.2, -.3, .8), (.05, 2.75, .4, .75), (-.95, 2.05, .5, .6), (1.05, 2.55, .2, .6), (.2, 2.3, -.85, .65),
                                   (-.2, 2.95, -.2, .6), (.5, 2.85, .0, .55), (-.4, 2.3, .75, .5)]):
-    rock(ol, x, y, z, s * .8, s * .5, s * .75, q * 3.1 + 2, mat='olivier', n=14, rings=9, rough=.42)
+    rock(ol, x, y - s * .1, z, s * .82, s * .62, s * .78, q * 3.1 + 2, mat='olivier', n=14, rings=9, rough=.42)
 single(ol, 'olivier.glb')
 
 for f in sorted(glbkit.OUT.glob('*.glb')): print(f'{f.name}: {f.stat().st_size} octets')
