@@ -1,6 +1,6 @@
 # Where Sillage runs, and how to get a game there
 
-One game, one source file; what changes from one system to the next is the engine's backend and the way the game is packed. The table says what has been tried, and on what: read the last column before promising a platform to someone.
+One game, one source file; what changes from one system to the next is the engine's backend and the way the game is packed. Everything below is done from the Linux computer where the game is written; `demo` stands for any game of the project (`./sillage games` lists them). The table says what has been tried, and on what: read the last column before promising a platform to someone.
 
 | System | Backend | Pack with | Tried on |
 |---|---|---|---|
@@ -88,3 +88,23 @@ JAVA_HOME=/emul/linux/opt/jdk ./demo --audio-device /dev/audio --quality low
 - `--audio-device /dev/audio` is needed: there is no ALSA under the emulation, and NetBSD's kernel translates the OSS calls the engine then makes.
 - Keyboard and mouse only.
 - When NetBSD's packages carry a Java 22 or later and a Vulkan driver, the same portable folder should start natively (its sound will then need an output of its own: NetBSD's `/dev/audio` is not OSS without the emulation).
+
+## A web page
+
+```sh
+./sillage web demo --serve        # builds build/web/demo and shows it at http://127.0.0.1:8080
+```
+
+The game is compiled to WebAssembly and drawn with WebGL 2 by the engine's second renderer; `build/web/demo` is a folder of static files to put on any web server. It needs a browser with WebAssembly garbage collection and WebGL 2 with floating-point render targets (the current Chromium, Firefox and Safari). Sound starts at the first key or touch, as browsers require. On a touch screen the engine's touch controls appear by themselves.
+
+A game needs a module `GAME-web` beside it, listed in `project.yaml`: copy `demo-web/` (a `module.yaml`, an `index.html`, a link to the game's `Main.kt` and links to its resource folders). Models, images and sounds are fetched from the page's folder before the game starts, with a count on screen.
+
+## Android
+
+```sh
+./kotlin build -m demo-android    # build/tasks/_demo-android_buildAndroidDebug/gradle-project-debug.apk
+```
+
+Drawn with OpenGL ES 3 by the same second renderer, played with the touch controls, sound through `AudioTrack`. A game needs a module `GAME-android`, listed in `project.yaml`: copy `demo-android/` and change its `applicationId`. Building it needs the Android SDK on the computer; this is a debug build, to sign with a key of your own before giving it to anyone.
+
+Both were tried with software rendering only (a headless Chromium, the emulator): they draw the right picture, to within a few pixels of Vulkan's; how smooth they are on a real phone or a real browser with its GPU is not measured yet.

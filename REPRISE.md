@@ -97,6 +97,10 @@ Non vérifié, à faire par le propriétaire : un vrai navigateur avec GPU (flui
 
 Seconde démo, `temple/` (« L'oracle endormi ») : à la première personne, une île sous la lune et la brume, un temple dorique en ruine ; cinq braseros à rallumer (feu vert d'eau, une note chacun) ; au cinquième la vasque s'illumine, la brume recule et les tambours tombés refont leur colonne. Lumière réglée à la main (pas d'horloge), sans trait d'encre, peu de couleur, beaucoup de halo ; sons synthétisés (cloche, vent, bourdon, chouette). Modèles : `tools/create_temple.py` (`tools/glbkit.py` est la boîte à outils GLB partagée avec l'île). Trajet d'essai des cinq feux : `./sillage run temple --headless --frames 9000 --route "-2.2,26.6 2.2,26.6 4.8,24 4.8,14.6 5.3,14.1 0,13.3 -5.3,14.1 -1,13 0,11.5 0,7.5 0,4 0,-1 1.4,-2.4 p30" --capture x.png`.
 
+## Documentation remise à jour (22 novembre 2026, soir)
+
+À la demande du propriétaire, les documents suivent maintenant ce que le moteur est devenu : README (où ça tourne, le temple et ses deux images, l'état réel), GUIDE (réglage `softness`, tactile, `--quality`, `--renderer gl`, les empaquetages), ARCHITECTURE (carte des sources par module et par dessous, fenêtre Win32, sorties de son, qualité et formats demandés à la carte, « ajouter un système »), PLATFORMS (web et Android en plus). Les blocs Kotlin passent toujours `tools/verifier_docs.py`.
+
 ## Windows (22 novembre 2026)
 
 Le propriétaire : « assure-toi que ça marche pour Windows », précisé ensuite : il ne s'agit pas de faire tourner la démo mais que le moteur soit utilisable sur ces systèmes. Le dessous Windows est dans `engine/src@jvm` (le même module que Linux, choisi à l'exécution par `Os`) :

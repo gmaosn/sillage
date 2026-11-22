@@ -1,6 +1,6 @@
 # Sillage guide
 
-Sillage is a 3D game engine written in Kotlin and nothing else: its own Vulkan renderer, rigid-body physics, character controller, sound mixer and window code (Wayland and X11). It has no third-party dependency. It needs JDK 25 and runs on Linux.
+Sillage is a 3D game engine written in Kotlin and nothing else: its own Vulkan renderer (and a second one on OpenGL ES 3 and WebGL 2), rigid-body physics, character controller, sound mixer and window code. It has no third-party dependency. Games are written on Linux with JDK 25, and run on Linux, a Raspberry Pi, Windows, FreeBSD, in a web page and on Android ([PLATFORMS.md](PLATFORMS.md)).
 
 A game is a function that fills a scene. The engine opens the window, runs the loop, moves the player, steps the physics, plays the sounds and draws everything.
 
@@ -17,9 +17,9 @@ fun main(args: Array<String>) {
 }
 ```
 
-The two demos show the whole API at work: `playground/` is made of shapes only (crates, balls, a ramp, a lift, stars to collect), `demo/` is an island built from glTF models (animated scenery, a rocking boat, shells, sea sounds, the hours of a day with lamps at night, a campfire, plants in the wind).
+The two demos show the whole API at work: `playground/` is made of shapes only (crates, balls, a ramp, a lift, stars to collect), `demo/` is an island built from glTF models (animated scenery, a rocking boat, shells, sea sounds, the hours of a day with lamps at night, a campfire, plants in the wind). A third game, `temple/`, shows the same engine with another look: a ruined temple at night, in first person, in smooth light.
 
-This guide tours the engine by topic. The [tutorial](TUTORIAL.md) builds a first game step by step, [PHYSICS.md](PHYSICS.md) covers the physics engine, [REFERENCE.md](REFERENCE.md) lists the whole public API, and [ARCHITECTURE.md](ARCHITECTURE.md) explains how the engine is built.
+This guide tours the engine by topic. The [tutorial](TUTORIAL.md) builds a first game step by step, [PHYSICS.md](PHYSICS.md) covers the physics engine, [REFERENCE.md](REFERENCE.md) lists the whole public API, [PLATFORMS.md](PLATFORMS.md) says how to take a game to each system, and [ARCHITECTURE.md](ARCHITECTURE.md) explains how the engine is built.
 
 ## Running
 
@@ -69,7 +69,9 @@ The same from code: `debug.showPhysics`, `debug.freeCamera`, `debug.paused`, `de
 | `--smoke` | scripted check: the player walks and jumps, the run fails if it cannot |
 | `--route "x,z x,z j w p2"` | the player follows points (`j` jumps, `w` toggles walking, `pN` waits N s) |
 | `--trace [--trace-every N]` | prints the player's state |
-| `--mute`, `--audio-device NAME` | sound off, or another ALSA device |
+| `--mute`, `--audio-device NAME` | sound off, or another device (an ALSA name; a path such as `/dev/dsp1` is written to as an OSS device) |
+| `--quality low\|medium\|high` | what the renderer spends: `medium` halves the shadow maps' side, `low` also drops the anti-aliasing. Chosen by itself otherwise (`medium` on a Raspberry Pi, `high` elsewhere); `SILLAGE_QUALITY` does the same from the environment |
+| `--renderer gl` | with `--headless`: draws with the OpenGL ES renderer (the one of the web and Android) instead of Vulkan, to compare their pictures |
 | `--record-audio file.wav` | with `--headless`: records what the game would play |
 | `--export-sounds dir` | writes the engine's synthesised sounds as WAV files |
 | `--export-textures dir` | writes the ready-made textures as PNG files (the pattern, and the pattern on a typical colour) |
@@ -240,6 +242,8 @@ val turn = input.axis(Key.LEFT, Key.RIGHT)          // −1, 0 or 1
 ```
 
 `input.pressed(key)` is true only on the frame the key goes down, `input.released(key)` on the frame it comes up. `input.mouseDelta`, `input.wheel` and `input.mouseCaptured` give the mouse.
+
+On a touch screen (a phone, a tablet, a page opened on one) the engine plays a pad by itself: a finger on the left half is the left stick, which appears where the finger lands; a finger dragged on the right half turns the camera; a short tap there, or the round button at the bottom right, jumps (`Pad.CROSS`); two fingers pinching change the camera's distance. The game sees an ordinary pad, so whatever it does with `input.pad` and its actions works under the thumbs with nothing to add.
 
 The keys come from `input.source`: the window in a game, or your own `KeySource` to script them (tests, replays, a bot), as in `input.source = KeySource { it == Key.B }`.
 
@@ -459,6 +463,8 @@ lighting.dayLength = 600f      // a whole day in ten minutes of play; 0 (the def
 
 The sun rises at 6 on the side of `sunrise`, stands highest at noon (`sunTilt` degrees from the zenith) and sets at 18; the colours go through dawn, day, a warm sunset and the blue of night, when the moon takes over as the main light and the stars come out. `lighting.night` goes from 0 by day to 1 at night: lamps that light only at night follow it, and a game can too (`if (lighting.night > .5f) …`).
 
+`lighting.softness` chooses how the light falls on shapes. At 0, the default, it falls in two drawn steps, like a cartoon: the island. Towards 1 it turns smoothly around them, with more of the sky's light in the shade and a faint sheen: stone, clay, plaster. The temple uses `.9f` and turns the ink lines off (`outlines = 0f`); nothing else separates the two looks.
+
 Three settings finish the picture: `glow` (0.8), the halo around what is brighter than white (the sun, its glitter on water, lamps, embers, sparks); `outlines` (0.85), ink lines along silhouettes; `vignette` (0.22), darker corners. `saturation` (1.06) makes the colours richer or plainer.
 
 Everything casts a shadow from the sun (or the moon) on what is below it, within `lighting.shadowRange` metres (24) of what the camera looks at; the shadows fade out beyond. `lighting.shadows = false` turns them off, `true` back on, at any time (a scene that began without them makes the shadow maps the first time they are turned on). A node that should not cast one (a cloud high in the sky, a decal) sets `castsShadow = false`; it still receives the others. With cast shadows, players also keep a light round shadow straight under them, which shows where a jump will land; without them, every moving thing gets a round shadow (`node.shadow()` adds one).
@@ -497,7 +503,7 @@ The scene makes some by itself: a puff of dust where a player lands on sand or a
 
 ## Models
 
-Models are glTF binary files (`.glb`), as Blender exports them: meshes with colours (`baseColorFactor`, vertex colours), a node hierarchy, node animations (translation, rotation, scale; linear and step) and:
+Models are glTF binary files (`.glb`), as Blender exports them: meshes with colours (`baseColorFactor`, and `COLOR_0` vertex by vertex: weathering, moss, soot painted into the model itself), a node hierarchy, node animations (translation, rotation, scale; linear and step) and:
 
 - **Images painted on the model** (`baseColorTexture`): PNG or JPEG, inside the file, in a `data:` URI or as a file beside it, read by the engine's own decoders; the texture coordinates `TEXCOORD_0`; `alphaMode` `MASK` cuts out what is below `alphaCutoff` (leaves, fences, a sign's rounded corners; `BLEND` is drawn as `MASK` at 0.5, without sorting). An image decoded once serves every copy and every scene. Images are scaled to 1024 pixels at most. Without an image, detail textures still come from the material names (see Textures).
 - **Skins** (characters bent by a skeleton): joints, inverse bind matrices, four weights per vertex. The mesh is deformed on the CPU after each pose, then sent to the GPU again (a few thousand vertices cost a fraction of a millisecond); a skinned model plays its clips like any other.
@@ -566,3 +572,15 @@ Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo 
 makes `build/package/mygame/mygame-x86_64.AppImage`: one file that holds the game, a Java runtime cut down to the modules the game uses (`jlink`), and an AOT cache. Copy it anywhere and run it; no JDK to install. The cache comes from a training run without a window (900 frames, no sound) made while packaging; on the playground it brings the first frame from about 1.3 to 0.9 s after the program starts (measured on a loaded laptop; the run's last line gives `first-frame=`). The runtime holds only `java.base`: the engine writes its PNG files itself and reads its start time from the process, so the AppImage of the playground weighs 30 MB. The same run draws the AppImage's icon: a 256 × 256 picture of the game. The AppImage tools (`appimagetool` and the type 2 runtime, which needs no FUSE library) are fetched once at fixed versions and checked against their checksums. The AppImage runs on distributions whose C library is as recent as the one it was packaged on.
 
 The options of the game work as usual (`mygame-x86_64.AppImage --mute`), and it keeps the folder it was started from as its working directory.
+
+The same game goes to other systems from the same computer:
+
+| | |
+|---|---|
+| `./sillage package mygame --arch aarch64` | an AppImage for a Raspberry Pi 4, 5 or 500 (64-bit OS) |
+| `./sillage package mygame --os windows` | a folder and its .zip for 64-bit Windows: the game, its Java runtime, `mygame.bat` |
+| `./sillage package mygame --portable` | the game's jars and a launcher, for any system that has a Java 25 of its own (FreeBSD) |
+| `./sillage web mygame` | a web page, in `build/web/mygame` (`--serve` shows it at http://127.0.0.1:8080) |
+| `./kotlin build -m mygame-android` | an Android application |
+
+The web and Android builds each need a small module beside the game (`mygame-web`, `mygame-android`) holding a link to the game's `Main.kt`: copy `demo-web/` and `demo-android/`. A game's code does not change from one system to the next; what it reads from the computer (pads, a mouse) may simply not be there. [PLATFORMS.md](PLATFORMS.md) has the recipe for each system, what to install there, and what each was tried on.

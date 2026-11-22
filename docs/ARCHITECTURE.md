@@ -4,7 +4,7 @@ This page is for those who read or change the engine itself. To make games, star
 
 ## Principles
 
-- **Kotlin and nothing else.** No third-party library in the engine or the games (the toolchain brings its own test runner). The engine talks to the system's C libraries (`libvulkan`, `libwayland-client`, `libxcb`, `libasound`, `libc`; `libxkbcommon` for typed text, optional: without it a US table) through the JDK's Foreign Function & Memory API (`java.lang.foreign`). Within the JDK it uses only the runtime basics: atomics, thread parking, FFM. Assets come from files or from code: models are glTF files made by `tools/create_assets.py`, and sounds are synthesised.
+- **Kotlin and nothing else.** No third-party library in the engine or the games (the toolchain brings its own test runner). On the desktop the engine talks to the system's C libraries (on Linux and the BSDs `libvulkan`, `libwayland-client`, `libxcb`, `libasound`, `libc`; `libxkbcommon` for typed text, optional: without it a US table; on Windows `vulkan-1`, `user32`, `kernel32`, `winmm`) through the JDK's Foreign Function & Memory API (`java.lang.foreign`); in a page it calls the browser through `@JsFun`, on Android the platform's own classes. Within the JDK it uses only the runtime basics: atomics, thread parking, FFM. Assets come from files or from code: models are glTF files made by `tools/create_assets.py`, and sounds are synthesised.
 - **Built with the Kotlin Toolchain** (`./kotlin`), on JDK 25, which the toolchain provides. No Gradle. The `./sillage` script (new, run, dev, test, qa, package) calls the toolchain only to compile, and only when a file changed, then starts the JVM itself on the compiled classes: a run with nothing to build takes under a second instead of nine.
 - **Deterministic physics.** The same inputs give the same bits, whatever the number of threads. Fingerprint tests guard this.
 - **No garbage in hot loops.** The physics step, collision tests, queries, the mixer and frame recording work on arrays and plain numbers. The public types (`Vec3`, `Quat`, `Mat4`, `Color`, `Body`…) are immutable values marked `@ValueCandidate`, ready to become value classes with Valhalla.
@@ -15,45 +15,62 @@ This page is for those who read or change the engine itself. To make games, star
 | Module | |
 |---|---|
 | `core` | maths, physics, file decoders, sound synthesis and mixing: Kotlin common code (`kmp/lib`: jvm, android, wasmJs), usable alone |
-| `engine` | the scene API in common code (`src/`) and one backend per platform (`src@jvm` Linux: Vulkan, Wayland, ALSA; `src@wasmJs` a web page: WebGL 2, Web Audio; `src@android`: OpenGL ES 3, AudioTrack); depends on `core` and exports it |
+| `engine` | the scene API in common code (`src/`) and one backend per platform (`src@jvm` the desktop — Linux, the BSDs and Windows, told apart when the game starts by `platform/Os.kt`: Vulkan, Wayland, X11 or Win32, ALSA, OSS or waveOut; `src@wasmJs` a web page: WebGL 2, Web Audio; `src@android`: OpenGL ES 3, AudioTrack); depends on `core` and exports it |
 | `temple`, `*-web`, `*-android` | the second demo; the web and Android applications of both demos (a link to the game's `Main.kt`, nothing else) |
 | `playground` | a game made of shapes only: crates, balls, a ramp, a lift, stars; B drops 400 crates |
 | `demo` | the island: glTF scenery, animated boat and seagulls, shells to find, sea sounds |
 | `bench` | physics benches: `pyramid`, `pile N`, `solver N`, `threads N`, `determinism`, `settle` |
 | `qa` | the quality battery: physics, collisions, character, rendering, loaders, API, endurance, performance |
 
-`tools/` holds `shaders.sh` (compiles the GLSL to SPIR-V with `glslc`; the `.spv` files are committed), `shaders_gl.py` (makes the OpenGL ES shaders from the same sources, see below), `create_assets.py` (writes the demo's GLB models, with no third-party Python module) and `reference/` (reference captures).
+`tools/` holds `shaders.sh` (compiles the GLSL to SPIR-V with `glslc`; the `.spv` files are committed), `shaders_gl.py` (makes the OpenGL ES shaders from the same sources, see below), `create_assets.py` and `create_island.py` (write the island's GLB models, with no third-party Python module), `create_temple.py` on `glbkit.py` (the temple's: lathes, sweeps, dressed-stone walls, rocks, weathering painted per vertex), the packaging helpers (`arm64/Dockerfile` for the ARM training run, `portable-launcher.sh`, `windows-launcher.bat`, `linux-rootfs.sh` for NetBSD's Linux emulation), `x11_touches.py` (keys pressed on a virtual X screen through XTEST, to try a keyboard nobody sees) and `reference/` (reference captures).
 
 ## Source map
 
 ```
-engine/src/sillage/
-  Game.kt            game(): options, the loop, RunReport
+core/src/sillage/           common Kotlin, no platform in it
+  math/              Vec3, Quat, Mat4, the clock
+  physics/           the physics engine
+  audio/             sounds, synthesis, the mixer, the Ogg Vorbis decoder
+  io/                JSON, PNG, JPEG; Assets (where models, images and sounds are found); Storage (settings, files)
+core/src@jvm/ …      what a platform gives: locks, worker threads, files; the physics' SIMD lanes (Wide.kt)
+
+engine/src/sillage/         common Kotlin: everything a game sees
+  Game.kt FrameLoop.kt   game(): options, RunReport; the loop every platform runs
+  Scene.kt           the scene: builders, events, the order of a frame's update
+  Node.kt Player.kt Camera.kt Input.kt Hud.kt
+  Touch.kt           a touch screen as a pad (Touches)
   Debug.kt           F5–F8: the physics drawn as lines, the free camera, pause and one frame, the panel
   Script.kt          scripts (coroutines of the standard library, @RestrictsSuspension), Ease, Tween
   Units.kt           degrees and whole sizes → Quat and physics shapes
-  dev/               ./sillage dev: the host (watches, compiles, reloads), the link with the loop, the error panel
-  Scene.kt           the scene: builders, events, the order of a frame's update
-  Node.kt Player.kt Camera.kt Input.kt Hud.kt
   Lighting.kt        light, sky, the hour of the day, wind, the picture's finish
   Effects.kt         lamps (PointLight), particles (ParticleStyle, Particles, Emitter, ParticleSystem)
   Texture.kt         detail textures: Texture, the ready-made Textures and their painting tools
-  Mesh.kt            Color, Mesh, MeshBuilder, primitive shapes
+  Mesh.kt Simplify.kt   Color, Mesh, MeshBuilder, primitive shapes; lighter versions of a mesh
   Glb.kt Animation.kt   glTF loading, Model, Animator
+  Water.kt           shores, lagoons, foam
   SceneSounds.kt     the sounds a scene makes by itself (steps, impacts, scraping)
-  VulkanRenderer.kt  the renderer (Vulkan)
+  RenderData.kt      what a renderer is (Renderer), what a frame carries (FrameExtras), RenderQuality
   RenderBatches.kt   what a frame draws, whatever draws it: batches per mesh, culling, shadow squares, the frame's block
   gl/                the second renderer: Gl (the calls of OpenGL ES 3.0 / WebGL 2), GlRenderer, GlShaders (generated)
-  vk/                Vulkan through FFM: loader and call handles, C struct layouts, constants
-  platform/          windows: Wayland, X11 (XCB), key codes; Xkb.kt (characters from the keyboard's layout, libxkbcommon);
-                     gamepads: hidraw (DualSense reports, calibration, outputs), evdev (generic pads, rumble), inotify hot-plug
   Pad.kt PadHub.kt PadSource.kt PadScript.kt Action.kt   pads as the game sees them, slots, virtual and scripted pads, actions
   Hud.kt UiLayout.kt UiFont.kt ui/   the HUD: texts in the pixel font or system fonts (glyph atlas), layout, buttons, menus, fields
-  io/Ttf.kt io/Cff.kt io/FontRaster.kt   TrueType and CFF outlines, exact-coverage rasteriser
+  io/                TrueType and CFF outlines, exact-coverage rasteriser
   ModelHelpers.kt    Blender's helper objects (col_…, spawn, lamps, zone_…, pickup_…, dynamic) placed at the first frame
-  physics/           the physics engine
-  audio/             sounds, synthesis, the mixer, ALSA output
-  math/ io/          Vec3, Quat, Mat4; JSON, PNG, JPEG; Assets (where models, images and sounds are found)
+  Platform.kt        what each backend must give (expect): pads, background work, per-thread values
+
+engine/src@jvm/sillage/     the desktop: Linux, FreeBSD, NetBSD, Windows
+  Game.kt            the desktop's game(): window or off screen, captures, the smoke run
+  VulkanRenderer.kt  the renderer (Vulkan)
+  vk/                Vulkan through FFM: loader and call handles, C struct layouts, constants
+  platform/          Os.kt (which system this is); windows: Wayland, X11 (XCB), Win32; Xkb.kt (characters from the
+                     keyboard's layout, libxkbcommon); gamepads: hidraw (DualSense reports, calibration, outputs),
+                     evdev (generic pads, rumble), inotify hot-plug; EglGl.kt (the second renderer without a window)
+  audio/             outputs: ALSA, OSS (DeviceAudio.kt), waveOut
+  dev/               ./sillage dev: the host (watches, compiles, reloads), the link with the loop, the error panel
+
+engine/src@wasmJs/sillage/  a web page: the canvas and its events, WebGL 2 behind Gl, Web Audio
+engine/src@android/sillage/ Android: GameActivity, OpenGL ES 3 behind Gl, AudioTrack
+
 engine/resources/shaders/   scene: toon.vert, toon.frag, water.frag, sky.frag, ombre.frag, particle.vert/.frag, shadow.vert/.frag;
                             picture: post.vert, bright.frag, down.frag, up.frag, composite.frag; hud.vert/.frag;
                             shared: frame.glsl, light.glsl, shading.glsl, texture.glsl (+ SPIR-V, tools/shaders.sh)
@@ -61,7 +78,7 @@ engine/resources/shaders/   scene: toon.vert, toon.frag, water.frag, sky.frag, o
 
 ## A frame
 
-`game()` builds the scene, opens the window (Wayland if `WAYLAND_DISPLAY` is set, else X11; `SILLAGE_PLATFORM=wayland|x11` forces one) and the renderer, then loops:
+`game()` builds the scene, opens the window (on Windows a Win32 one; elsewhere Wayland if `WAYLAND_DISPLAY` is set, else X11; `SILLAGE_PLATFORM=wayland|x11` forces one) and the renderer, then loops:
 
 1. **Window**: events, resize. Without focus the loop waits.
 2. **Waiting for the screen** (`VulkanRenderer.attendre`): until the last frame is on screen (`VK_KHR_present_wait`, when the driver offers it), then until this frame's fence and a swapchain image are free. Then the window's events are read again, mouse movement and wheel included: whatever came during the wait acts on the very next picture.
@@ -74,7 +91,7 @@ Without a window (`--headless`), the same loop draws into an off-screen image wi
 
 ## Rendering
 
-- **Vulkan through FFM** (`vk/`). `Vulkan.kt` loads `libvulkan.so.1` and keeps one `static final` method handle per call signature, which the JIT inlines; the function's address is an argument. `Struct.kt` describes C structs (alignment, nested fields, arrays) and provides `NativeStack`, a native scratch stack reused every frame. `Structs.kt` and `Constants.kt` were written from the Vulkan registry and checked field by field against LWJGL's layouts before LWJGL was removed.
+- **Vulkan through FFM** (`vk/`). `Vulkan.kt` loads `libvulkan.so.1` (`vulkan-1.dll` on Windows) and keeps one `static final` method handle per call signature, which the JIT inlines; the function's address is an argument. `Struct.kt` describes C structs (alignment, nested fields, arrays) and provides `NativeStack`, a native scratch stack reused every frame. `Structs.kt` and `Constants.kt` were written from the Vulkan registry and checked field by field against LWJGL's layouts before LWJGL was removed.
 - **Two frames in flight.** Each has its command buffer, fence, semaphores, a persistently mapped instance buffer and HUD buffer. A frame first waits for its fence, so the CPU prepares frame n+1 while the GPU draws frame n.
 - **Latency.** In FIFO mode the swapchain (4 images on Mesa under Wayland) let up to three frames wait for the screen: a key read at the start of the loop reached it about 100 ms later at 60 Hz (measured in a headless KWin). Now each present carries a number (`VkPresentIdKHR`) and the next frame waits for it to be shown (`vkWaitForPresentKHR`, at most 0.1 s, as a hidden window may never be shown) before the keys are read: 16.6 ms from the keys to the screen at 60 Hz, still 60 frames per second. The frame then has one refresh for its CPU and GPU work. Without the extension (or with `SILLAGE_PRESENT_WAIT=0`), the swapchain keeps `minImageCount` images, one fewer frame queued. `SILLAGE_LATENCE=1` prints once a second the keys-to-screen time and where a frame waits.
 - **Culling** (`RenderBatches.gather`, the same code for both renderers): each copy's bounding sphere (the mesh's, `Mesh.sphere`, placed by the node; a node that has not moved keeps it, its position, rotation and mesh being immutable values compared by identity) is tested against the six planes of view × projection (Gribb–Hartmann, depth 0 to 1), the haze's end and the node's draw distance; a second list holds what stands in the shadow square (its sides along light.glsl's axes), drawn alone into the shadow map. Batches are found through the mesh (`Mesh.batches`, valid for the renderer's current `token`), not by hashing. `--no-cull` draws everything; qa `mondes` checks that the picture is the same.
@@ -89,6 +106,8 @@ Without a window (`--headless`), the same loop draws into an off-screen image wi
 - **Push constants**: 128 bytes (the minimum every device guarantees): view × projection, eye and time, the shadow map's centre and half side, the water's two colours. The scene's descriptor set holds the shadow map, the frame's uniform block and the texture array; the picture's passes have their own sets, two images each.
 - **Debug lines** (`Debug.fill`, `lines.vert`, `lines.frag`, `lines_xray.frag`): segments of two vertices (position, colour, opacity) written after the particles in the frame's instance buffer, drawn at the end of the scene pass twice: first without the depth test and faint (what the scenery hides), then with it. Both pipelines write red, green and blue only, so the alpha (the distance to the eye) and thus the ink lines stay as they were. Nothing is drawn, and nothing costs, while F5 is off.
 - **GPU time** from timestamp queries, when the device supports them.
+- **What the card can do is asked, not assumed.** The depth format is the first the device accepts among 32-bit float, 24 bits and 16 bits; the 16-bit float pictures and their sample count are checked, and a missing one is said in words rather than left to the driver. `RenderQuality` (`RenderData.kt`) sets the shadow maps' side and the anti-aliasing: `high` (2048, 4 samples), `medium` (1024, 4), `low` (1024, 1), from `--quality`, `sillage.quality` or `SILLAGE_QUALITY`, else by the card's name (a Raspberry Pi's V3D gets `medium`). The run's first line (`SILLAGE_VULKAN_OK …`) says what was chosen.
+- **Two looks from one shader.** `Lighting.softness` blends, in `shading.glsl`, the two drawn steps of the toon light into a smooth wrap with more ambient in the shade and a faint sheen; a model's `COLOR_0` multiplies its material colour vertex by vertex.
 
 ## The second renderer: OpenGL ES 3.0 and WebGL 2
 
@@ -103,6 +122,10 @@ Without a window (`--headless`), the same loop draws into an off-screen image wi
 ## Windows
 
 `platform/WaylandWindow.kt` talks to `libwayland-client` through FFM. Requests use `wl_proxy_marshal_array_flags` (arguments in an array, no variadic calls). Every event arrives through one dispatcher installed with `wl_proxy_add_dispatcher`, routed by object and event name. The interface tables of the protocols outside the library (xdg-shell, xdg-decoration, relative pointer, pointer constraints, cursor shape) are written by hand, as `wayland-scanner` would generate them; `WaylandTablesTest` checks them. The buffer scale follows the compositor (sharp at 200 %). `XcbWindow.kt` is the X11 fallback through `libxcb`. Keys are Linux evdev codes, so they name physical positions on every layout.
+
+`Win32Window.kt` is the window on Windows, through `user32`: a window class whose procedure is an upcall into Kotlin, messages drained with `PeekMessage` each frame. Keys arrive as scan codes, which are the same positions as evdev's for the main block (the extended ones — arrows, right Ctrl, the keypad's Enter — are translated by a small table), typed text as `WM_CHAR`, so layouts and dead keys are Windows' business. A captured mouse is hidden, clipped to the window and brought back to its centre after each move. The surface is `VK_KHR_win32_surface`. `SILLAGE_KEYS=1` prints each key as it arrives.
+
+In a page the window is a canvas (`src@wasmJs/…/web/`: keys by `KeyboardEvent.code`, pointer lock, touches); on Android a `GLSurfaceView` in `GameActivity`, which builds the scene on a thread of its own so that the first frame never waits for it. Both hand fingers to `Touches`.
 
 ## Physics
 
@@ -120,14 +143,14 @@ The order of floating-point operations is part of the result. In the narrow phas
 
 ## Sound
 
-`audio/Mixer.kt` mixes up to 48 voices into stereo floats: volume, pitch (resampling), pan or a position in the world (distance attenuation, constant-power panning, a low-pass for distance and for sounds behind the head), gliding volumes, fades on stop, voice stealing, and a soft limiter. The game thread changes voices and the audio thread renders; they meet under a short lock at the start of each block, and rendering allocates nothing. `audio/Audio.kt` writes 16-bit stereo blocks of 5 ms to ALSA from a high-priority thread and recovers from underruns. `audio/Synth.kt` synthesises every sound of the engine from seeded noise, filters and damped modes, so they come out the same every time; the scene pre-synthesises its common sounds in the background as soon as sound starts.
+`audio/Mixer.kt` mixes up to 48 voices into stereo floats: volume, pitch (resampling), pan or a position in the world (distance attenuation, constant-power panning, a low-pass for distance and for sounds behind the head), gliding volumes, fades on stop, voice stealing, and a soft limiter. The game thread changes voices and the audio thread renders; they meet under a short lock at the start of each block, and rendering allocates nothing. `audio/Audio.kt` hands the mixer to the platform's output (`platformAudioOutput`): on Linux `Alsa.kt` writes 16-bit stereo blocks of 5 ms from a high-priority thread and recovers from underruns; on FreeBSD, or whenever the device asked for is a path under `/dev/`, `DeviceAudio.kt` writes the same blocks to an OSS device; on Windows `WaveOut.kt` keeps a few 10 ms blocks queued in `winmm` and refills each as soon as it has played; a page renders into Web Audio buffers scheduled a little ahead, Android writes to an `AudioTrack`. `audio/Synth.kt` synthesises every sound of the engine from seeded noise, filters and damped modes, so they come out the same every time; the scene pre-synthesises its common sounds in the background as soon as sound starts.
 
 ## Tests and checks
 
 | | Command | |
 |---|---|---|
 | Unit tests | `./kotlin test` | maths, JSON, GLB, physics (including realism against textbook formulas, determinism, fingerprints), character, queries, triggers, scene, camera, audio, Wayland tables |
-| Quality battery | `./sillage qa [--rapide] [--seulement group,…]` | 64 checks; report in `build/qa/rapport.md`; speed and allocations against a base recorded on the machine (`qa/reference/performance.txt`), five reference views of the island |
+| Quality battery | `./sillage qa [--rapide] [--seulement group,…]` | 128 checks; report in `build/qa/rapport.md`; speed and allocations against a base recorded on the machine (`qa/reference/performance.txt`), five reference views of the island |
 | Benches | `./kotlin run -m bench -- pile 3000` | |
 | Smoke run | `./sillage run demo --headless --smoke --frames 180 --capture build/smoke.png` | the player walks and jumps; compare the capture with `tools/reference/demo-smoke-180.png` |
 
@@ -142,6 +165,7 @@ Heavy runs are best capped in memory (`systemd-run --user --scope -p MemoryMax=4
 
 ## Adding things
 
+- **A system**: on the desktop, a branch in `platform/Os.kt`, a `Window` (`openWindow` in `platform/Window.kt` chooses it; it gives the Vulkan instance extensions it needs and makes the surface), an `AudioOutput` (`platformAudioOutput`), the fonts' folders in `UiFont.kt`; libc calls that the system lacks stay behind `by lazy`. Then a packaging path in the `./sillage` script, a row and a recipe in [PLATFORMS.md](PLATFORMS.md) — with what it was really tried on. A system without Vulkan implements `Gl` and the `expect` declarations of `Platform.kt` in a source set of its own, as the web and Android do.
 - **A Vulkan function**: add its signature handle in `vk/Vulkan.kt` if the shape is new, the function, and any struct in `vk/Structs.kt` with its exact layout (check it against the registry).
 - **A shape**: a `Shape` subclass with volume, inertia, bounding radius, principal axes and `scaled`; the convex hull (`Hull.kt`, narrow phase in `CollideHull.kt`: separating axes with the Gauss map, clipping) and the compound (`Compound.kt`, a part index in each contact's feature id) are the examples to follow; a rank and the routines against every other shape in `Collide.kt` (and against triangles); its bounds in `PhysicsWorld.prepareBody`; ray and sweep tests in `Queries.kt`; tests; then new fingerprints.
 - **A scene builder**: a function in `Scene` that makes a `Node` (sharing its mesh when the parameters repeat), documented in KDoc, in the guide and in the reference, with a check in `qa/…/Api.kt`.
