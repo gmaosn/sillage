@@ -17,7 +17,7 @@ fin() {
 	pkill -f "dev-game $jeu" 2>/dev/null; [ -n "$pid" ] && kill "$pid" 2>/dev/null; pkill -f "socket sillage-essai-dev" 2>/dev/null
 	rm -rf "$root/$jeu" "$root/build/sillage/$jeu.stamp" "$root/build/dev/$jeu" "$root/build/artifacts/CompiledJvmArtifact/${jeu}jvm"*
 	cp "$root/build/tmp/project.yaml.essai-dev" "$root/project.yaml"
-	[ -f "$root/build/tmp/DevOverlay.kt.essai-dev" ] && mv "$root/build/tmp/DevOverlay.kt.essai-dev" "$root/engine/src/sillage/dev/DevOverlay.kt"
+	[ -f "$root/build/tmp/DevOverlay.kt.essai-dev" ] && mv "$root/build/tmp/DevOverlay.kt.essai-dev" "$root/engine/src@jvm/sillage/dev/DevOverlay.kt"
 }
 trap fin EXIT INT TERM
 echoue() { echo "ÉCHEC : $*"; echo "--- fin du journal ---"; tail -25 "$log"; exit 1; }
@@ -87,11 +87,11 @@ t2=$(grep "ESSAI version=3" "$log" | tail -1 | sed 's/.*triangles=//')
 echo "5. modèle changé : triangles $t1 -> $t2 ($(grep "SILLAGE_DEV_RELOADED resources" "$log" | head -1))"
 [ "$t1" != "$t2" ] || echoue "le modèle n'a pas été relu"
 
-cp -p engine/src/sillage/dev/DevOverlay.kt build/tmp/DevOverlay.kt.essai-dev
-echo "// essai" >> engine/src/sillage/dev/DevOverlay.kt
+cp -p engine/src@jvm/sillage/dev/DevOverlay.kt build/tmp/DevOverlay.kt.essai-dev
+echo "// essai" >> engine/src@jvm/sillage/dev/DevOverlay.kt
 attend "SILLAGE_DEV the engine changed" 1 30
-mv build/tmp/DevOverlay.kt.essai-dev engine/src/sillage/dev/DevOverlay.kt
-touch engine/src/sillage/dev/DevOverlay.kt
+mv build/tmp/DevOverlay.kt.essai-dev engine/src@jvm/sillage/dev/DevOverlay.kt
+touch engine/src@jvm/sillage/dev/DevOverlay.kt
 attend "SILLAGE_DEV watching" 2 400
 echo "6. moteur changé : reconstruit et relancé"
 echo "ESSAI DEV : tout est passé"

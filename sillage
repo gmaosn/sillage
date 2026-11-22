@@ -106,7 +106,7 @@ build() {
 	if [ -f "$stamp" ] && [ -d "$artifacts/${1}jvm/kotlin-output" ]; then
 		changed=""
 		for m in $(closure "$1"); do
-			for p in "$root/$m/src" "$root/$m/resources" "$root/$m/module.yaml"; do
+			for p in "$root/$m/src" "$root/$m/src@jvm" "$root/$m/src@java" "$root/$m/src@threads" "$root/$m/resources" "$root/$m/module.yaml"; do
 				[ -e "$p" ] || continue
 				if [ -n "$(find "$p" -newer "$stamp" -print -quit)" ]; then changed=1; break 2; fi
 			done
@@ -188,7 +188,7 @@ cmd_dev() {
 			--dev-sources "$root/$game/src" \
 			--dev-resources "$root/$game/resources" \
 			--dev-classes "$artifacts/${game}jvm/kotlin-output" \
-			--dev-engine-sources "$(for m in $(closure "$game"); do [ "$m" = "$game" ] || printf '%s:' "$root/$m/src" "$root/$m/resources"; done)" \
+			--dev-engine-sources "$(for m in $(closure "$game"); do [ "$m" = "$game" ] || printf '%s:' "$root/$m/src" "$root/$m/src@jvm" "$root/$m/src@java" "$root/$m/src@threads" "$root/$m/resources"; done)" \
 			--dev-compiler "$compiler_jars" \
 			--dev-jdk "$(jdk_home)" \
 			--dev-work "$root/build/dev/$game" \
