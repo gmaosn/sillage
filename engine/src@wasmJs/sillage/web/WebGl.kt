@@ -60,6 +60,7 @@ private external fun jUniformBlockBinding(p: Int, name: String, b: Int)
 @JsFun("(i) => S.gl.disableVertexAttribArray(i)") private external fun jDisableAttrib(i: Int)
 @JsFun("(i, s, t, n, st, o) => S.gl.vertexAttribPointer(i, s, t, n, st, o)") private external fun jAttribPointer(i: Int, s: Int, t: Int, n: Boolean, st: Int, o: Int)
 @JsFun("(i, d) => S.gl.vertexAttribDivisor(i, d)") private external fun jAttribDivisor(i: Int, d: Int)
+@JsFun("(i, x, y, z, w) => S.gl.vertexAttrib4f(i, x, y, z, w)") private external fun jAttrib4f(i: Int, x: Float, y: Float, z: Float, w: Float)
 @JsFun("(m, f, c) => S.gl.drawArrays(m, f, c)") private external fun jDrawArrays(m: Int, f: Int, c: Int)
 @JsFun("(m, f, c, n) => S.gl.drawArraysInstanced(m, f, c, n)") private external fun jDrawArraysInstanced(m: Int, f: Int, c: Int, n: Int)
 
@@ -141,6 +142,7 @@ internal class WebGl(override val floatTargets: Boolean) : Gl {
     override fun disableVertexAttribArray(index: Int) = jDisableAttrib(index)
     override fun vertexAttribPointer(index: Int, size: Int, type: Int, normalized: Boolean, stride: Int, offset: Int) = jAttribPointer(index, size, type, normalized, stride, offset)
     override fun vertexAttribDivisor(index: Int, divisor: Int) = jAttribDivisor(index, divisor)
+    override fun vertexAttrib4f(index: Int, x: Float, y: Float, z: Float, w: Float) = jAttrib4f(index, x, y, z, w)
     override fun drawArrays(mode: Int, first: Int, count: Int) = jDrawArrays(mode, first, count)
     override fun drawArraysInstanced(mode: Int, first: Int, count: Int, instances: Int) = jDrawArraysInstanced(mode, first, count, instances)
 

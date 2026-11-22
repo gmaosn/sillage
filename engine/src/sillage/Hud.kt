@@ -897,8 +897,8 @@ internal class HudMesh(val vertices: FloatArray, val atlas: GlyphAtlas?) {
 
 /** A 5 × 7 pixel font: capitals, small letters, French accents, digits and common signs. */
 internal object PixelFont {
-    /** The rows of [c] (« 1 » lit), null for a space; characters it lacks are drawn as « ? ». */
-    fun glyph(c: Char): List<String>? = glyphs[c] ?: glyphs[c.uppercaseChar().let { u -> plain[u] ?: u }] ?: if (c == ' ') null else glyphs['?']
+    /** The rows of [c] (« 1 » lit), null for a space (plain or no-break); characters it lacks are drawn as « ? ». */
+    fun glyph(c: Char): List<String>? = glyphs[c] ?: glyphs[c.uppercaseChar().let { u -> plain[u] ?: u }] ?: if (c == ' ' || c == '\u00A0' || c == '\u202F') null else glyphs['?']
 
     // Capitals with accents are drawn plain (no room above a capital in 7 rows).
     // g, j, p, q and y have two more rows: their tails hang below the line, like in print.

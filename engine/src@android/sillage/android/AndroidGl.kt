@@ -67,6 +67,7 @@ internal class AndroidGl : Gl {
     override fun disableVertexAttribArray(index: Int) = GLES30.glDisableVertexAttribArray(index)
     override fun vertexAttribPointer(index: Int, size: Int, type: Int, normalized: Boolean, stride: Int, offset: Int) = GLES30.glVertexAttribPointer(index, size, type, normalized, stride, offset)
     override fun vertexAttribDivisor(index: Int, divisor: Int) = GLES30.glVertexAttribDivisor(index, divisor)
+    override fun vertexAttrib4f(index: Int, x: Float, y: Float, z: Float, w: Float) = GLES30.glVertexAttrib4f(index, x, y, z, w)
     override fun drawArrays(mode: Int, first: Int, count: Int) = GLES30.glDrawArrays(mode, first, count)
     override fun drawArraysInstanced(mode: Int, first: Int, count: Int, instances: Int) = GLES30.glDrawArraysInstanced(mode, first, count, instances)
 
