@@ -67,6 +67,16 @@ Demandée par le propriétaire avant de retravailler la démo ; trois lots propo
 - **Bases de vitesse** remesurées à charge 3 à 5 (cœurs 4 à 11) : celles de la physique gardées, rendu et île refaites (`rendu.1280` 1,05 ms, `rendu.2560` 0,89, `rendu.caisses10000` 1,05, `ile.miseajour` 0,16 ms et 24 Kio : la hausse des allocations de l'île date de la passe du 21 novembre, l'ancien code mesuré en alternance donne la même).
 - Non reproduit : les neuf avertissements du moteur à la construction d'un jeu (ici, le moteur compile sans avertissement).
 
+## Effet « whaou » de la démo (22 novembre 2026)
+
+Demandé par le propriétaire après la passe du moteur ; tout est dans `demo/` et passe par l'API existante (rien d'ajouté au moteur).
+
+- **Arrivée en vol** (13 s, Espace l'abrège) : la caméra vient du large au ras de l'eau, tourne de 235° autour de l'île en s'élevant et se pose derrière le marin, exactement sur la vue de jeu, pendant que la journée défile de l'aube étoilée à 16 h 30. Seulement avec une fenêtre (ou `--intro`) ; `--no-intro` la saute ; sans fenêtre, en `--smoke`, `--route` ou `--look-at`, l'île reste telle quelle, et `island` (qa) aussi.
+- **Spectacle du trésor** : les six coquillages retrouvés, la nuit tombe, la caméra recule au large et un feu d'artifice part de l'île (13 fusées puis un bouquet de 9 dont des saules dorés ; chaque éclat allume une lampe colorée qui éclaire l'île ; sifflement, détonation qui arrive après l'éclair à 340 m/s, crépitement : sons synthétisés dans la démo). Espace l'abrège ; ensuite F tire une fusée devant le marin. `--finale` le lance sans chercher les coquillages (essais, captures).
+- **Vie** : trois dauphins (`dauphin.glb`, queue articulée, clip « nage ») bondissent au large du côté où regarde la caméra, toutes les 18 à 28 s, avec gerbes et bruit d'eau ; papillons sur les fleurs le jour ; étoiles filantes la nuit, basses sur l'horizon ; tache de lumière du phare qui balaie le rivage.
+- Vérifié : planches de captures de l'arrivée, du spectacle et des dauphins ; vraie fenêtre Wayland dans un KWin isolé (son coupé) ; son du spectacle enregistré hors ligne (crête 0,92, aucun écrêtage, −18 dBFS pendant le feu contre −25 d'ambiance) ; qa complet 118 contrôles, 0 échec ; vues de référence « ile » et « nuit » et capture smoke refaites (papillons, phare) ; README : deux images de plus.
+- À confirmer par le propriétaire sur son bureau : le rythme de l'arrivée, le niveau sonore du feu d'artifice à l'oreille.
+
 ## Passe « ergonomie et fonctionnalités » (21 novembre 2026) — terminée (12dd3db)
 
 Le propriétaire a joué la démo sur son bureau le 21 novembre : « C'est très bien et le son est bon » (l'écoute des sons, en attente depuis l'étape 5, est faite). À faire par le propriétaire : `./sillage pad` avec la vraie DualSense (USB puis Bluetooth) ; essayer sur le Pi 500 ; Reste ouvert : cellules pour éliminer d'un coup les objets immobiles des très grands mondes (CPU).

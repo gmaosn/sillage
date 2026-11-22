@@ -783,6 +783,51 @@ for i in range(rings):
 single(ball, 'ballon.glb')
 
 
+# ---------------------------------------------------------------- dauphin
+# Un dauphin de deux mètres, le rostre vers +Z : corps profilé par sections elliptiques (dos gris-bleu,
+# ventre clair), aileron, nageoires, et une queue à part qui bat (clip « nage ») ; la démo le fait bondir.
+COLORS.update({'dauphin': (.13, .22, .34), 'dauphin_ventre': (.72, .76, .78)})
+
+def loft(mesh, sections, n=16, belly=.30):
+    """Tube à sections elliptiques (z, centre y, demi-largeur, demi-hauteur), fermé aux deux bouts."""
+    def p(k, j):
+        z, cy, rx, ry = sections[k]; a = TAU * j / n
+        return (math.sin(a) * rx, cy - math.cos(a) * ry, z)       # j = 0 : sous le ventre
+    for k in range(len(sections) - 1):
+        mid = (0, (sections[k][1] + sections[k + 1][1]) / 2, (sections[k][0] + sections[k + 1][0]) / 2)
+        for j in range(n):
+            low = min(j, n - 1 - j) < belly * n / 2
+            mesh.quad_out([p(k, j), p(k, j + 1), p(k + 1, j + 1), p(k + 1, j)], 'dauphin_ventre' if low else 'dauphin', mid)
+    for k, toward in ((0, (0, 0, -1)), (len(sections) - 1, (0, 0, 1))):
+        mesh.face([p(k, j) for j in range(n)], 'dauphin', toward)
+
+def fin(mesh, pts, thick, axis):
+    """Une nageoire : un triangle épais (deux faces écartées de `thick` le long de `axis`, bords fermés)."""
+    half = mul(axis, thick / 2)
+    a = [add(q, half) for q in pts]; b = [sub(q, half) for q in pts]
+    centre = mul(add(add(pts[0], pts[1]), pts[2]), 1 / 3)
+    mesh.face(a, 'dauphin', axis); mesh.face(b, 'dauphin', mul(axis, -1))
+    for i in range(3):
+        j = (i + 1) % 3
+        mesh.quad_out([a[i], a[j], b[j], b[i]], 'dauphin', centre)
+
+dolphin = Asset()
+body = Mesh()
+loft(body, [(-.62, .02, .075, .10), (-.45, .01, .13, .17), (-.20, 0, .19, .235), (.10, 0, .215, .25), (.38, .01, .20, .225),
+            (.62, .02, .165, .18), (.78, .015, .11, .12), (.86, -.005, .06, .058), (1.0, -.02, .042, .036), (1.08, -.025, .02, .018)])
+fin(body, [(0, .22, .12), (0, .215, -.22), (0, .50, -.20)], .035, (1, 0, 0))                    # aileron
+for s in (-1, 1): fin(body, [(s * .17, -.12, .42), (s * .15, -.14, .18), (s * .46, -.30, .12)], .03, (0, 1, 0))
+for s in (-1, 1): body.sphere(s * .135, .045, .70, .022, .022, .022, 'noir', 8, 4)             # yeux
+bnode = dolphin.node('corps', body)
+tail = Mesh()                                       # pédoncule et palmes, autour de l'articulation
+loft(tail, [(-.42, 0, .028, .05), (-.22, 0, .05, .075), (0, 0, .075, .10)], n=12, belly=0)
+for s in (-1, 1): fin(tail, [(0, 0, -.30), (s * .34, .0, -.58), (0, 0, -.46)], .028, (0, 1, 0))
+tnode = dolphin.node('queue', tail, bnode, t=(0, .02, -.62))
+times = keys(.8, 17)
+dolphin.channel('nage', tnode, 'rotation', times, [qx(.42 * math.sin(TAU * t / .8)) for t in times])
+dolphin.save('dauphin.glb')
+
+
 # ---------------------------------------------------------------- enseigne (texture d'image)
 # Une planche peinte à l'entrée du ponton : son recto est une image PNG dans le GLB (texture de couleur,
 # coordonnées de texture, coins arrondis par découpe alpha), son verso du bois nu, sur deux poteaux.

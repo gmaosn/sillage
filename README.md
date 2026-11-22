@@ -54,13 +54,14 @@ The `./sillage` command at the root drives everything (it uses the Kotlin Toolch
 ./sillage test                # the engine's tests
 ```
 
-Tab captures and frees the mouse, Escape opens the pause menu. In the playground, B drops 400 crates. On the island, find the six shells; the day goes by in ten minutes, T makes the hours run.
+Tab captures and frees the mouse, Escape opens the pause menu. In the playground, B drops 400 crates. On the island, you arrive by air from the open sea while a day goes by (Space skips it); find the six shells and night falls for the fireworks (then F fires a rocket whenever you like); the day goes by in ten minutes, T makes the hours run, and dolphins leap where you look out to sea.
 
 | | |
 |---|---|
 | ![The beach, the pier and the boat, with their shadows on the lagoon](docs/images/plage.jpg) | ![The sailor on the grass, a beach ball and crates](docs/images/marin.jpg) |
 | ![The house under the palms: roof tiles, plaster, stepping stones](docs/images/maison.jpg) | ![The playground: crates of planks, balls, a stone ramp and stars](docs/images/playground.jpg) |
 | ![Sunset over the island: long shadows, warm light, a pink sky](docs/images/coucher.jpg) | ![The island at night: the campfire, the lighthouse lamp, lit windows, stars](docs/images/nuit.jpg) |
+| ![Dolphins leaping off the island at the end of the afternoon, with their splashes](docs/images/dauphins.jpg) | ![Fireworks over the island at night, their flashes lighting the beach](docs/images/feu.jpg) |
 
 A game is a module of the project: `./sillage new mygame` makes one, `./sillage dev mygame` plays it and reloads it each time you save (code, models, images, sounds), keeping the player where it is. The [tutorial](docs/TUTORIAL.md) makes one from scratch.
 
