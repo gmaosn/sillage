@@ -59,6 +59,13 @@ internal object WebGame {
         val game = FrameLoop(args, setup, window, renderer, audio)
         loop = game
         window.mouseCaptured = true                       // taken at the first click
+        var primary = -1
+        jsListenTouches { id, x, y, change ->
+            when (change) { 1 -> game.touches.down(id, x, y); 0 -> game.touches.move(id, x, y); else -> game.touches.up(id) }
+            if (change == 1 && primary < 0) primary = id
+            window.finger(id == primary, x, y, change)
+            if (change < 0 && id == primary) primary = -1
+        }
         var last = Double.NaN
         var failed = false
         jsLoop { now ->

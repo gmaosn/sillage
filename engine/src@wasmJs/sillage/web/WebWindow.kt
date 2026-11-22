@@ -34,6 +34,18 @@ import sillage.platform.KEY_COUNT
 }""")
 private external fun jsListen(key: (Int, Boolean) -> Unit, text: (String) -> Unit, move: (Float, Float, Float, Float) -> Unit, button: (Boolean) -> Unit, wheel: (Float) -> Unit)
 
+/** Fingers on a touch screen: change 1 lands, 0 moves, −1 lifts; places in the canvas's pixels. */
+@JsFun("""(touch) => {
+  const c = S.canvas, each = (e, change) => { const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+    for (const t of e.changedTouches) touch(t.identifier, (t.clientX - r.left) * d, (t.clientY - r.top) * d, change);
+    if (S.audio && S.audio.state !== 'running') S.audio.resume(); e.preventDefault() };
+  c.addEventListener('touchstart', e => each(e, 1), { passive: false });
+  c.addEventListener('touchmove', e => each(e, 0), { passive: false });
+  c.addEventListener('touchend', e => each(e, -1), { passive: false });
+  c.addEventListener('touchcancel', e => each(e, -1), { passive: false });
+}""")
+internal external fun jsListenTouches(touch: (Int, Float, Float, Int) -> Unit)
+
 @JsFun("() => document.pointerLockElement === S.canvas") private external fun jsLocked(): Boolean
 @JsFun("(want) => { S.wantLock = want; if (!want && document.pointerLockElement === S.canvas) document.exitPointerLock() }") private external fun jsWantLock(want: Boolean)
 @JsFun("() => document.hasFocus()") private external fun jsFocused(): Boolean
@@ -75,6 +87,13 @@ internal class WebWindow(initialTitle: String) : GameWindow {
             { b -> held = b; if (b) clicked = true },
             { w -> scroll += w })
         jsFit()
+    }
+
+    /** The first finger is also the pointer, for menus and buttons. */
+    fun finger(first: Boolean, x: Float, y: Float, change: Int) {
+        if (!first) return
+        pointerX = x; pointerY = y
+        if (change > 0) { held = true; clicked = true } else if (change < 0) held = false
     }
 
     override fun poll() { if (jsFit()) resized = true }
