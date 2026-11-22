@@ -164,18 +164,47 @@ internal class ParticleSystem(private val capacity: Int = 4096) {
         age[to] = age[from]; life[to] = life[from]; seed[to] = seed[from]; style[to] = style[from]; style[from] = null
     }
 
-    /** Writes what the renderer draws ([PARTICLE_FLOATS] per particle) into [out]. */
-    fun write(out: FrameExtras, time: Float, night: Float) {
+    private val order = IntArray(capacity)
+    private val depth = FloatArray(capacity)
+
+    /**
+     * The particles from the farthest from [eye] to the nearest, in [order]: smoke and spray are laid over
+     * what is behind them, so two plumes that cross must be drawn back to front (glowing ones add their
+     * light: any order suits them). A shell sort on the squared distances, nothing allocated.
+     */
+    private fun sort(eye: Vec3) {
+        var lit = false
+        for (i in 0 until count) {
+            order[i] = i
+            val dx = px[i] - eye.x; val dy = py[i] - eye.y; val dz = pz[i] - eye.z
+            depth[i] = dx * dx + dy * dy + dz * dz
+            if (!style[i]!!.glow) lit = true
+        }
+        if (!lit) return
+        for (gap in GAPS) {
+            for (i in gap until count) {
+                val v = order[i]; val d = depth[v]
+                var j = i
+                while (j >= gap && depth[order[j - gap]] < d) { order[j] = order[j - gap]; j -= gap }
+                order[j] = v
+            }
+        }
+    }
+
+    /** Writes what the renderer draws ([PARTICLE_FLOATS] per particle) into [out], the farthest from [eye] first. */
+    fun write(out: FrameExtras, time: Float, night: Float, eye: Vec3 = Vec3.ZERO) {
         if (out.particles.size < count * PARTICLE_FLOATS) out.particles = FloatArray(Integer.highestOneBit(count) * 2 * PARTICLE_FLOATS)
         val o = out.particles
-        for (i in 0 until count) {
+        sort(eye)
+        for (n in 0 until count) {
+            val i = order[n]
             val s = style[i]!!
             val t = (age[i] / life[i]).coerceIn(0f, 1f)
             val fade = (t / .08f).coerceAtMost(1f) * (if (t > .6f) 1f - (t - .6f) / .4f else 1f)
             var bright = if (s.glow) s.brightness else 1f
             if (s.twinkle > 0f) bright *= 1f - s.twinkle * (.5f + .5f * sin(time * 9f + seed[i] * 7f)).let { it * it }
             val size = s.size + (s.endSize - s.size) * t
-            val k = i * PARTICLE_FLOATS
+            val k = n * PARTICLE_FLOATS
             o[k] = px[i]; o[k + 1] = py[i]; o[k + 2] = pz[i]; o[k + 3] = if (s.glow) -size else size
             o[k + 4] = (s.color.r + (s.endColor.r - s.color.r) * t) * bright
             o[k + 5] = (s.color.g + (s.endColor.g - s.color.g) * t) * bright
@@ -186,4 +215,6 @@ internal class ParticleSystem(private val capacity: Int = 4096) {
     }
 
     fun clear() { for (i in 0 until count) style[i] = null; count = 0 }
+
+    private companion object { val GAPS = intArrayOf(1750, 701, 301, 132, 57, 23, 10, 4, 1) }
 }

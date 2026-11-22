@@ -80,6 +80,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                               largeurHorsEcran: Int = 1280, hauteurHorsEcran: Int = 800,
                               /** Whether the scenes drawn have cast shadows (the map is made with the renderer). */
                               shadows: Boolean = true) : AutoCloseable {
+    /** Whether this renderer has the shadow maps (made with it; without, the scenes are drawn without cast shadows). */
+    val shadowMaps=shadows
     /** Taille de rendu : celle de la fenêtre (suivie au redimensionnement), sinon celle demandée hors écran. */
     var largeur=largeurHorsEcran
         private set
@@ -131,6 +133,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var shadowFramebuffers=LongArray(0)
     private var shadowLayerViews=LongArray(0)
     private var shadowPipeline=0L
+    private var shadowPipelineCut=0L          // the same with shadow.frag: only for meshes cut out by an image's alpha
     private var sampler=0L                     // compares depths in the shadow map
     private var repeat=0L                      // reads the detail textures: repeating, filtered between levels
     // Detail textures (Texture): one layer each, every level, in one array image; made again when new textures appear.
@@ -743,7 +746,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         bindings.at(VkVertexInputBindingDescription,0).put(VkVertexInputBindingDescription, "binding" to 0, "stride" to 36, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
         bindings.at(VkVertexInputBindingDescription,1).put(VkVertexInputBindingDescription, "binding" to 1, "stride" to 48, "inputRate" to VK_VERTEX_INPUT_RATE_INSTANCE)
         bindings.at(VkVertexInputBindingDescription,2).put(VkVertexInputBindingDescription, "binding" to 2, "stride" to 4*EFFECT_FLOATS, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
-        val locations=if(shadow) intArrayOf(0,3,4,5,6) else intArrayOf(0,1,2,3,4,5,6,7,8)
+        val locations=if(shadow) intArrayOf(0,3,4,5,6,7,8) else intArrayOf(0,1,2,3,4,5,6,7,8)
         val attrs=s.structs(VkVertexInputAttributeDescription,locations.size)
         for((k,loc) in locations.withIndex()) {
             val (binding,format,offset)=when(loc) {
@@ -851,6 +854,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             pipelineLines=make(s,m("lines.vert"),m("lines.frag"),lineInput(s),renderPass,n,layout,true,false,BLEND_KEEP_ALPHA,
                 topology=VK_PRIMITIVE_TOPOLOGY_LINE_LIST,keepAlpha=true)
             shadowPipeline=make(s,m("shadow.vert"),null,sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
+            shadowPipelineCut=make(s,m("shadow.vert"),m("shadow.frag"),sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
             pipelineBright=make(s,m("post.vert"),m("bright.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineDown=make(s,m("post.vert"),m("down.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineUp=make(s,m("post.vert"),m("up.frag"),none,postPass,1,postLayout,false,false,null)
@@ -1355,7 +1359,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                     area(shadowSize,shadowSize)
                     pushSquare=Vec3(squares[4*c],squares[4*c+1],squares[4*c+2]); pushHalf=squares[4*c+3]
                     pushConstants(camera)
-                    for(b in casters[c]) draw(b)
+                    var cut=false
+                    for(b in casters[c]) if(b.mesh.cutOut) cut=true else draw(b)
+                    if(cut) {
+                        dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipelineCut)
+                        for(b in casters[c]) if(b.mesh.cutOut) draw(b)
+                    }
                 }
                 dev.cmdEndRenderPass(command)
             }
@@ -1517,7 +1526,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 frames.clear()
                 if(queries!=0L) dev.destroyQueryPool(queries)
                 for(p in longArrayOf(pipeline,pipelineSky,pipelineOmbre,pipelineWater,pipelineParticles,pipelineLines,pipelineLinesXray,pipelineHud,pipelineBright,
-                        pipelineDown,pipelineUp,pipelineComposite,shadowPipeline)) dev.destroyPipeline(p)
+                        pipelineDown,pipelineUp,pipelineComposite,shadowPipeline,shadowPipelineCut)) dev.destroyPipeline(p)
                 dev.destroyPipelineLayout(layout); dev.destroyPipelineLayout(postLayout)
                 dev.destroyDescriptorPool(descriptorPool); dev.destroyDescriptorSetLayout(setLayout); dev.destroyDescriptorSetLayout(postSetLayout)
                 dev.destroySampler(sampler); dev.destroySampler(linear); dev.destroySampler(repeat)

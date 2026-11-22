@@ -36,6 +36,19 @@ class SceneTest {
         assertEquals(crate.body!!.position, crate.position, "le nœud suit son corps")
     }
 
+    /** La promesse du README et du tutoriel : la caisse par défaut d'un mètre se pousse en marchant dessus. */
+    @Test fun laCaisseParDefautSePousse() {
+        val s = Scene(); s.ground()
+        val crate = s.box(1, at = vec(0, .5, -3)).dynamic()
+        val big = s.box(2, at = vec(6, 1, -3)).dynamic()
+        s.player(at = vec(0, 0, 0)); val giant = s.player(at = vec(6, 0, 0))
+        repeat(240) { s.players.forEach { p -> p.controls = false; p.move(vec(0, 0, -1)) }; s.update(dt) }
+        assertEquals(50f, crate.body!!.mass, .5f)
+        assertTrue(crate.position.z < -5f, "la caisse d'un mètre avance : z = ${crate.position.z}")
+        assertTrue(big.position.z > -3.05f, "celle de deux mètres (400 kg) reste où elle est : z = ${big.position.z}")
+        assertTrue(giant.position.z > -2f)
+    }
+
     @Test fun unModeleSansAnimationTombeSurSaBoiteEnglobante() {
         val s = Scene(); s.ground()
         // La caisse de la démo : son origine est au centre de sa boîte (0,7 m de côté).

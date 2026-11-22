@@ -168,11 +168,12 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
      * Makes it a moving rigid body: it falls, rolls, bounces, can be pushed. The shape is the primitive's
      * (box, sphere, capsule, cylinder as a box) or, for a model, its bounding box; give [shape] (in metres,
      * not scaled with the node) to choose.
-     * [mass] defaults from the volume and [density] (kg/m³). [impact] is the sound it makes when it hits
+     * [mass] defaults from the volume and [density] (kg/m³; the default is an empty wooden crate's: a 1 m box
+     * weighs 50 kg and a player pushes it, see [sillage.physics.Character.pushForce]). [impact] is the sound it makes when it hits
      * something: [Impact.AUTO] picks a wooden knock for boxes and a rubber bounce for balls. [damping]
      * slows it in the air (a light beach ball), [rollingResistance] stops a rolling ball (null: engine default).
      */
-    fun dynamic(mass: Number? = null, density: Number = 400, bounce: Number = 0, friction: Number = .6,
+    fun dynamic(mass: Number? = null, density: Number = 50, bounce: Number = 0, friction: Number = .6,
                 shape: Shape? = null, surface: String = "wood", impact: Impact = Impact.AUTO,
                 damping: Number = 0, angularDamping: Number = 0, rollingResistance: Number? = null): Node {
         scene.makeDynamic(this, shape, mass?.toFloat(), density.toFloat(), bounce.toFloat(), friction.toFloat(), surface, impact,

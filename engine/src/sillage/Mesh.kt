@@ -82,6 +82,12 @@ class Mesh(val vertices: FloatArray) {
 
     /** A copy of its own (vertices copied, materials and effects shared) whose vertices change every frame. */
     internal fun dynamicCopy(): Mesh = Mesh(vertices.copyOf()).also { it.materials = materials; it.effects = effects; it.dynamic = true }
+    /** Part of it is cut out by its image's alpha: its shadow needs the image too (other shadows are depth alone, with no fragment shader). */
+    internal val cutOut: Boolean by lazy {
+        val e = effects; var cut = false
+        if (e != null) { var o = 0; while (o < e.size && !cut) { cut = e[o + 4] > .5f && e[o + 7] > 1.5f && e[o + 10] > 0f; o += EFFECT_FLOATS } }
+        cut
+    }
     /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
     internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
 

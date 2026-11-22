@@ -59,6 +59,30 @@ fun Qa.rendu() {
         }
     }
 
+    // Une plaque à 1,5 m du sol, moitié peinte, moitié découpée (alpha 0) : son ombre n'est que celle de la moitié
+    // peinte. La scène commence sans ombres portées et les allume en route (les cartes sont faites à ce moment),
+    // puis une autre les éteint en route.
+    controle("ombres : découpe alpha respectée, allumées et éteintes en cours de jeu", "sous la moitié peinte sombre, sous la découpe et sans ombres clair") {
+        val plaque = dossier.resolve("plaque.glb"); Files.createDirectories(dossier); Files.write(plaque, plaqueDecoupee())
+        fun centre(nom: String, x: Float, ombres: Boolean): Int {
+            val img = dossier.resolve("decoupe-$nom.png")
+            game("QA", arrayOf("--headless", "--mute", "--frames", "40", "--size", "160x120", "--capture", img.toString(),
+                "--look-at", "$x,1.2,2.5,$x,0,-0.75")) {     // de côté, sous la plaque
+                ground(color = sillage.Color(.8f, .8f, .8f)); autoTextures = false
+                lighting.shadows = !ombres; lighting.outlines = 0f; lighting.vignette = 0f
+                model(plaque.toString())
+                after(.2) { lighting.shadows = ombres }
+            }
+            val c = ImageIO.read(img.toFile()).getRGB(80, 60)
+            return ((c shr 16 and 255) + (c shr 8 and 255) + (c and 255)) / 3
+        }
+        // Le soleil par défaut vient de (−0,45 ; 0,8 ; 0,4) : l'ombre d'un point à 1,5 m tombe à (+0,84 ; −0,75).
+        val peinte = centre("peinte", 1.34f, true); val decoupe = centre("decoupe", .34f, true)
+        val loin = centre("loin", -4f, true); val eteinte = centre("eteinte", 1.34f, false)
+        "peinte $peinte, découpe $decoupe, plein soleil $loin, ombres éteintes $eteinte (0–255)" to
+            (peinte < loin - 25 && abs(decoupe - loin) <= 4 && abs(eteinte - loin) <= 4)
+    }
+
     controle("rendu reproductible (même vue deux fois)", "identique au pixel") {
         val a = dossier.resolve("repro-a.png"); val b = dossier.resolve("repro-b.png")
         rendreIle(a, 45, vues["maison"]); rendreIle(b, 45, vues["maison"])
@@ -165,4 +189,27 @@ private fun orientation(tris: List<Triple<Vec3, Vec3, Vec3>>, sol: Boolean): Pai
     val centre = tris.fold(Vec3.ZERO) { s, t -> s + t.first + t.second + t.third } / (3f * tris.size)
     val dedans = tris.count { (n(it) dot ((it.first + it.second + it.third) / 3f - centre)) <= 0f }
     return "ouverte, $dedans faces vers le centre" to (dedans == 0)
+}
+
+
+/** Un GLB d'une plaque horizontale de 2 m à 1,5 m du sol : une image dont la moitié gauche (x < 0) est découpée (alpha 0, MASK). */
+private fun plaqueDecoupee(): ByteArray {
+    val img = BufferedImage(8, 8, BufferedImage.TYPE_INT_ARGB)
+    for (y in 0 until 8) for (x in 0 until 8) img.setRGB(x, y, if (x < 4) 0x00C04020 else 0xFFC04020.toInt())
+    val png = java.io.ByteArrayOutputStream().also { ImageIO.write(img, "png", it) }.toByteArray()
+    val v = floatArrayOf(-1f, 1.5f, -1f, -1f, 1.5f, 1f, 1f, 1.5f, 1f, -1f, 1.5f, -1f, 1f, 1.5f, 1f, 1f, 1.5f, -1f)
+    val uv = floatArrayOf(0f, 0f, 0f, 1f, 1f, 1f, 0f, 0f, 1f, 1f, 1f, 0f)
+    val bin = java.nio.ByteBuffer.allocate(72 + 48 + png.size + (4 - png.size % 4) % 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    v.forEach { bin.putFloat(it) }; uv.forEach { bin.putFloat(it) }; bin.put(png)
+    val json = """{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"plaque","mesh":0}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"material":0}]}],
+        "materials":[{"name":"plaque","pbrMetallicRoughness":{"baseColorTexture":{"index":0}},"alphaMode":"MASK","alphaCutoff":0.5}],
+        "textures":[{"source":0}],"images":[{"bufferView":2,"mimeType":"image/png"}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":6,"type":"VEC3","min":[-1,1.5,-1],"max":[1,1.5,1]},{"bufferView":1,"componentType":5126,"count":6,"type":"VEC2"}],
+        "bufferViews":[{"buffer":0,"byteLength":72},{"buffer":0,"byteOffset":72,"byteLength":48},{"buffer":0,"byteOffset":120,"byteLength":${png.size}}],
+        "buffers":[{"byteLength":${bin.capacity()}}]}""".toByteArray().let { it + ByteArray((4 - it.size % 4) % 4) { ' '.code.toByte() } }
+    val out = java.nio.ByteBuffer.allocate(12 + 8 + json.size + 8 + bin.capacity()).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    out.putInt(0x46546c67).putInt(2).putInt(out.capacity()).putInt(json.size).putInt(0x4e4f534a).put(json)
+    out.putInt(bin.capacity()).putInt(0x004e4942).put(bin.array())
+    return out.array()
 }

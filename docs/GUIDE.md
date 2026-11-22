@@ -159,7 +159,7 @@ A node only takes part in the physics when you say how:
 
 | Call | The node becomes |
 |---|---|
-| `dynamic(mass, density, bounce, friction, …)` | a rigid body: it falls, rolls, bounces, is pushed by the player |
+| `dynamic(mass, density, bounce, friction, …)` | a rigid body: it falls, rolls, bounces, is pushed by the player (light by default: 50 kg/m³, an empty crate; the player pushes up to about 65 kg on plain ground) |
 | `solid()` | still and solid: a wall, a floor, a building |
 | `kinematic()` | moved by the game (its `position` is followed smoothly) and pushes what it meets: lifts, doors |
 | `collider(shape, offset, part)` | gets an extra invisible collision shape |
@@ -461,7 +461,7 @@ The sun rises at 6 on the side of `sunrise`, stands highest at noon (`sunTilt` d
 
 Three settings finish the picture: `glow` (0.8), the halo around what is brighter than white (the sun, its glitter on water, lamps, embers, sparks); `outlines` (0.85), ink lines along silhouettes; `vignette` (0.22), darker corners. `saturation` (1.06) makes the colours richer or plainer.
 
-Everything casts a shadow from the sun (or the moon) on what is below it, within `lighting.shadowRange` metres (24) of what the camera looks at; the shadows fade out beyond. `lighting.shadows = false` turns them off (for the next scene). A node that should not cast one (a cloud high in the sky, a decal) sets `castsShadow = false`; it still receives the others. With cast shadows, players also keep a light round shadow straight under them, which shows where a jump will land; without them, every moving thing gets a round shadow (`node.shadow()` adds one).
+Everything casts a shadow from the sun (or the moon) on what is below it, within `lighting.shadowRange` metres (24) of what the camera looks at; the shadows fade out beyond. `lighting.shadows = false` turns them off, `true` back on, at any time (a scene that began without them makes the shadow maps the first time they are turned on). A node that should not cast one (a cloud high in the sky, a decal) sets `castsShadow = false`; it still receives the others. With cast shadows, players also keep a light round shadow straight under them, which shows where a jump will land; without them, every moving thing gets a round shadow (`node.shadow()` adds one).
 
 Water finds its shores by itself: wherever solid ground rises gently out of it, `water()` lays a lagoon of the `shallows` colour reaching `reach` metres out, a lacy line of foam that swells against the beach and a line of surf rolling in. Raised things standing in the water, such as a pier's deck, leave the water under them open. The sky is mirrored at grazing angles, and the sun, the moon and the lamps glitter on the small waves. The shores are looked for once the scene is built, so the order of the calls does not matter.
 

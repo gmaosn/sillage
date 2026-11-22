@@ -192,6 +192,11 @@ internal class Runtime(private val title: String, private val args: Array<String
                 }
                 if (headless) mixOffline(dt)
                 val free = scene.debug.freeCamera
+                // Cast shadows turned on in a scene that began without them: the maps are made now, once.
+                if (scene.lighting.shadows && !r.shadowMaps) {
+                    r.oublier(); r.close()
+                    r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, true); renderer = r; r.ouvrir(); r.cull = "--no-cull" !in args
+                }
                 val view = scene.camera.view(dt).let { v -> lookAt?.let { Mat4.lookAt(Vec3(it[0], it[1], it[2]), Vec3(it[3], it[4], it[5])) } ?: if (free) scene.debug.freeView() else v }
                 val eye = lookAt?.let { Vec3(it[0], it[1], it[2]) } ?: if (free) scene.debug.freePosition else scene.camera.position
                 val looking = lookAt?.let { (Vec3(it[3], it[4], it[5]) - eye).normalized() } ?: if (free) scene.debug.freeForward() else scene.camera.forward
@@ -215,7 +220,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                     fresh.input.adoptPads(scene.input)
                     fresh.audio = audio
                     r.oublier()
-                    if (fresh.lighting.shadows != scene.lighting.shadows) {
+                    if (fresh.lighting.shadows && !r.shadowMaps) {
                         r.close(); r = VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, fresh.lighting.shadows); renderer = r; r.ouvrir(); r.cull = "--no-cull" !in args
                     }
                     scene = fresh

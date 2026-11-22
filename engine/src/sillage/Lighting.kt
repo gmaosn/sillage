@@ -33,7 +33,7 @@ class Lighting {
     /**
      * Things cast shadows on each other: drawn from the sun (or the moon) into a map that covers a square
      * of 2 × [shadowRange] metres around what the camera looks at, fading out at its border. Each node can
-     * opt out with [Node.castsShadow]. Turning shadows on or off takes effect in the next scene.
+     * opt out with [Node.castsShadow]. It can be turned on and off while the game runs.
      */
     var shadows: Boolean = true
     var shadowRange: Float = 24f

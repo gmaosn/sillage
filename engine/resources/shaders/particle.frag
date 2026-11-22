@@ -9,8 +9,8 @@ layout(location=3) in float glows;
 layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 layout(location=0) out vec4 outColor;
 #include "frame.glsl"
-vec3 sun;
-layout(set = 0, binding = 0) uniform sampler2DShadow shadowMap;
+#include "light.glsl"
+layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadowMap;
 #include "shading.glsl"
 void main() {
     float r = length(corner);

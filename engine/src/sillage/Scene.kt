@@ -802,7 +802,12 @@ class Scene {
             p.fxGrounded = p.onGround
             splashes(p, p.position.y + .3f, p.velocity.y)
         }
-        for (k in 0 until linked.size) { val n = linked[k]; splashes(n, n.position.y, n.body?.velocity?.y ?: 0f) }
+        // A body splashes when its underside reaches the water (a light crate floats high: its centre never goes under).
+        for (k in 0 until linked.size) {
+            val n = linked[k]; val shape = n.body?.shape
+            val below = if (shape == null) 0f else if (shape is sillage.physics.Sphere) shape.radius else shape.boundingRadius * .58f
+            splashes(n, n.position.y - below, n.body?.velocity?.y ?: 0f)
+        }
     }
 
     private fun splashes(n: Node, y: Float, vy: Float) {
@@ -845,7 +850,7 @@ class Scene {
             a[o + 4] = l.color.r * power; a[o + 5] = l.color.g * power; a[o + 6] = l.color.b * power; a[o + 7] = 0f
         }
         extras.lightCount = n
-        particles.write(extras, time, night)
+        particles.write(extras, time, night, eye)
         debug.fill(extras, eye)
         return extras
     }

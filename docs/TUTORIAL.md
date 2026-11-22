@@ -65,7 +65,7 @@ box(2, 1, 2, Color.STONE, at = vec(-6, .5, -3)).solid()
 box(2, 2, 2, Color.STONE, at = vec(-6, 1, -5)).solid()
 ```
 
-A shape is just drawn until you say how it takes part in the physics. `dynamic()` makes a rigid body: the crates fall, slide and tip over, and the player pushes them (a heavy one barely moves). The ball bounces (`bounce`) and slows down in the air like a beach ball (`damping`). `solid()` makes still obstacles: the two stone blocks form a staircase whose steps are a metre high, too high to walk up (the player climbs 35 cm at most), so jump. Everything casts its shadow from the sun on what is below: nothing to ask for.
+A shape is just drawn until you say how it takes part in the physics. `dynamic()` makes a rigid body: the crates fall, slide and tip over, and the player pushes them (by default a body is as light as an empty wooden crate, 50 kg for a 1 m box; give `mass` or `density` and a heavy one barely moves). The ball bounces (`bounce`) and slows down in the air like a beach ball (`damping`). `solid()` makes still obstacles: the two stone blocks form a staircase whose steps are a metre high, too high to walk up (the player climbs 35 cm at most), so jump. Everything casts its shadow from the sun on what is below: nothing to ask for.
 
 Builders take any numbers (`1`, `.5`, a `Float` variable) and are centred on `at`, which is why the crates sit at half their height.
 

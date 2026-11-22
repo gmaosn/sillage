@@ -118,7 +118,7 @@ Something in the scene: a mesh, or an animated model drawn as parts.
 | `waterVolume` | for a `water()` node: the physics' `WaterVolume` (level, flow, drag), null without buoyancy |
 | `onGround(x, z, lift = 0)` | sets it down on the ground at (x, z), its lowest point (as turned and scaled) on it; its body goes with it |
 | `moveTo(target, over, ease = IN_OUT, after = 0)`, `scaleTo(factor, over, ease, after)` | `Tween`s: a kinematic body follows smoothly; the scale changes the look only |
-| `dynamic(mass, density = 400, bounce = 0, friction = .6, shape, surface = "wood", impact = AUTO, damping = 0, angularDamping = 0, rollingResistance)` | a moving rigid body. Shape: the primitive's, a model's bounding box, or `shape` (in metres, not scaled) |
+| `dynamic(mass, density = 50, bounce = 0, friction = .6, shape, surface = "wood", impact = AUTO, damping = 0, angularDamping = 0, rollingResistance)` | a moving rigid body. Shape: the primitive's, a model's bounding box, or `shape` (in metres, not scaled). The default density is an empty wooden crate's: a 1 m box weighs 50 kg and the player pushes it; give `mass` or `density` for stone, a full barrel, a beam |
 | `solid(vararg materials, blocksCamera = true, surface)` | still and solid; a model collides with its triangles (only those of `materials` if given), each with the surface of its material name |
 | `kinematic()` | moved by the game: set `position`/`rotation`, the body follows smoothly and pushes what it meets |
 | `collider(shape, offset, part, surface = "wood", blocksCamera = true)` | an extra collision shape; with `part`, it follows that part of an animated model |
@@ -323,7 +323,7 @@ TrueType (`glyf`, composite glyphs), OpenType CFF (name- or CID-keyed) and colle
 
 ### `Lighting`
 
-Light and air of a scene. Every value can change at any time; turning `shadows` on or off takes effect in the next scene.
+Light and air of a scene. Every value can change at any time, `shadows` included.
 
 | Property | |
 |---|---|
