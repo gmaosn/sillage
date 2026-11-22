@@ -14,7 +14,7 @@ import kotlin.test.*
  * une TrueType à glyphes composés et crénage GPOS (Noto Sans), une autre avec aussi une table `kern`
  * (DejaVu Sans), une à empattements (Liberation Serif), une collection CFF à identifiants CID (Noto Sans
  * CJK, deux faces) et une OpenType CFF simple (Powerline). Les références viennent de
- * tools/freetype_reference.py (engine/test/fixtures/fonts) ; une police absente, ou d'une autre version que
+ * tools/freetype_reference.py (engine/test@jvm/fixtures/fonts) ; une police absente, ou d'une autre version que
  * celle de la référence, est passée.
  */
 class FontTest {
@@ -24,8 +24,8 @@ class FontTest {
 
     private fun fixtures(): Path {
         var dir = Path.of("").toAbsolutePath()
-        while (!Files.exists(dir.resolve("engine/test/fixtures/fonts"))) dir = dir.parent ?: error("fixtures introuvables")
-        return dir.resolve("engine/test/fixtures/fonts")
+        while (!Files.exists(dir.resolve("engine/test@jvm/fixtures/fonts"))) dir = dir.parent ?: error("fixtures introuvables")
+        return dir.resolve("engine/test@jvm/fixtures/fonts")
     }
 
     private fun reference(name: String): Reference? {

@@ -472,7 +472,7 @@ internal class FontFace private constructor(val bytes: ByteArray, val index: Int
 
     companion object {
         /** Reads face [index] of the font file at [path] (a .ttf, .otf, or a .ttc collection). */
-        fun load(path: String, index: Int = 0): FontFace = FontFace(Storage.file(path) ?: error("Font not found: $path"), index)
+        fun load(path: String, index: Int = 0): FontFace = FontFace(Assets.bytes(path, "Font"), index)
         fun of(bytes: ByteArray, index: Int = 0): FontFace = FontFace(bytes, index)
 
         /** Family and style of a face: the typographic names (16, 17) when present, else 1 and 2, in English when possible. */

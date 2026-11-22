@@ -65,7 +65,7 @@ internal object TextLayout {
     fun measure(text: String, font: Font, size: Float): Float {
         val t = scratch.get(); layout(text, font, size, 0f, 0f, t); return t.width
     }
-    private val scratch = ThreadLocal.withInitial { LaidText() }
+    private val scratch = sillage.PerThread { LaidText() }
 
     /** The font that draws [c]: [font], else its first fallback that has it, else null (a box). */
     fun fontFor(font: Font, c: Int): Font? {
@@ -78,7 +78,7 @@ internal object TextLayout {
     // Per character of a paragraph: its font, code, advance, and whether a line may break after it.
     private class Chars { var n = 0; var fonts = arrayOfNulls<Font>(64); var codes = IntArray(64); var adv = FloatArray(64); var space = BooleanArray(64); var units = IntArray(64)
         fun grow() { val k = n * 2; fonts = fonts.copyOf(k); codes = codes.copyOf(k); adv = adv.copyOf(k); space = space.copyOf(k); units = units.copyOf(k) } }
-    private val chars = ThreadLocal.withInitial { Chars() }
+    private val chars = sillage.PerThread { Chars() }
 
     /**
      * Lays out [text] at [size] in [font]: lines broken at '\n' and, when [wrap] > 0, between words to stay
@@ -106,7 +106,9 @@ internal object TextLayout {
             var k = i
             var prev: Font? = null; var prevGid = -1
             while (k < end) {
-                val cp = text.codePointAt(k); val len = Character.charCount(cp)
+                val hi = text[k]
+                val cp = if (hi.isHighSurrogate() && k + 1 < text.length && text[k + 1].isLowSurrogate()) 0x10000 + ((hi.code - 0xD800) shl 10) + (text[k + 1].code - 0xDC00) else hi.code
+                val len = if (cp >= 0x10000) 2 else 1
                 if (c.n == c.codes.size) c.grow()
                 val f = fontFor(font, cp)
                 val code: Int; val a: Float
@@ -194,9 +196,9 @@ internal class GlyphAtlas(initial: Int = 512, private val limit: Int = 4096) {
     /** Glyphs rasterised since the start (for checks). */
     var rasterised = 0; private set
 
-    class Entry(@JvmField val x: Int, @JvmField val y: Int, @JvmField val w: Int, @JvmField val h: Int,
+    class Entry(val x: Int, val y: Int, val w: Int, val h: Int,
                 /** Offset of the bitmap's top left from the pen (pixels, y down). */
-                @JvmField val left: Int, @JvmField val top: Int)
+                val left: Int, val top: Int)
 
     private val entries = HashMap<Long, Entry>()
     private var shelfX = PAD_EDGE; private var shelfY = PAD_EDGE; private var shelfH = 0
@@ -248,7 +250,7 @@ internal class GlyphAtlas(initial: Int = 512, private val limit: Int = 4096) {
         if (width >= limit) return false
         val nw = width * 2; val nh = height * 2
         val np = ByteArray(nw * nh)
-        if (pixels.isNotEmpty()) for (row in 0 until height) System.arraycopy(pixels, row * width, np, row * nw, width)
+        if (pixels.isNotEmpty()) for (row in 0 until height) pixels.copyInto(np, row * nw, row * width, row * width + width)
         pixels = np; width = nw; height = nh
         dirtyTop = 0; dirtyBottom = height
         version++
@@ -257,7 +259,7 @@ internal class GlyphAtlas(initial: Int = 512, private val limit: Int = 4096) {
 
     /** Empties the atlas: what the HUD showed must be placed again. */
     fun clear() {
-        entries.clear(); java.util.Arrays.fill(pixels, 0)
+        entries.clear(); pixels.fill(0)
         shelfX = PAD_EDGE; shelfY = PAD_EDGE; shelfH = 0
         dirtyTop = 0; dirtyBottom = height
         version++; generation++

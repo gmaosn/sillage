@@ -4,7 +4,7 @@
 # décodage de libvorbisfile (tools/vorbis_reference.py), en flottants 32 bits.
 # Usage : sh tools/vorbis_fixtures.sh   (depuis la racine du projet ; ffmpeg avec libvorbis)
 set -e
-out=engine/test/fixtures/vorbis
+out=core/test@jvm/fixtures/vorbis
 mkdir -p "$out"
 f() { ffmpeg -hide_banner -loglevel error -y "$@"; }
 # Stéréo : à gauche un glissando et des clics, à droite un son pur, du bruit doux puis un silence.

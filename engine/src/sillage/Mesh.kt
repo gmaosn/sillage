@@ -1,5 +1,7 @@
 package sillage
 
+import kotlin.concurrent.Volatile
+
 import sillage.math.Mat4
 import sillage.math.Vec3
 import kotlin.math.*
@@ -120,7 +122,7 @@ class Mesh(val vertices: FloatArray) {
     fun smooth(angle: Float = 55f): Mesh {
         val n = vertices.size / 27
         if (n == 0) return this
-        val limit = cos(Math.toRadians(angle.toDouble())).toFloat()
+        val limit = cos(sillage.math.toRadians(angle.toDouble())).toFloat()
         val fn = FloatArray(3 * n); val area = FloatArray(n)
         for (t in 0 until n) {
             val o = 27 * t
@@ -320,7 +322,7 @@ class MeshBuilder {
     /** Adds a whole mesh. */
     fun add(mesh: Mesh): MeshBuilder {
         if (size + mesh.vertices.size > data.size) data = data.copyOf(max(data.size * 2, size + mesh.vertices.size))
-        System.arraycopy(mesh.vertices, 0, data, size, mesh.vertices.size); size += mesh.vertices.size
+        mesh.vertices.copyInto(data, size, 0, 0 + mesh.vertices.size); size += mesh.vertices.size
         return this
     }
     fun build() = Mesh(data.copyOf(size))

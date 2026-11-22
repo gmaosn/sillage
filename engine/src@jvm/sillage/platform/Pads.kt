@@ -98,7 +98,7 @@ internal abstract class HardwarePad(protected val owner: SystemPads, val node: S
 
     private fun loop(x: DeviceIo) {
         while (running) {
-            val timeout = if (rumbling) ((current.rumbleUntil - System.nanoTime()) / 1_000_000L + 1).coerceIn(1L, 1000L).toInt() else 1000
+            val timeout = if (rumbling) ((current.rumbleUntil - sillage.math.nanoTime()) / 1_000_000L + 1).coerceIn(1L, 1000L).toInt() else 1000
             val r = x.waitReadable(fd, wakeFd, timeout)
             if (r < 0) { endedBecause = "poll: " + Posix.describe(-r); lost = true; return }
             if (r and WOKEN != 0) x.drain(wakeFd)
@@ -113,7 +113,7 @@ internal abstract class HardwarePad(protected val owner: SystemPads, val node: S
     private fun flush(x: DeviceIo) {
         var send = false
         synchronized(lock) { if (dirty) { current.copyFrom(pending); dirty = false; send = true } }
-        val on = current.touched and PadOutput.RUMBLE != 0 && System.nanoTime() < current.rumbleUntil && (current.rumbleLow > 0f || current.rumbleHigh > 0f)
+        val on = current.touched and PadOutput.RUMBLE != 0 && sillage.math.nanoTime() < current.rumbleUntil && (current.rumbleLow > 0f || current.rumbleHigh > 0f)
         if (rumbling && !on) send = true
         if (send) { rumbling = on; sendOutput(x, current, on) }
     }

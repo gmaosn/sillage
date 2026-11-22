@@ -1,17 +1,26 @@
-product: jvm/lib
+# The engine: scenes, nodes, players, cameras, the interface, models, textures — the same code on every
+# platform — and under it one backend per platform (windows, drawing, sound, pads).
+product:
+  type: kmp/lib
+  platforms: [jvm, wasmJs]
 
 settings:
   kotlin:
     freeCompilerArgs:
+      - -Xexpect-actual-classes
+  jvm:
+    jdk:
+      version: 25
+
+settings@jvm:
+  kotlin:
+    freeCompilerArgs:
+      - -Xexpect-actual-classes
       - -Xadd-modules=jdk.incubator.vector
-      # No null checks on values from Java calls: on vector results they made every vector escape and be
-      # allocated (the solver on SIMD lanes ran 3.5 times slower than the scalar one).
       - -Xno-call-assertions
       - -Xno-receiver-assertions
       - -Xno-param-assertions
   jvm:
-    jdk:
-      version: 25
     test:
       freeJvmArgs:
         - --enable-native-access=ALL-UNNAMED

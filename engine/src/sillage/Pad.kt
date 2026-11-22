@@ -55,7 +55,7 @@ class Thumbstick internal constructor() {
         x = rx / r * a; y = ry / r * a; amount = a
     }
 
-    override fun toString() = "(%+.2f, %+.2f)".format(x, y)
+    override fun toString() = "(%+.2f, %+.2f)".fmt(x, y)
 }
 
 /** A finger on a DualSense's touchpad: [x] from the left edge, [y] from the top, both 0..1. */
@@ -109,9 +109,9 @@ class TriggerEffect private constructor(val kind: Kind, val start: Float, val en
 
     override fun toString() = when (kind) {
         Kind.OFF -> "off"
-        Kind.RESISTANCE -> "resistance from %.0f %% (force %.0f %%)".format(start * 100, force * 100)
-        Kind.WEAPON -> "weapon %.0f–%.0f %% (force %.0f %%)".format(start * 100, end * 100, force * 100)
-        Kind.VIBRATION -> "vibration from %.0f %% (%.0f %%, %.0f Hz)".format(start * 100, force * 100, frequency)
+        Kind.RESISTANCE -> "resistance from %.0f %% (force %.0f %%)".fmt(start * 100, force * 100)
+        Kind.WEAPON -> "weapon %.0f–%.0f %% (force %.0f %%)".fmt(start * 100, end * 100, force * 100)
+        Kind.VIBRATION -> "vibration from %.0f %% (%.0f %%, %.0f Hz)".fmt(start * 100, force * 100, frequency)
     }
 
     companion object {
@@ -229,7 +229,7 @@ class Pad internal constructor(slot: Int, internal var device: PadDevice) {
     fun rumble(low: Number, high: Number = low, seconds: Number = .25) {
         val s = seconds.toFloat().coerceAtLeast(0f)
         out.rumbleLow = low.toFloat().coerceIn(0f, 1f); out.rumbleHigh = high.toFloat().coerceIn(0f, 1f)
-        out.rumbleSeconds = s; out.rumbleUntil = System.nanoTime() + (s * 1e9).toLong(); out.rumbleCount++
+        out.rumbleSeconds = s; out.rumbleUntil = sillage.math.nanoTime() + (s * 1e9).toLong(); out.rumbleCount++
         out.touched = out.touched or PadOutput.RUMBLE
         send()
     }

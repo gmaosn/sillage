@@ -3,7 +3,6 @@ package sillage
 import sillage.math.Vec3
 import sillage.platform.PadOutput
 import sillage.platform.PadState
-import sillage.platform.SystemPads
 
 /**
  * A controller as a [PadSource] provides it: a real one found by the system, or a [VirtualPad]. Games
@@ -42,7 +41,7 @@ interface PadSource : AutoCloseable {
          * (everything, over USB or Bluetooth), other gamepads through evdev. A DualSense whose hidraw node
          * the user may not open is read through evdev, and a message says once what is missing.
          */
-        fun system(): PadSource = SystemPads()
+        fun system(): PadSource = platformPads()
     }
 }
 
@@ -53,7 +52,7 @@ interface PadSource : AutoCloseable {
  * Use it from the game's thread (in `onUpdate`, or between [Scene.step] calls).
  */
 class VirtualPad(name: String = "Virtual pad", kind: PadKind = PadKind.VIRTUAL, id: String? = null) : PadDevice() {
-    override val deviceId: String = id ?: "virtual:" + System.identityHashCode(this)
+    override val deviceId: String = id ?: "virtual:" + virtualIds++
     override val deviceName: String = name
     override val deviceKind: PadKind = kind
     override val deviceConnection: PadConnection get() = PadConnection.OTHER
@@ -124,3 +123,5 @@ class VirtualPad(name: String = "Virtual pad", kind: PadKind = PadKind.VIRTUAL, 
     val muteLed: Boolean get() = output.muteLed
     fun triggerEffect(trigger: Int): TriggerEffect = if (trigger == Pad.L2) output.l2 else output.r2
 }
+
+private var virtualIds = 1

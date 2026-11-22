@@ -98,7 +98,7 @@ class Lighting {
         val a = (t - 6f) / 12f * PI.toFloat()
         val r = Vec3(sunrise.x, 0f, sunrise.z).normalized()
         val side = Vec3(-r.z, 0f, r.x)
-        val tilt = Math.toRadians(sunTilt.toDouble()).toFloat()
+        val tilt = sillage.math.toRadians(sunTilt.toDouble()).toFloat()
         val noon = Vec3.Y * cos(tilt) + side * sin(tilt)
         return (r * cos(a) + noon * sin(a)).normalized()
     }

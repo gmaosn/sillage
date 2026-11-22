@@ -38,11 +38,11 @@ class Camera internal constructor(private val scene: Scene) {
     var eyeHeight: Float? = null
     /** Turn of the view about the vertical, in degrees (0 looks towards −Z), shared by both modes. */
     var yaw: Float
-        get() = Math.toDegrees(azimuth.toDouble()).toFloat()
+        get() = sillage.math.toDegrees(azimuth.toDouble()).toFloat()
         set(v) { azimuth = v * PI.toFloat() / 180f }
     /** Third person: height of the camera above the target, as an angle in degrees. */
     var elevation: Float
-        get() = Math.toDegrees(elev.toDouble()).toFloat()
+        get() = sillage.math.toDegrees(elev.toDouble()).toFloat()
         set(v) { elev = (v * PI.toFloat() / 180f).coerceIn(.08f, 1.25f) }
     /** First person: looking up (positive) or down, in degrees. */
     var pitch = 0f

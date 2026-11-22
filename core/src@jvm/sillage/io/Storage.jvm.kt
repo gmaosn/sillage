@@ -24,7 +24,7 @@ internal actual fun platformWrite(path: String, bytes: ByteArray) {
 internal actual fun platformList(dir: String): List<String> {
     val d = Path.of(dir)
     if (!Files.isDirectory(d)) return emptyList()
-    return try { Files.walk(d, 6).use { s -> s.filter { Files.isRegularFile(it) }.map { it.toString() }.toList() } } catch (e: Exception) { emptyList() }
+    return try { Files.walk(d).use { s -> s.filter { Files.isRegularFile(it) }.map { it.toRealPath().toString() }.toList() } } catch (e: Exception) { emptyList() }
 }
 
 internal actual fun platformResource(path: String): ByteArray? = Storage::class.java.getResourceAsStream("/$path")?.use { it.readAllBytes() }

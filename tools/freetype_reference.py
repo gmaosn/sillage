@@ -5,7 +5,7 @@ crénage de la table « kern » ; HarfBuzz (libharfbuzz, par ctypes) donne le cr
 paires de lettres. Rien de tout cela ne sert au moteur : seulement aux essais (engine/test/sillage/ui).
 
 Usage : python3 tools/freetype_reference.py   (depuis la racine du projet)
-Écrit engine/test/fixtures/fonts/<nom>.txt.gz ; une police absente est passée (l'essai la passera aussi).
+Écrit engine/test@jvm/fixtures/fonts/<nom>.txt.gz ; une police absente est passée (l'essai la passera aussi).
 """
 import ctypes, gzip, os, struct, sys
 
@@ -101,7 +101,7 @@ def gpos_kerning(path, index, pairs, gids):
 
 adv_units = {}
 lib = ctypes.c_void_p(); assert ft.FT_Init_FreeType(ctypes.byref(lib)) == 0
-os.makedirs('engine/test/fixtures/fonts', exist_ok=True)
+os.makedirs('engine/test@jvm/fixtures/fonts', exist_ok=True)
 for path, index, name, chars, sizes, pairs in FONTS:
     if not os.path.exists(path): print('absente :', path); continue
     face = ctypes.POINTER(FT_FaceRec)()
@@ -139,6 +139,6 @@ for path, index, name, chars, sizes, pairs in FONTS:
                 rows += bytes(b.buffer[y * b.pitch + x] for x in range(b.width))
             lines.append('glyph %d %d %d %d %d %d %s' % (px, g, s.bitmap_left, s.bitmap_top, b.width, b.rows, rows.hex()))
     ft.FT_Done_Face(face)
-    out = 'engine/test/fixtures/fonts/%s.txt.gz' % name
+    out = 'engine/test@jvm/fixtures/fonts/%s.txt.gz' % name
     with gzip.open(out, 'wt', encoding='utf-8') as o: o.write('\n'.join(lines) + '\n')
     print('%-55s face %d → %s (%d lignes)' % (path, index, out, len(lines)))

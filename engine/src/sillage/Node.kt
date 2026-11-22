@@ -103,7 +103,7 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
     /** Rotation about the vertical axis, in degrees (0 faces −Z, 90 faces −X). */
     var yaw: Float
-        get() { val f = rotation.rotate(Vec3(0f, 0f, -1f)); return Math.toDegrees(atan2(-f.x, -f.z).toDouble()).toFloat() }
+        get() { val f = rotation.rotate(Vec3(0f, 0f, -1f)); return sillage.math.toDegrees(atan2(-f.x, -f.z).toDouble()).toFloat() }
         set(v) { rotation = Quat.rotationY(v * PI.toFloat() / 180f) }
 
     /** Its placement as a matrix: translation × rotation × scale. */

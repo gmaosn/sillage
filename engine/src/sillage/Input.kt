@@ -217,8 +217,7 @@ class Input internal constructor() {
 
     companion object {
         private val KEY_NAMES: Map<Int, String> by lazy {
-            Key::class.java.declaredFields.filter { it.type == Int::class.javaPrimitiveType && java.lang.reflect.Modifier.isStatic(it.modifiers) }
-                .associate { it.getInt(null) to it.name }
+            mapOf(1 to "ESCAPE", 2 to "DIGIT_1", 3 to "DIGIT_2", 4 to "DIGIT_3", 5 to "DIGIT_4", 6 to "DIGIT_5", 7 to "DIGIT_6", 8 to "DIGIT_7", 9 to "DIGIT_8", 10 to "DIGIT_9", 11 to "DIGIT_0", 12 to "MINUS", 13 to "EQUAL", 14 to "BACKSPACE", 15 to "TAB", 16 to "Q", 17 to "W", 18 to "E", 19 to "R", 20 to "T", 21 to "Y", 22 to "U", 23 to "I", 24 to "O", 25 to "P", 26 to "LEFT_BRACKET", 27 to "RIGHT_BRACKET", 28 to "ENTER", 29 to "LEFT_CTRL", 30 to "A", 31 to "S", 32 to "D", 33 to "F", 34 to "G", 35 to "H", 36 to "J", 37 to "K", 38 to "L", 39 to "SEMICOLON", 40 to "APOSTROPHE", 41 to "GRAVE", 42 to "LEFT_SHIFT", 43 to "BACKSLASH", 44 to "Z", 45 to "X", 46 to "C", 47 to "V", 48 to "B", 49 to "N", 50 to "M", 51 to "COMMA", 52 to "PERIOD", 53 to "SLASH", 54 to "RIGHT_SHIFT", 56 to "LEFT_ALT", 57 to "SPACE", 58 to "CAPS_LOCK", 59 to "F1", 60 to "F2", 61 to "F3", 62 to "F4", 63 to "F5", 64 to "F6", 65 to "F7", 66 to "F8", 67 to "F9", 68 to "F10", 87 to "F11", 88 to "F12", 97 to "RIGHT_CTRL", 100 to "RIGHT_ALT", 102 to "HOME", 103 to "UP", 104 to "PAGE_UP", 105 to "LEFT", 106 to "RIGHT", 107 to "END", 108 to "DOWN", 109 to "PAGE_DOWN", 110 to "INSERT", 111 to "DELETE", -1 to "SHIFT")
         }
 
         /** A readable name for a key or pad button code: "SPACE", "CROSS"… */

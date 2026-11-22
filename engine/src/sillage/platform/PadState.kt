@@ -2,7 +2,6 @@ package sillage.platform
 
 import sillage.Color
 import sillage.TriggerEffect
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Everything a pad reports, in plain fields: what the reader threads fill and the game thread reads.
@@ -30,11 +29,11 @@ internal class PadState {
 
     fun copyFrom(o: PadState) {
         buttons = o.buttons
-        System.arraycopy(o.axes, 0, axes, 0, 6)
-        System.arraycopy(o.gyro, 0, gyro, 0, 3); System.arraycopy(o.accel, 0, accel, 0, 3); System.arraycopy(o.turn, 0, turn, 0, 3)
+        o.axes.copyInto(axes, 0, 0, 0 + 6)
+        o.gyro.copyInto(gyro, 0, 0, 0 + 3); o.accel.copyInto(accel, 0, 0, 0 + 3); o.turn.copyInto(turn, 0, 0, 0 + 3)
         turnValid = o.turnValid
-        System.arraycopy(o.touchActive, 0, touchActive, 0, 2); System.arraycopy(o.touchId, 0, touchId, 0, 2)
-        System.arraycopy(o.touchX, 0, touchX, 0, 2); System.arraycopy(o.touchY, 0, touchY, 0, 2)
+        o.touchActive.copyInto(touchActive, 0, 0, 0 + 2); o.touchId.copyInto(touchId, 0, 0, 0 + 2)
+        o.touchX.copyInto(touchX, 0, 0, 0 + 2); o.touchY.copyInto(touchY, 0, 0, 0 + 2)
         battery = o.battery; batteryState = o.batteryState; headphones = o.headphones; microphone = o.microphone
         reports = o.reports
     }
@@ -56,7 +55,7 @@ internal class PadOutput {
     var rumbleLow = 0f
     var rumbleHigh = 0f
     var rumbleSeconds = 0f
-    /** System.nanoTime() when the rumble ends. */
+    /** sillage.math.nanoTime() when the rumble ends. */
     var rumbleUntil = 0L
     var rumbleCount = 0
     var lightbar: Color? = null
@@ -77,27 +76,3 @@ internal class PadOutput {
     }
 }
 
-/**
- * Hands states from one reader thread to the game thread without locks: three buffers, the writer fills
- * its own and swaps it with the middle one; the reader swaps the middle one with its own when it is new.
- * Neither ever waits, nor sees a half-written state.
- */
-internal class StateExchange {
-    private val buffers = arrayOf(PadState(), PadState(), PadState())
-    private val middle = AtomicInteger(1)
-    private var back = 0        // writer's
-    private var front = 2       // reader's
-
-    /** The writer's buffer, to fill completely before [publish]. */
-    fun writing(): PadState = buffers[back]
-
-    fun publish() { back = middle.getAndSet(back or FRESH) and 3 }
-
-    /** The newest state published (the same as last time if nothing new came). */
-    fun latest(): PadState {
-        if (middle.get() and FRESH != 0) front = middle.getAndSet(front) and 3
-        return buffers[front]
-    }
-
-    private companion object { const val FRESH = 4 }
-}

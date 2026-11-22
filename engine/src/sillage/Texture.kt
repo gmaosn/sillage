@@ -1,6 +1,5 @@
 package sillage
 
-import java.util.concurrent.CompletableFuture
 import kotlin.math.*
 
 /**
@@ -38,29 +37,29 @@ class Texture private constructor(
     /** Its place among the textures the program has made (1, 2…); 0 means none in the vertex data. */
     internal val id: Int
     /** The pixels and every smaller level (RGBA, 8 bits), painted in the background. */
-    private val levels: CompletableFuture<ByteArray>
+    private val levels: Pending<ByteArray>
 
     init {
         require(size >= 4 && size and (size - 1) == 0) { "A texture's size must be a power of two (4 or more), not $size" }
         require(tile > 0f) { "A texture's tile must be positive" }
-        synchronized(registry) { registry.add(this); id = registry.size }
-        levels = CompletableFuture.supplyAsync { withLevels(rgba(), size) }
+        id = sillage.io.locked(registry) { registry.add(this); registry.size }
+        levels = background { withLevels(rgba(), size) }
     }
 
     /** The pixels and their smaller levels, once painted (waits for the painting). */
-    internal val pixels: ByteArray get() = levels.join()
+    internal val pixels: ByteArray get() = levels.get()
     /** Painted already. */
     internal val ready: Boolean get() = levels.isDone
     /** Number of levels: size, size/2 … 1. */
-    internal val levelCount: Int get() = 31 - Integer.numberOfLeadingZeros(size) + 1
+    internal val levelCount: Int get() = 31 - size.countLeadingZeroBits() + 1
 
     override fun toString() = "Texture($name)"
 
     companion object {
         internal val registry = ArrayList<Texture>()
-        internal fun all(): List<Texture> = synchronized(registry) { ArrayList(registry) }
+        internal fun all(): List<Texture> = sillage.io.locked(registry) { ArrayList(registry) }
         /** How many textures the program has made (read every frame: no copy). */
-        internal fun count(): Int = synchronized(registry) { registry.size }
+        internal fun count(): Int = sillage.io.locked(registry) { registry.size }
 
         /**
          * A texture painted by [pixel], called for every pixel with its place (u, v from 0 to 1, the
@@ -99,7 +98,7 @@ class Texture private constructor(
          * The image texture of an encoded PNG or JPEG, decoded once per program: a scene that loads the same
          * model again (a restart, the next level) gets the same texture, not one more on the GPU.
          */
-        fun image(name: String, encoded: ByteArray): Texture = synchronized(images) {
+        fun image(name: String, encoded: ByteArray): Texture = sillage.io.locked(images) {
             images.getOrPut(Encoded(encoded.copyOf())) { image(name, sillage.io.Image.decode(encoded)) }
         }
 
@@ -130,7 +129,7 @@ class Texture private constructor(
                     for (c in 0..3) {
                         fun at(px: Int, py: Int) = (src[4 * (py * w + px) + c].toInt() and 255).toFloat()
                         val top = at(ax, ay) + (at(bx, ay) - at(ax, ay)) * tx; val bottom = at(ax, by) + (at(bx, by) - at(ax, by)) * tx
-                        out[o + c] = Math.round(top + (bottom - top) * ty).coerceIn(0, 255).toByte()
+                        out[o + c] = (top + (bottom - top) * ty).roundToInt().coerceIn(0, 255).toByte()
                     }
                 }
             }
@@ -228,7 +227,7 @@ object Textures {
      * and accents ignored: « Herbe », "grass_dark", "Roof.001"), or null.
      */
     fun named(material: String): Texture? {
-        val plain = java.text.Normalizer.normalize(material.lowercase(), java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
+        val plain = plainLower(material)
         val words = plain.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }
         for ((keys, texture) in names) if (words.any { it in keys }) return texture()
         return null
@@ -433,7 +432,7 @@ internal class Canvas(val size: Int) {
 
     private fun blend(x: Int, y: Int, kr: Float, kg: Float, kb: Float, a: Float) {
         if (a <= 0f) return
-        val i = 3 * (Math.floorMod(y, size) * size + Math.floorMod(x, size))
+        val i = 3 * (y.mod(size) * size + x.mod(size))
         m[i] *= 1f + (kr - 1f) * a; m[i + 1] *= 1f + (kg - 1f) * a; m[i + 2] *= 1f + (kb - 1f) * a
     }
 
@@ -489,8 +488,8 @@ private fun noise(x: Float, y: Float, periodX: Int, periodY: Int, seed: Int): Fl
     val ix = fx.toInt(); val iy = fy.toInt()
     val tx = x - fx; val ty = y - fy
     val ux = tx * tx * (3 - 2 * tx); val uy = ty * ty * (3 - 2 * ty)
-    val x0 = Math.floorMod(ix, periodX); val x1 = Math.floorMod(ix + 1, periodX)
-    val y0 = Math.floorMod(iy, periodY); val y1 = Math.floorMod(iy + 1, periodY)
+    val x0 = ix.mod(periodX); val x1 = (ix + 1).mod(periodX)
+    val y0 = iy.mod(periodY); val y1 = (iy + 1).mod(periodY)
     val a = hash(x0, y0, seed); val b = hash(x1, y0, seed); val c = hash(x0, y1, seed); val d = hash(x1, y1, seed)
     return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
 }
@@ -511,7 +510,7 @@ private fun worley(x: Float, y: Float, period: Int, seed: Int, out: FloatArray) 
     var d1 = 9f; var d2 = 9f; var id = 0f
     for (j in -1..1) for (i in -1..1) {
         val cx = ix + i; val cy = iy + j
-        val wx = Math.floorMod(cx, period); val wy = Math.floorMod(cy, period)
+        val wx = cx.mod(period); val wy = cy.mod(period)
         val px = cx + .15f + .7f * hash(wx, wy, seed); val py = cy + .15f + .7f * hash(wx, wy, seed + 1)
         val d = sqrt((px - x) * (px - x) + (py - y) * (py - y))
         if (d < d1) { d2 = d1; d1 = d; id = hash(wx, wy, seed + 2) } else if (d < d2) d2 = d
@@ -523,8 +522,7 @@ private fun worley(x: Float, y: Float, period: Int, seed: Int, out: FloatArray) 
  * Writes every ready-made texture to [dir]: the pattern itself (name.png, mid-grey = unchanged) and the
  * pattern on a typical colour, twice repeated (name-preview.png). For `--export-textures`.
  */
-internal fun exportTextures(dir: java.nio.file.Path) {
-    java.nio.file.Files.createDirectories(dir)
+internal fun exportTextures(dir: String) {
     val tints = mapOf("grass" to 0x5FA040, "sand" to 0xE8C98A, "wood" to 0x8A5A30, "planks" to 0xB07F4A, "roof tiles" to 0xC2502E,
         "stone" to 0x9C9A94, "rock" to 0x9A7A58, "plaster" to 0xF0E2BC, "fabric" to 0xF2E8CC, "leaves" to 0x3E8A30, "bark" to 0x8A5A30)
     for (t in Textures.ALL) {
@@ -544,8 +542,8 @@ internal fun exportTextures(dir: java.nio.file.Path) {
             for (oy in 0..1) for (ox in 0..1) set(preview, 2 * s, x + ox * s, y + oy * s, rgb)
         }
         val file = t.name.replace(' ', '-')
-        sillage.io.PngWriter.write(dir.resolve("$file.png").toString(), s, s, raw)
-        sillage.io.PngWriter.write(dir.resolve("$file-preview.png").toString(), 2 * s, 2 * s, preview)
+        sillage.io.PngWriter.write("$dir/$file.png", s, s, raw)
+        sillage.io.PngWriter.write("$dir/$file-preview.png", 2 * s, 2 * s, preview)
     }
     println("SILLAGE_TEXTURES ${Textures.ALL.size} textures in $dir")
 }

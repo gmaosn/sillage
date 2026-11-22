@@ -1,5 +1,7 @@
 package sillage
 
+import kotlin.math.roundToInt
+
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -44,7 +46,7 @@ private class Simplifier(private val mesh: Mesh) {
         for (c in 0 until 3 * nTri) {
             val o = 9 * c
             val sb = StringBuilder()
-            for (j in 0..2) sb.append(Math.round(v[o + j] / grain)).append(',')
+            for (j in 0..2) sb.append((v[o + j] / grain).roundToInt()).append(',')
             for (j in 6..8) sb.append(v[o + j].toRawBits()).append(',')
             if (e != null) for (j in 0 until EFFECT_FLOATS) sb.append(e[EFFECT_FLOATS * c + j].toRawBits()).append(',')
             val id = index.getOrPut(sb.toString()) {
@@ -170,7 +172,7 @@ private class Simplifier(private val mesh: Mesh) {
     }
 
     fun run(target: Int): Mesh {
-        val heap = java.util.PriorityQueue<Collapse>(compareBy { it.cost })
+        val heap = MinHeap<Collapse>(compareBy { it.cost })
         val seen = HashSet<Long>()
         for (t in 0 until nTri) for (j in 0..2) {
             val a = tri[3 * t + j]; val b = tri[3 * t + (j + 1) % 3]
@@ -219,7 +221,7 @@ private class Simplifier(private val mesh: Mesh) {
                 verts[o] = px[vv]; verts[o + 1] = py[vv]; verts[o + 2] = pz[vv]
                 verts[o + 3] = v[9 * src + 3]; verts[o + 4] = v[9 * src + 4]; verts[o + 5] = v[9 * src + 5]
                 verts[o + 6] = v[9 * src + 6]; verts[o + 7] = v[9 * src + 7]; verts[o + 8] = v[9 * src + 8]
-                if (effects != null) System.arraycopy(e!!, EFFECT_FLOATS * src, effects, EFFECT_FLOATS * (3 * n + j), EFFECT_FLOATS)
+                if (effects != null) (e!!).copyInto(effects, EFFECT_FLOATS * (3 * n + j), EFFECT_FLOATS * src, EFFECT_FLOATS * src + EFFECT_FLOATS)
             }
             if (materials != null) materials[n] = mats!![t]
         }

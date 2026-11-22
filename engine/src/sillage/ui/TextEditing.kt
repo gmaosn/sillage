@@ -25,7 +25,7 @@ internal class TextEditing {
 
     private fun deleteSelection(): Boolean {
         if (!hasSelection) return false
-        b.delete(selectionStart, selectionEnd); caret = selectionStart; anchor = caret; commit()
+        b.deleteRange(selectionStart, selectionEnd); caret = selectionStart; anchor = caret; commit()
         return true
     }
 
@@ -37,7 +37,7 @@ internal class TextEditing {
         val room = maxLength - b.length
         if (room <= 0) return had
         var cut = clean
-        if (cut.length > room) { cut = cut.substring(0, room); if (Character.isHighSurrogate(cut.last())) cut = cut.dropLast(1) }
+        if (cut.length > room) { cut = cut.substring(0, room); if ((cut.last()).isHighSurrogate()) cut = cut.dropLast(1) }
         b.insert(caret, cut); caret += cut.length; anchor = caret; commit()
         return true
     }
@@ -46,7 +46,7 @@ internal class TextEditing {
         if (deleteSelection()) return true
         if (caret == 0) return false
         val to = if (word) wordLeft(caret) else previous(caret)
-        b.delete(to, caret); caret = to; anchor = caret; commit()
+        b.deleteRange(to, caret); caret = to; anchor = caret; commit()
         return true
     }
 
@@ -54,7 +54,7 @@ internal class TextEditing {
         if (deleteSelection()) return true
         if (caret >= b.length) return false
         val to = if (word) wordRight(caret) else next(caret)
-        b.delete(caret, to); commit()
+        b.deleteRange(caret, to); commit()
         return true
     }
 
@@ -78,15 +78,15 @@ internal class TextEditing {
     /** Puts the caret at [index] (a click), extending the selection with [select] (a drag). */
     fun place(index: Int, select: Boolean = false) {
         var i = index.coerceIn(0, b.length)
-        if (i in 1 until b.length && Character.isLowSurrogate(b[i])) i--
+        if (i in 1 until b.length && (b[i]).isLowSurrogate()) i--
         caret = i; if (!select) anchor = caret
     }
 
     /** Removes the selection and gives it (Ctrl+X). */
     fun cut(): String { val s = selected; deleteSelection(); return s }
 
-    private fun previous(i: Int): Int = if (i <= 0) 0 else if (i >= 2 && Character.isLowSurrogate(b[i - 1]) && Character.isHighSurrogate(b[i - 2])) i - 2 else i - 1
-    private fun next(i: Int): Int = if (i >= b.length) b.length else if (i + 1 < b.length && Character.isHighSurrogate(b[i]) && Character.isLowSurrogate(b[i + 1])) i + 2 else i + 1
+    private fun previous(i: Int): Int = if (i <= 0) 0 else if (i >= 2 && (b[i - 1]).isLowSurrogate() && (b[i - 2]).isHighSurrogate()) i - 2 else i - 1
+    private fun next(i: Int): Int = if (i >= b.length) b.length else if (i + 1 < b.length && (b[i]).isHighSurrogate() && (b[i + 1]).isLowSurrogate()) i + 2 else i + 1
     private fun wordLeft(i0: Int): Int { var i = i0; while (i > 0 && !b[i - 1].isLetterOrDigit()) i--; while (i > 0 && b[i - 1].isLetterOrDigit()) i--; return i }
     private fun wordRight(i0: Int): Int { var i = i0; while (i < b.length && !b[i].isLetterOrDigit()) i++; while (i < b.length && b[i].isLetterOrDigit()) i++; return i }
 }

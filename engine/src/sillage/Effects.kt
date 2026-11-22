@@ -122,7 +122,7 @@ internal class ParticleSystem(private val capacity: Int = 4096) {
         if (abs(uy) > .9f) { ax = 1f; ay = 0f; az = 0f }
         val al = sqrt(ax * ax + ay * ay + az * az); ax /= al; ay /= al; az /= al
         val bx = uy * az - uz * ay; val by = uz * ax - ux * az; val bz = ux * ay - uy * ax
-        val cosMax = cos(Math.toRadians(s.spread.toDouble()).toFloat())
+        val cosMax = cos(sillage.math.toRadians(s.spread.toDouble()).toFloat())
         for (k in 0 until n) {
             if (count >= capacity) return
             val i = count++
@@ -193,7 +193,7 @@ internal class ParticleSystem(private val capacity: Int = 4096) {
 
     /** Writes what the renderer draws ([PARTICLE_FLOATS] per particle) into [out], the farthest from [eye] first. */
     fun write(out: FrameExtras, time: Float, night: Float, eye: Vec3 = Vec3.ZERO) {
-        if (out.particles.size < count * PARTICLE_FLOATS) out.particles = FloatArray(Integer.highestOneBit(count) * 2 * PARTICLE_FLOATS)
+        if (out.particles.size < count * PARTICLE_FLOATS) out.particles = FloatArray(count.takeHighestOneBit() * 2 * PARTICLE_FLOATS)
         val o = out.particles
         sort(eye)
         for (n in 0 until count) {

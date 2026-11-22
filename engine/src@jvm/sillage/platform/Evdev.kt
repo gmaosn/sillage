@@ -229,7 +229,7 @@ internal class EvdevPad(owner: SystemPads, node: String, fd: Int, val caps: Evde
             // A rumble effect: strong (heavy motor) and weak (light motor) magnitudes, played once for its length.
             effect.fill(0)
             effect.set(JAVA_SHORT, 0, Ev.FF_RUMBLE.toShort()); effect.set(JAVA_SHORT, 2, effectId.toShort())
-            val ms = ((o.rumbleUntil - System.nanoTime()) / 1_000_000L).coerceIn(1L, 0xFFFFL)
+            val ms = ((o.rumbleUntil - sillage.math.nanoTime()) / 1_000_000L).coerceIn(1L, 0xFFFFL)
             effect.set(JAVA_SHORT, 10, ms.toInt().toShort())
             effect.set(JAVA_SHORT, 16, (o.rumbleLow * 0xFFFF).toInt().toShort()); effect.set(JAVA_SHORT, 18, (o.rumbleHigh * 0xFFFF).toInt().toShort())
             val r = x.ioctl(fd, Ev.EVIOCSFF, effect)

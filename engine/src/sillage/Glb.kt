@@ -1,12 +1,11 @@
 package sillage
 
+import sillage.io.Le
+
 import sillage.io.Json
 import sillage.math.Mat4
 import sillage.math.Quat
 import sillage.math.Vec3
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.file.Path
 
 /**
  * glTF 2.0 binary (.glb) loader, in Kotlin. It reads the node hierarchy, the material or vertex
@@ -23,7 +22,7 @@ object Glb {
 
     /** The model with its hierarchy and animations. */
     fun loadModel(path: String, normals: Normals = Normals.SMOOTH): Model =
-        readModel(bytes(path), { uri -> bytes(Path.of(path).resolveSibling(uri).toString()) }, normals)
+        readModel(bytes(path), { uri -> bytes(if ('/' in path) path.substringBeforeLast('/') + "/" + uri else uri) }, normals)
 
     /** [load] from the bytes of a file. */
     fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }
@@ -34,19 +33,19 @@ object Glb {
     fun readModel(bytes: ByteArray, beside: (String) -> ByteArray = { throw IllegalArgumentException("GLB: image file « $it » unavailable") },
                   normals: Normals = Normals.SMOOTH): Model {
         require(bytes.size >= 20) { "Truncated GLB" }
-        val file = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        require(file.int == 0x46546c67 && file.int == 2) { "A glTF 2.0 GLB file is required" }
-        require(file.int == bytes.size) { "Invalid GLB size" }
+        require(Le.i32(bytes, 0) == 0x46546c67 && Le.i32(bytes, 4) == 2) { "A glTF 2.0 GLB file is required" }
+        require(Le.i32(bytes, 8) == bytes.size) { "Invalid GLB size" }
         var json: Json.Obj? = null
-        var bin: ByteBuffer? = null
-        while (file.remaining() >= 8) {
-            val size = file.int; val type = file.int
-            require(size >= 0 && size <= file.remaining()) { "Chunk GLB invalide" }
-            val chunk = ByteArray(size); file.get(chunk)
+        var bin: LeBuffer? = null
+        var at = 12
+        while (bytes.size - at >= 8) {
+            val size = Le.i32(bytes, at); val type = Le.i32(bytes, at + 4); at += 8
+            require(size >= 0 && size <= bytes.size - at) { "Chunk GLB invalide" }
+            val chunk = bytes.copyOfRange(at, at + size); at += size
             when (type) {
-                0x4e4f534a -> json = Json.parse(chunk.toString(Charsets.UTF_8).trimEnd('\u0000', ' ')) as? Json.Obj
+                0x4e4f534a -> json = Json.parse(chunk.decodeToString().trimEnd('\u0000', ' ')) as? Json.Obj
                     ?: throw IllegalArgumentException("The JSON of a GLB must be an object")
-                0x004e4942 -> bin = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN)
+                0x004e4942 -> bin = LeBuffer(chunk)
             }
         }
         val doc = requireNotNull(json) { "Missing JSON chunk" }
@@ -54,7 +53,7 @@ object Glb {
             .filter { it != "KHR_lights_punctual" }
         require(required.isEmpty()) { "Unsupported required GLB extensions: " + required }
         val buffers = doc.arr("buffers")
-        val buffer: ByteBuffer = if (buffers == null || buffers.size == 0) ByteBuffer.allocate(0) else {
+        val buffer: LeBuffer = if (buffers == null || buffers.size == 0) LeBuffer(ByteArray(0)) else {
             require(buffers.size == 1 && !buffers.obj(0).has("uri")) { "The GLB must embed its buffer" }
             requireNotNull(bin) { "Missing BIN chunk" }
         }
@@ -127,9 +126,9 @@ object Glb {
                 img.string("uri")?.startsWith("data:") == true -> {
                     val uri = img.string("uri")!!
                     require(";base64," in uri) { "GLB: data URI images must be base64" }
-                    java.util.Base64.getDecoder().decode(uri.substringAfter(";base64,"))
+                    base64(uri.substringAfter(";base64,"))
                 }
-                img.string("uri") != null -> beside(java.net.URLDecoder.decode(img.string("uri")!!, Charsets.UTF_8))
+                img.string("uri") != null -> beside(percentDecode(img.string("uri")!!))
                 else -> throw IllegalArgumentException("GLB: image $index has no data")
             }
             Texture.image(img.string("name") ?: "image$index", data)

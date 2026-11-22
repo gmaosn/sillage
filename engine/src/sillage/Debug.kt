@@ -233,7 +233,7 @@ class Debug internal constructor(private val scene: Scene) {
             }
         }
         if (extras.lines.size < vertices * LINE_FLOATS) extras.lines = FloatArray(lines.size)
-        System.arraycopy(lines, 0, extras.lines, 0, vertices * LINE_FLOATS)
+        lines.copyInto(extras.lines, 0, 0, 0 + (vertices * LINE_FLOATS))
         extras.lineVertexCount = vertices
     }
 
@@ -257,14 +257,14 @@ class Debug internal constructor(private val scene: Scene) {
         val b = hit.body
         val node = b?.tag as? Node ?: b?.let { body -> scene.players.firstOrNull { it.character.body == body } }
         when {
-            node != null -> out += (node.name ?: node.source?.let { "model " + it.substringAfterLast('/') } ?: node.javaClass.simpleName.lowercase()) +
+            node != null -> out += (node.name ?: node.source?.let { "model " + it.substringAfterLast('/') } ?: (node::class.simpleName ?: "node").lowercase()) +
                 (node.tag?.let { "  tag $it" } ?: "")
             b != null -> out += "collider (invisible)"
             else -> out += "static mesh"
         }
         out += "at " + fmt(hit.point) + "  " + num("%.1f", hit.distance) + " m away"
         if (b != null) {
-            out += b.type.name.lowercase() + " " + b.shape.javaClass.simpleName.lowercase() +
+            out += b.type.name.lowercase() + " " + (b.shape::class.simpleName ?: "shape").lowercase() +
                 (if (b.type == BodyType.DYNAMIC) "  " + num("%.1f", b.mass) + " kg  " + (if (b.isSleeping) "asleep" else "awake") else "")
             if (b.type != BodyType.STATIC) out += "speed " + num("%.2f", b.velocity.length()) + " m/s  spin " + num("%.2f", b.angularVelocity.length()) + " rad/s"
             out += "friction " + num("%.2f", b.friction) + "  bounce " + num("%.2f", b.restitution) +
@@ -274,10 +274,10 @@ class Debug internal constructor(private val scene: Scene) {
         return out
     }
 
-    private fun fmt(v: Vec3) = String.format(java.util.Locale.ROOT, "(%.2f, %.2f, %.2f)", v.x + 0f, v.y + 0f, v.z + 0f)
+    private fun fmt(v: Vec3) = "(%.2f, %.2f, %.2f)".fmt(v.x + 0f, v.y + 0f, v.z + 0f)
 
     /** Numbers with a point whatever the system's language: "1.5, 2.0" stays readable as two numbers. */
-    private fun num(pattern: String, v: Float) = String.format(java.util.Locale.ROOT, pattern, v + 0f)
+    private fun num(pattern: String, v: Float) = pattern.fmt(v + 0f)
 
     /** The panels, while the physics is shown: figures at the top, the cross, what is under it. */
     internal fun panels(eye: Vec3, forward: Vec3) {
@@ -289,13 +289,13 @@ class Debug internal constructor(private val scene: Scene) {
         hudElements += hud.panel(16, 16, 640, 30, ink, opacity = .78)
         // The figures change at every frame: rebuilt four times a second, the HUD is not rebuilt at every frame.
         hudElements += hud.text({
-            val now = System.nanoTime()
+            val now = sillage.math.nanoTime()
             if (now - statsAt < 250_000_000L && stats.isNotEmpty()) return@text stats
             statsAt = now
             val w = scene.physics
             var awake = 0; var live = 0
             for (id in 0 until w.bodyCount) { val b = w.body(id); if (b.isRemoved) continue; live++; if (b.type == BodyType.DYNAMIC && !b.isSleeping) awake++ }
-            stats = String.format(java.util.Locale.ROOT, "PHYSICS %.2f MS   BODIES %d (%d AWAKE)   CONTACTS %d   NODES %d   %d FPS",
+            stats = "PHYSICS %.2f MS   BODIES %d (%d AWAKE)   CONTACTS %d   NODES %d   %d FPS".fmt(
                 scene.physicsMs, live, awake, w.contactCount, scene.nodes.size, scene.fps)
             stats
         }, 28, 26, 1.25, Color.hex(0xE8F4F8))

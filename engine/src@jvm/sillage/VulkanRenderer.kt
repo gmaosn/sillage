@@ -38,20 +38,12 @@ internal interface SurfaceSource {
  * The same passes work with a window or without any display server.
  */
 private const val FRAMES = 2
-/** Side of the shadow map in texels. */
-internal const val SHADOW_TEXELS = 2048
 /** Push constants: view × projection, eye and time, the shadow map's centre and half side, the water's two colours. */
 private const val PUSH_BYTES = 128
-/** Point lights handed to the shaders each frame (the nearest to the camera). */
-internal const val MAX_LIGHTS = 16
 /** Bytes of the frame's uniform block (frame.glsl): fourteen vectors, then the lights' places and colours. */
-/** Shadow squares one inside the other, each with its layer in the shadow map (see Lighting.shadowCascades). */
-internal const val CASCADES = 3
 private const val FRAME_BYTES = (14 + CASCADES + 2 * MAX_LIGHTS) * 16
 /** Levels of the glow: half the picture's size, then each half the last. */
 private const val BLOOM_LEVELS = 5
-/** Floats per particle drawn: centre and size (negative: it glows), colour and opacity. */
-internal const val PARTICLE_FLOATS = 8
 // Blending: colour source and destination factors, then alpha's. The alpha of the scene image holds the
 // distance to the eye, which blended things leave as it was.
 private val BLEND_KEEP_ALPHA = intArrayOf(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE)
@@ -60,21 +52,6 @@ private const val HUD_FORMAT_R8 = 9
 private const val HUD_FORMAT_RG32F = 103
 private val BLEND_PREMULTIPLIED = intArrayOf(VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE)
 
-/** What a frame draws besides the nodes: the point lights near the camera and the particles. */
-internal class FrameExtras {
-    /** Per light: position, radius, colour × intensity, unused (8 floats). */
-    val lights = FloatArray(8 * MAX_LIGHTS)
-    var lightCount = 0
-    /** Per particle [PARTICLE_FLOATS] floats. */
-    var particles = FloatArray(PARTICLE_FLOATS * 256)
-    var particleCount = 0
-    /** Debug lines: two vertices per segment, [LINE_FLOATS] floats each (position, colour and opacity). */
-    var lines = FloatArray(LINE_FLOATS * 1024)
-    var lineVertexCount = 0
-}
-
-/** Floats per debug line vertex: position, colour and opacity. */
-internal const val LINE_FLOATS = 7
 
 internal class VulkanRenderer(private val target: SurfaceSource? = null, private val validation: Boolean = false,
                               largeurHorsEcran: Int = 1280, hauteurHorsEcran: Int = 800,

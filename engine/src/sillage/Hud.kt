@@ -1,6 +1,6 @@
 package sillage
 
-import sillage.platform.Window
+import sillage.platform.GameWindow
 import sillage.ui.GlyphAtlas
 import sillage.ui.HUD_FLOATS
 import sillage.ui.LaidText
@@ -318,7 +318,7 @@ class Hud internal constructor() {
         val list = focusables()
         if (list.isEmpty()) return
         val i = list.indexOf(focusedWidget)
-        focus(list[if (i < 0) (if (step > 0) 0 else list.size - 1) else Math.floorMod(i + step, list.size)])
+        focus(list[if (i < 0) (if (step > 0) 0 else list.size - 1) else (i + step).mod(list.size)])
     }
 
     /**
@@ -474,7 +474,7 @@ class Hud internal constructor() {
         if (back) cancel()
     }
 
-    internal fun interact(scene: Scene, dt: Float, width: Int, height: Int, window: Window?) {
+    internal fun interact(scene: Scene, dt: Float, width: Int, height: Int, window: GameWindow?) {
         this.scene = scene
         if (width != pixelWidth || height != pixelHeight) { pixelWidth = width; pixelHeight = height; dirty = true }
         val current = scene.input.source

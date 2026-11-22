@@ -44,7 +44,7 @@ class Scene {
      * (`random.nextFloat()`). Seeded from the clock, or from `--seed N` / [seed], so that a run can be
      * played again exactly (checks, recordings).
      */
-    var random: kotlin.random.Random = kotlin.random.Random(System.nanoTime())
+    var random: kotlin.random.Random = kotlin.random.Random(sillage.math.nanoTime())
         private set
 
     /** Sets [random]'s seed: the same seed, the same draws. */
@@ -307,8 +307,8 @@ class Scene {
      */
     var autoTextures = true
 
-    private val autoTextured = java.util.IdentityHashMap<Mesh, Mesh>()
-    private val sharedTextured = java.util.IdentityHashMap<Mesh, HashMap<List<Float>, Mesh>>()
+    private val autoTextured = HashMap<Mesh, Mesh>()
+    private val sharedTextured = HashMap<Mesh, HashMap<List<Float>, Mesh>>()
     private val groundCache = HashMap<Long, Float>()
 
     /** Each mesh of [node] (its own, then its parts') with its placement in the world and a way to replace it. */
@@ -360,7 +360,7 @@ class Scene {
     internal fun sway(node: Node, metres: Float, reach: Float, names: Array<out String>) {
         require(reach > 0f) { "sway: reach must be positive" }
         changeLooks(node, materialIds(node, names, "sway"), "sway") { e, o, p ->
-            val key = (Math.round(p.x * 200f).toLong() shl 32) xor (Math.round(p.z * 200f).toLong() and 0xFFFFFFFFL)
+            val key = ((p.x * 200f).roundToInt().toLong() shl 32) xor ((p.z * 200f).roundToInt().toLong() and 0xFFFFFFFFL)
             val ground = groundCache.getOrPut(key) {
                 physics.raycast(Vec3(p.x, p.y + .05f, p.z), Vec3(0f, -1f, 0f), 50f, filter = { false })?.point?.y ?: (p.y - reach)
             }
@@ -855,7 +855,7 @@ class Scene {
         return extras
     }
 
-    private fun copyLight(from: Int, to: Int) { System.arraycopy(extras.lights, 8 * from, extras.lights, 8 * to, 8) }
+    private fun copyLight(from: Int, to: Int) { extras.lights.copyInto(extras.lights, 8 * to, 8 * from, 8 * from + 8) }
 
     /** Leaves this scene for a new one built by [build] (at the end of the frame): a menu, the next level. */
     fun goTo(build: Scene.() -> Unit) { next = build }
@@ -889,9 +889,9 @@ class Scene {
         val h = dt.coerceIn(1f / 240f, 1f / 30f)
         for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, if (f.rotation === Quat.IDENTITY) q else q * f.rotation) }
         for (n in kinematicNodes) n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation)
-        val physicsStart = System.nanoTime()
+        val physicsStart = sillage.math.nanoTime()
         physics.step(h)
-        physicsMs = (System.nanoTime() - physicsStart) / 1e6f
+        physicsMs = (sillage.math.nanoTime() - physicsStart) / 1e6f
         for (k in 0 until linked.size) { val n = linked[k]; n.body?.let { b -> n.rotation = b.rotation; n.position = b.position - b.rotation.rotate(n.bodyOffset) } }
         for (k in 0 until playerList.size) { val p = playerList[k]; p.forcedClip = forcedPlayerClip; p.update(dt) }
         placeShadows()

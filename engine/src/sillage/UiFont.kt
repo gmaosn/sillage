@@ -1,10 +1,11 @@
 package sillage
 
+import kotlin.concurrent.Volatile
+
 import sillage.io.FaceInfo
 import sillage.io.FontFace
-import java.nio.file.Files
-import java.nio.file.Path
-import java.util.concurrent.ConcurrentHashMap
+import sillage.io.Storage
+import sillage.io.locked
 
 /**
  * A typeface for the interface: the engine's own pixel font ([PIXEL], the default), or a font already
@@ -20,14 +21,14 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class Font private constructor(internal val face: FontFace?, val family: String, val style: String,
                                /** The file it comes from (null for the pixel font), and its face in a collection. */
-                               val path: Path?, val index: Int) {
+                               val path: String?, val index: Int) {
     /** Weight from 100 (thin) to 900 (black); 400 is regular, 700 bold. */
     val weight: Int get() = face?.weight ?: 400
     val bold: Boolean get() = weight >= 600
     val italic: Boolean get() = face?.italic ?: false
     /** True for the engine's built-in pixel font. */
     val isPixel: Boolean get() = face == null
-    internal val id: Int = ids.getAndIncrement()
+    internal val id: Int = locked(loaded) { ids++ }
 
     /** Fonts tried in turn for the characters this one lacks (by default a few wide-coverage families found on the system). */
     var fallbacks: List<Font> = emptyList()
@@ -51,19 +52,18 @@ class Font private constructor(internal val face: FontFace?, val family: String,
     override fun toString() = if (face == null) "Font(pixel)" else "Font($family $style, $path${if (index > 0) "#$index" else ""})"
 
     companion object {
-        private val ids = java.util.concurrent.atomic.AtomicInteger(0)
+        private var ids = 0
+        private val loaded = HashMap<Pair<String, Int>, Font>()
 
         /** The engine's 5 × 7 pixel font: capitals, small letters, French accents, digits and signs. */
         val PIXEL: Font = Font(null, "Pixel", "Regular", null, 0)
 
-        private val loaded = ConcurrentHashMap<Pair<Path, Int>, Font>()
 
         /** Loads face [index] of a font file (.ttf, .otf, .ttc); throws if it cannot be read. */
-        fun load(path: String, index: Int = 0): Font = load(Path.of(path), index)
-
-        internal fun load(path: Path, index: Int): Font = loaded.getOrPut(path.toAbsolutePath() to index) {
-            val face = FontFace.load(path.toString(), index)
-            Font(face, face.family, face.subfamily, path.toAbsolutePath(), index)
+        fun load(path: String, index: Int = 0): Font = locked(loaded) { loaded[path to index] } ?: run {
+            val face = FontFace.load(path, index)
+            val font = Font(face, face.family, face.subfamily, path, index)
+            locked(loaded) { loaded.getOrPut(path to index) { font } }
         }
 
         /**
@@ -92,9 +92,12 @@ class Font private constructor(internal val face: FontFace?, val family: String,
         private val FALLBACK = listOf("DejaVu Sans", "Noto Sans", "Noto Sans Symbols", "Noto Sans Symbols 2", "Noto Sans Math",
             "Noto Sans CJK JP", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans Thai", "Liberation Sans")
 
-        private val firsts = ConcurrentHashMap<Triple<List<String>, Boolean, Boolean>, Font>()
-        private fun first(names: List<String>, bold: Boolean, italic: Boolean): Font = firsts.getOrPut(Triple(names, bold, italic)) {
-            names.firstNotNullOfOrNull { find(it, bold, italic) } ?: PIXEL
+        private val firsts = HashMap<Triple<List<String>, Boolean, Boolean>, Font>()
+        private fun first(names: List<String>, bold: Boolean, italic: Boolean): Font {
+            val key = Triple(names, bold, italic)
+            locked(firsts) { firsts[key] }?.let { return it }
+            val font = names.firstNotNullOfOrNull { find(it, bold, italic) } ?: PIXEL
+            return locked(firsts) { firsts.getOrPut(key) { font } }
         }
 
         @Volatile private var fallbackList: List<Font>? = null
@@ -107,22 +110,20 @@ class Font private constructor(internal val face: FontFace?, val family: String,
  * file read only for its names (family, style, weight, slant); the result is kept for the process.
  */
 internal object FontLibrary {
-    val directories: List<Path> by lazy {
-        val home = System.getProperty("user.home")
-        val dataHome = System.getenv("XDG_DATA_HOME")?.takeIf { it.isNotEmpty() } ?: "$home/.local/share"
-        val dataDirs = (System.getenv("XDG_DATA_DIRS")?.takeIf { it.isNotEmpty() } ?: "/usr/local/share:/usr/share").split(':')
-        (listOf("$dataHome/fonts", "$home/.fonts") + dataDirs.map { "$it/fonts" } + listOf("/usr/share/fonts", "/usr/local/share/fonts"))
-            .map { Path.of(it).toAbsolutePath().normalize() }.distinct().filter { Files.isDirectory(it) }
+    /** Where this system keeps its fonts (a desktop's standard folders, a phone's /system/fonts; a page has none). */
+    val directories: List<String> by lazy {
+        val home = Storage.setting("user.home") ?: Storage.environment("HOME") ?: ""
+        val dataHome = Storage.environment("XDG_DATA_HOME")?.takeIf { it.isNotEmpty() } ?: "$home/.local/share"
+        val dataDirs = (Storage.environment("XDG_DATA_DIRS")?.takeIf { it.isNotEmpty() } ?: "/usr/local/share:/usr/share").split(':')
+        (listOf("$dataHome/fonts", "$home/.fonts") + dataDirs.map { "$it/fonts" } + listOf("/usr/share/fonts", "/usr/local/share/fonts", "/system/fonts"))
+            .map { it.replace("//", "/").trimEnd('/') }.distinct()
     }
 
     /** Every face found, in a fixed order (sorted by path). */
     val faces: List<FaceInfo> by lazy {
-        val files = java.util.TreeSet<Path>()
-        for (d in directories) runCatching {
-            Files.walk(d).use { s -> s.filter { p -> val n = p.fileName.toString().lowercase(); (n.endsWith(".ttf") || n.endsWith(".otf") || n.endsWith(".ttc")) && Files.isRegularFile(p) }
-                .forEach { files.add(it.toRealPath()) } }
-        }
-        files.toList().parallelStream().map { p -> runCatching { FontFace.scan(p.toString()) }.getOrDefault(emptyList()) }.toList().flatten()
+        val files = HashSet<String>()
+        for (d in directories) for (p in Storage.list(d)) { val n = p.lowercase(); if (n.endsWith(".ttf") || n.endsWith(".otf") || n.endsWith(".ttc")) files.add(p) }
+        parallelMap(files.sorted()) { p -> runCatching { FontFace.scan(p) }.getOrDefault(emptyList()) }.flatten()
     }
 
     private fun key(s: String) = s.lowercase().filter { it.isLetterOrDigit() }

@@ -23,7 +23,8 @@ import kotlin.math.*
  */
 internal class SceneSounds(private val scene: Scene) {
     private var audio: Audio? = null
-    private val steps = java.util.concurrent.ConcurrentHashMap<String, List<Sound>>()
+    private val steps = HashMap<String, List<Sound>>()
+    private fun stepsOn(surface: String): List<Sound> = sillage.io.locked(steps) { steps.getOrPut(surface) { List(4) { Sounds.footstep(surface, it) } } }
     private val jump by lazy { Sounds.jump() }
     private val land by lazy { Sounds.land() }
     val pickup by lazy { Sounds.pickup() }
@@ -62,9 +63,9 @@ internal class SceneSounds(private val scene: Scene) {
             for (p in pendingAmbience) startAmbience(a, p)
             // Synthesise the engine's sounds now, beside the game: made on first use, the pickup chime or
             // the first step on sand would hold a frame for tens of milliseconds.
-            kotlin.concurrent.thread(isDaemon = true, name = "sillage-sounds") {
+            background {
                 pickup; jump; land; wood; rubber; scrape
-                for (s in listOf("grass", "sand", "wood", "stone")) steps.getOrPut(s) { List(4) { Sounds.footstep(s, it) } }
+                for (s in listOf("grass", "sand", "wood", "stone")) stepsOn(s)
             }
         }
     }
@@ -187,7 +188,7 @@ internal class SceneSounds(private val scene: Scene) {
     }
 
     private fun stepOn(a: Audio, p: Player, surface: String, volume: Float) {
-        val variants = steps.getOrPut(surface) { List(4) { Sounds.footstep(surface, it) } }
+        val variants = stepsOn(surface)
         fromPlayer(a, p, variants[(rnd.unit() * 4).toInt().coerceAtMost(3)], volume * vary(.12f), vary(.05f))
     }
 
@@ -239,7 +240,7 @@ internal class SceneSounds(private val scene: Scene) {
 }
 
 /** Writes every sound of the engine as WAV into [dir], to listen to them or touch them up. */
-internal fun exportSounds(dir: java.nio.file.Path) {
+internal fun exportSounds(dir: String) {
     val all = LinkedHashMap<String, Sound>()
     for (s in listOf("grass", "sand", "wood", "stone", "road", "ice")) for (v in 0..3) all["step-$s-$v"] = Sounds.footstep(s, v)
     all["jump"] = Sounds.jump(); all["land"] = Sounds.land(); all["pickup"] = Sounds.pickup()
@@ -247,7 +248,7 @@ internal fun exportSounds(dir: java.nio.file.Path) {
     for (v in 0..3) all["gull-$v"] = Sounds.gull(v)
     all["scrape"] = Sounds.scrape()
     for (v in 0..3) all["splash-$v"] = Sounds.splash(v / 3f, v)
-    for ((name, s) in all) s.save(dir.resolve("$name.wav").toString())
+    for ((name, s) in all) s.save("$dir/$name.wav")
     println("SILLAGE_SOUNDS ${all.size} files in $dir")
 }
 

@@ -10,13 +10,13 @@ import kotlin.test.*
 
 /**
  * Le décodeur Ogg Vorbis du moteur contre libvorbis, le décodeur de référence de Xiph : mêmes échantillons.
- * Les fichiers d'essai (engine/test/fixtures/vorbis) viennent de tools/vorbis_fixtures.sh.
+ * Les fichiers d'essai (core/test@jvm/fixtures/vorbis) viennent de tools/vorbis_fixtures.sh.
  */
 class VorbisTest {
     private fun root(): Path {
         var dir = Path.of("").toAbsolutePath()
-        while (!Files.exists(dir.resolve("engine/test/fixtures/vorbis"))) dir = dir.parent ?: error("fixtures introuvables")
-        return dir.resolve("engine/test/fixtures/vorbis")
+        while (!Files.exists(dir.resolve("core/test@jvm/fixtures/vorbis"))) dir = dir.parent ?: error("fixtures introuvables")
+        return dir.resolve("core/test@jvm/fixtures/vorbis")
     }
 
     private fun reference(name: String): FloatArray {

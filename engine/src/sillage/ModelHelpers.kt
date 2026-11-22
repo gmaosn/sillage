@@ -50,7 +50,7 @@ internal class ModelHelpers(private val scene: Scene) {
             for (i in m.helpers) if (m.nodes[i].role == Role.SPAWN) {
                 val p = placeOf(node, i)
                 val f = p.rotation.rotate(Vec3(0f, 0f, -1f))
-                return p.position to Math.toDegrees(atan2(-f.x, -f.z).toDouble()).toFloat()
+                return p.position to sillage.math.toDegrees(atan2(-f.x, -f.z).toDouble()).toFloat()
             }
         }
         return null
