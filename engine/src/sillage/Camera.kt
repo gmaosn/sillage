@@ -178,6 +178,9 @@ class Camera internal constructor(private val scene: Scene) {
     }
 
     private fun isThin(b: Body) = b.id in scene.cameraIgnores
+    // The rays' filters, made once (a lambda that reads the camera is otherwise made at each ray).
+    private val buildings: (Body) -> Boolean = { it.type == BodyType.STATIC && !isThin(it) }
+    private val thin: (Body) -> Boolean = { isThin(it) }
 
     /** Free distance to the ground (static meshes). */
     internal fun clearOfGround(from: Vec3, dir: Vec3, distance: Float): Float {
@@ -187,8 +190,7 @@ class Camera internal constructor(private val scene: Scene) {
 
     /** Free distance to buildings (static bodies the camera does not pass through), with the camera's own size. */
     internal fun clearOfBuildings(from: Vec3, dir: Vec3, distance: Float): Float {
-        val hit = scene.physics.raycast(from, dir, distance, radius = .18f, meshes = false,
-            filter = { it.type == BodyType.STATIC && !isThin(it) }) ?: return distance
+        val hit = scene.physics.raycast(from, dir, distance, radius = .18f, meshes = false, filter = buildings) ?: return distance
         return max(.35f, hit.distance - .12f)
     }
 
@@ -198,7 +200,6 @@ class Camera internal constructor(private val scene: Scene) {
      */
     internal fun cameraDistance(from: Vec3, dir: Vec3, distance: Float): Float {
         var wanted = distance
-        val thin: (Body) -> Boolean = { isThin(it) }
         val end = from + dir * distance
         if (scene.physics.raycast(end, dir, .01f, radius = .18f, meshes = false, filter = thin)?.distance == 0f) {
             // The spot is inside a trunk: find its way out, coming back from a metre further.

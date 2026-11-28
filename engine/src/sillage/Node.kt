@@ -314,7 +314,19 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Turns on itself, [degreesPerSecond] about [axis]. */
     fun spin(degreesPerSecond: Number = 90, axis: Vec3 = Vec3.Y): Node {
         val speed = degreesPerSecond.toFloat() * PI.toFloat() / 180f
-        return onUpdate { dt -> rotation = (Quat.axisAngle(axis, speed * dt) * rotation).normalized() }
+        return onUpdate { dt ->
+            // (Quat.axisAngle(axis, speed * dt) * rotation).normalized(), written out: one quaternion made, not three.
+            val angle = speed * dt
+            val s = kotlin.math.sin(angle * .5f); val c = kotlin.math.cos(angle * .5f)
+            val ax = axis.x * s; val ay = axis.y * s; val az = axis.z * s
+            val q = rotation
+            val x = c * q.x + ax * q.w + ay * q.z - az * q.y
+            val y = c * q.y - ax * q.z + ay * q.w + az * q.x
+            val z = c * q.z + ax * q.y - ay * q.x + az * q.w
+            val w = c * q.w - ax * q.x - ay * q.y - az * q.z
+            val l = kotlin.math.sqrt(x * x + y * y + z * z + w * w)
+            rotation = if (l == 0f) Quat.IDENTITY else Quat(x / l, y / l, z / l, w / l)
+        }
     }
 
     /** Takes it out of the scene (and its body out of the physics). */
