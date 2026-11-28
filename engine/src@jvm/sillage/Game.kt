@@ -58,8 +58,9 @@ internal class Runtime(private val title: String, private val args: Array<String
   --debug physics,free,paused   start with the physics drawn (F5), the free camera (F6), paused (F7)
   --no-cull               draw everything, even what the camera cannot see (comparisons)
   --quality low|medium|high   how much the picture costs (default: by the graphics card; medium on a Raspberry Pi)
-  --renderer vulkan|gl    what draws: Vulkan (the default), or the OpenGL ES 3 renderer of the web and of
-                          phones, through EGL (only with --headless: to compare its pictures)
+  --renderer vulkan|gl    what draws: Vulkan, or the OpenGL ES 3 renderer of the web and of phones, through
+                          EGL (in the window or without one). By default Vulkan, and OpenGL ES when Vulkan
+                          cannot start (SILLAGE_RENDERER=gl|vulkan says the same)
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers
@@ -73,6 +74,8 @@ internal class Runtime(private val title: String, private val args: Array<String
         option("--quality")?.let { System.setProperty("sillage.quality", it) }
         val headless = "--headless" in args
         val smoke = "--smoke" in args
+        // SILLAGE_FIXED_STEP=1: 1/60 s per frame in a window too, as without one (pictures compared from run to run).
+        val fixedStep = System.getenv("SILLAGE_FIXED_STEP") == "1"
         val frames = option("--frames")?.toInt()?.also { require(it > 0) } ?: if (headless || smoke) 180 else Int.MAX_VALUE
         val screenshot = option("--capture")?.let { Path.of(it) }
         val lookAt = option("--look-at")?.split(',')?.map { it.trim().toFloat() }?.also { require(it.size == 6) { "--look-at takes 6 numbers" } }
@@ -121,12 +124,26 @@ internal class Runtime(private val title: String, private val args: Array<String
         val frameTimes = Times(); val gpuTimes = Times(); var firstFrame = 0L
         var window: Window? = null
         var renderer: Drawing? = null
-        val wanted = option("--renderer") ?: "vulkan"
-        require(wanted == "vulkan" || wanted == "gl") { "--renderer takes vulkan or gl (got $wanted)" }
-        require(wanted == "vulkan" || headless) { "--renderer gl draws without a window only: add --headless" }
-        fun open(shadows: Boolean): Drawing =
-            if (wanted == "gl") GlDrawing(size?.get(0) ?: 1280, size?.get(1) ?: 800, shadows)
-            else VulkanDrawing(VulkanRenderer(window, "--validation" in args, size?.get(0) ?: 1280, size?.get(1) ?: 800, shadows))
+        // What draws: Vulkan, or OpenGL ES when asked or when Vulkan cannot start (then for the rest of the run).
+        val wanted = option("--renderer") ?: System.getenv("SILLAGE_RENDERER")?.lowercase()?.takeIf { it.isNotEmpty() }
+        require(wanted == null || wanted == "vulkan" || wanted == "gl") { "--renderer takes vulkan or gl (got $wanted)" }
+        var useGl = wanted == "gl"
+        fun open(shadows: Boolean): Drawing {
+            val w = size?.get(0) ?: 1280; val h = size?.get(1) ?: 800
+            if (useGl) return try { GlDrawing(window, w, h, shadows) }
+                catch (e: Throwable) { if (e is VirtualMachineError) throw e; throw Advice.cannotDraw(null, e) }
+            return try { VulkanDrawing(VulkanRenderer(window, "--validation" in args, w, h, shadows)) }
+            catch (e: Throwable) {
+                if (e is VirtualMachineError) throw e
+                if (wanted == "vulkan" || "--validation" in args) throw Advice.cannotDraw(e, null)
+                println("Sillage: " + Advice.vulkanReason(e) + (Advice.vulkanFix(e)?.let { " (to have it: $it)" } ?: "") +
+                    ", so the game is drawn with OpenGL ES instead")
+                val gl = try { GlDrawing(window, w, h, shadows) }
+                    catch (g: Throwable) { if (g is VirtualMachineError) throw g; throw Advice.cannotDraw(e, g) }
+                useGl = true
+                gl
+            }
+        }
         try {
             audio?.device?.let { println("SILLAGE_AUDIO device=" + it + " latency=" + (audio.latency * 1000).roundToInt() + " ms") }
             if (!headless) window = openWindow(title, 1280, 800)
@@ -160,7 +177,7 @@ internal class Runtime(private val title: String, private val args: Array<String
                 }
                 val now = System.nanoTime()
                 val frameStart = now
-                val dt = if (smoke || headless) 1f / 60f else ((now - last) / 1e9).toFloat().coerceIn(.0001f, .1f)
+                val dt = if (smoke || headless || fixedStep) 1f / 60f else ((now - last) / 1e9).toFloat().coerceIn(.0001f, .1f)
                 last = now
                 scene.input.poll()
                 scene.debug.handleKeys(scene.input)    // F5 physics, F6 free camera, F7 pause, F8 one frame

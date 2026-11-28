@@ -39,6 +39,7 @@ internal object Wl {
     val addDispatcher = lib.fn("wl_proxy_add_dispatcher")
     val getVersion = lib.fn("wl_proxy_get_version")
     val getInterface = lib.fn("wl_proxy_get_interface")
+    val proxyDestroy = lib.fn("wl_proxy_destroy")
 
     /** Core interfaces exported by the library. */
     val display = lib.fn("wl_display_interface")
@@ -50,6 +51,7 @@ internal object Wl {
     val keyboard = lib.fn("wl_keyboard_interface")
     val region = lib.fn("wl_region_interface")
     val output = lib.fn("wl_output_interface")
+    val callback = lib.fn("wl_callback_interface")
 
     const val MARSHAL_FLAG_DESTROY = 1
 
@@ -355,6 +357,48 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
 
     override fun framebufferSize() = intArrayOf(width * scale, height * scale)
 
+    // ------------------------------------------------------------ OpenGL ES (EGL) in this window
+
+    /** The connection and the surface, for EGL's Wayland platform. */
+    internal val wlDisplay: MemorySegment get() = display
+    internal val wlSurface: MemorySegment get() = surface
+
+    private var frameCallback = NULL
+    private var frameDone = true
+
+    /**
+     * Asks the compositor to say when it wants the next picture; the request goes with the next commit (the
+     * one eglSwapBuffers makes). [waitForFrame] then waits for that word, the way Vulkan's present wait does.
+     */
+    internal fun requestFrame() {
+        if (frameCallback != NULL) return
+        frameDone = false
+        val cb = request(surface, "frame", Wl.callback, 0, null)
+        frameCallback = cb
+        listen(cb) { event, _ ->
+            if (event == "done") {
+                frameDone = true
+                handlers.remove(cb.address())
+                PSig.V_P.invokeExact(Wl.proxyDestroy, cb)
+                frameCallback = NULL
+            }
+        }
+    }
+
+    /**
+     * Waits, reading the window's events meanwhile, until the compositor wants the next picture or [seconds]
+     * have gone by (a hidden window may never be asked again); true when it asked.
+     */
+    internal fun waitForFrame(seconds: Double): Boolean {
+        val until = System.nanoTime() + (seconds * 1e9).toLong()
+        while (!frameDone) {
+            val left = (until - System.nanoTime()) / 1_000_000
+            if (left <= 0) return false
+            pump(left.toInt())
+        }
+        return true
+    }
+
     override fun poll() = pump(0)
 
     override fun waitEvents(seconds: Double) = pump((seconds * 1000).toInt().coerceAtLeast(0))
@@ -384,6 +428,7 @@ internal class WaylandWindow(title: String, private var width: Int, private var 
     override fun consumeText(): String = text.take()
 
     override fun close() {
+        if (frameCallback != NULL) { handlers.remove(frameCallback.address()); runCatching { PSig.V_P.invokeExact(Wl.proxyDestroy, frameCallback) }; frameCallback = NULL }
         for (p in listOf(lockedPointer, cursorShape, relativePointer, decoration, toplevel, xdgSurface))
             if (p != NULL) runCatching { destroy(p) }
         if (surface != NULL) runCatching { destroy(surface) }

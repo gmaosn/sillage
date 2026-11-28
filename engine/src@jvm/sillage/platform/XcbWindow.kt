@@ -59,6 +59,10 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
     private val pollScratch = arena.allocate(8, 4)
     private val conn: MemorySegment
     private val window: Int
+    /** The connection, the window and its visual, for EGL's X11 platforms (the window has the screen's own visual). */
+    internal val xcbConnection: MemorySegment get() = conn
+    internal val xcbWindow: Int get() = window
+    internal var xcbVisual = 0; private set
     private var wmDelete = 0
     private var netWmName = 0
     private var utf8String = 0
@@ -94,6 +98,7 @@ internal class XcbWindow(title: String, private var width: Int, private var heig
             val iterator = Xcb.ROOTS.invokeExact(Xcb.rootsIterator, arena as SegmentAllocator, setup) as MemorySegment
             val screen = iterator.get(ADDRESS, 0).reinterpret(40)
             val root = screen.get(JAVA_INT, 0); val visual = screen.get(JAVA_INT, 32)
+            xcbVisual = visual
             window = PSig.I_P.invokeExact(Xcb.generateId, conn) as Int
             val mask = 0x1 or 0x2 or 0x4 or 0x8 or 0x20 or 0x40 or 0x20000 or 0x200000 // touches, boutons, sortie, mouvement, structure, focus
             stack.frame { s ->
