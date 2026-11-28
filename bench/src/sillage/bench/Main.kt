@@ -9,6 +9,7 @@ import kotlin.math.max
 
 /**
  * Physics benches. Usage: bench [pyramid [rows]] [pile [count]] [determinism] [doors [count]] …
+ * Render benches (Render.kt): bench crates|forest|heap|island|night|temple [frames].
  * Times are wall-clock per 1/60 s step on this machine, after a warm-up.
  */
 fun main(args: Array<String>) {
@@ -33,6 +34,7 @@ fun main(args: Array<String>) {
             "fingerprints" -> fingerprints()
             "walls" -> walls()
             "loads" -> loads()
+            "crates", "forest", "heap", "island", "night", "temple" -> render(name, n ?: 4000)
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
