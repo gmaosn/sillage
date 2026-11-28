@@ -249,4 +249,27 @@ fun Qa.articulations() {
         }
         (if (traverses.isEmpty()) "aucune traversée" else traverses.joinToString()) to traverses.isEmpty()
     }
+
+    controle("collision continue sur la forme entière : ballon et caisse de 20 à 1500 m/s contre un mur de 5 cm",
+        "aucune traversée (mur boîte et mur maillé, tournés et lancés au hasard)") {
+        // Un mur fermé de triangles, 5 cm d'épaisseur, 4 m sur 4, sur le plan x = 0.
+        val e = .025f
+        val c = floatArrayOf(-e, -2f, -2f, e, -2f, -2f, e, 2f, -2f, -e, 2f, -2f, -e, -2f, 2f, e, -2f, 2f, e, 2f, 2f, -e, 2f, 2f)
+        val faces = intArrayOf(0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2)
+        val murMaille = FloatArray(6 * 18).also { t -> var k = 0; for (f in 0 until 6) for (s in intArrayOf(0, 1, 2, 0, 2, 3)) for (a in 0..2) t[k++] = c[3 * faces[4 * f + s] + a] }
+        val traverses = ArrayList<String>(); var essais = 0
+        for ((nom, forme) in listOf("ballon" to Sphere(.22f), "caisse" to Box(.25f, .25f, .25f))) for (maille in listOf(false, true))
+            for (v in floatArrayOf(20f, 60f, 150f, 400f, 1500f)) repeat(cas(3, 10)) {
+                val w = PhysicsWorld(gravity = Vec3.ZERO)
+                if (maille) w.addMesh(TriangleMesh(murMaille)) else w.add(Box(e, 2f, 2f), Vec3.ZERO, type = BodyType.STATIC)
+                val q = Quat.axisAngle(Vec3(rnd.f(-1f, 1f), rnd.f(-1f, 1f), rnd.f(-1f, 1f) + 3f).normalized(), rnd.f(0f, 6f))
+                val b = w.add(forme, Vec3(-3f, rnd.f(-1f, 1f), rnd.f(-1f, 1f)), q, density = 100f)
+                b.velocity = Vec3(1f, rnd.f(-.3f, .3f), rnd.f(-.3f, .3f)).normalized() * v
+                b.angularVelocity = Vec3(rnd.f(-4f, 4f), rnd.f(-4f, 4f), rnd.f(-4f, 4f))
+                repeat(30) { w.step(DT) }
+                essais++
+                if (b.position.x > e && abs(b.position.y) < 2f && abs(b.position.z) < 2f) traverses.add("$nom ${if (maille) "maillé" else "boîte"} ${v.toInt()} m/s")
+            }
+        (if (traverses.isEmpty()) "aucune traversée sur $essais lancers" else "${traverses.size} sur $essais : " + traverses.take(4).joinToString()) to traverses.isEmpty()
+    }
 }

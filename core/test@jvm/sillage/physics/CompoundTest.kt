@@ -199,4 +199,4 @@ class CompoundTest {
 }
 
 /** Fingerprint of [CompoundTest.lesContactsDesCorpsComposesNeChangentPas]. */
-private const val COMPOUND_FINGERPRINT = -6631759607180827762L
+private const val COMPOUND_FINGERPRINT = 1413027413885388924L

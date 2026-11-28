@@ -1925,10 +1925,12 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
 
     /**
      * Continuous collision, the safety net under the speculative contacts: a body that moved more than its
-     * core (half its smallest half-size) during the step is swept from where it was to where it is, its
-     * core as a sphere, against what does not move (and against every body for a [Body.isBullet]). If it
-     * went through something, it is put back just before it, its velocity kept: the next step's contacts
-     * then stop it (Box2D v3's way). A sweep that starts inside something is ignored.
+     * core (half its smallest half-size) during the step has its whole shape swept from where it was to
+     * where it is (at its present orientation), against the meshes and what does not move (and against
+     * every body for a [Body.isBullet]), each in the motion relative to it. If it went through something —
+     * met it and went on deeper than a small depth (a quarter of its core, at most 1 cm) — it is put back
+     * just before it, its velocity kept: the next step's contacts then stop it (Box2D v3's way). A sweep
+     * that starts inside something is ignored.
      */
     private fun continuous() {
         fast.clear(); still.clear()
@@ -1946,42 +1948,32 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         // The bodies have moved since the step began: the trees are brought up to date for the sweeps.
         queryTrees.valid = false
         val trees = if (fast.size > 0) treesFor() else null
+        val sc = continuousScratch
         for (k in 0 until fast.size) {
             val i = fast[k]; val o = i * S
             if (!bullet[i] && !anythingStill) continue            // nothing that stays put to go through
             val dx = st[o + DPX]; val dy = st[o + DPX + 1]; val dz = st[o + DPX + 2]
-            val travel = sqrt(dx * dx + dy * dy + dz * dz)
-            val ux = dx / travel; val uy = dy / travel; val uz = dz / travel
-            val fx = px[i] - dx; val fy = py[i] - dy; val fz = pz[i] - dz
-            val targets = if (bullet[i]) null else still
-            val shape = shapes[i]!!
-            var t: Float
-            if (shape is Compound) {
-                // Each part's core from where it was (moved along, not turned), the first hit for the whole body.
-                t = Float.NaN
-                val pose = ccdPose.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
-                for (j in 0 until shape.count) {
-                    val part = ccdPart.setPart(pose, shape, j)
-                    val h = sweepCore(part.px - dx, part.py - dy, part.pz - dz, ux, uy, uz, travel, .5f * coreOf(shape.shapes[j]), i, targets, trees, bullet[i])
-                    if (!h.isNaN() && (t.isNaN() || h < t)) t = h
-                }
-            } else t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, targets, trees, bullet[i])
-            if (t.isNaN() || t <= 0f || t >= travel) continue
-            val back = max(0f, t - CCD_SLOP)
-            px[i] = fx + ux * back; py[i] = fy + uy * back; pz[i] = fz + uz * back
+            if (!sweepShape(i, dx, dy, dz, trees, still, bullet[i], sc)) continue
+            // Back along the motion relative to what it met, to just before the impact.
+            val back = max(0.0, sc.at - CCD_SLOP) / sc.length
+            val bx = (sc.rx * (1.0 - back)).toFloat(); val by = (sc.ry * (1.0 - back)).toFloat(); val bz = (sc.rz * (1.0 - back)).toFloat()
+            px[i] -= bx; py[i] -= by; pz[i] -= bz
+            // Its motion this step is now that much shorter (for the bullets swept after it).
+            st[o + DPX] -= bx; st[o + DPX + 1] -= by; st[o + DPX + 2] -= bz
             continuousHits++
             // The next sweeps find it where it now is (a bullet may come after it).
             if (trees != null) trees.update(this, i)
         }
         if (continuousHits != hitsBefore) queryTrees.valid = false
     }
+    private val continuousScratch = ContinuousScratch()
 
     /** Sweeps that put a body back since the world was made (diagnostics). */
     var continuousHits = 0L
         private set
 
     private fun core(i: Int): Float = .5f * coreOf(shapes[i]!!)
-    private val ccdPose = Pose(); private val ccdPart = Pose()
+
 
     /** The radius of the largest ball about the centre inside the shape (a compound: its smallest part's). */
     private fun coreOf(s: Shape): Float = when (s) {

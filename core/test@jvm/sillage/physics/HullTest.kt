@@ -375,4 +375,4 @@ class HullTest {
 }
 
 /** Fingerprint of [HullTest.lesContactsDesEnveloppesNeChangentPas]: hulls against every shape and triangles. */
-private const val HULL_FINGERPRINT = 7819784953891823961L
+private const val HULL_FINGERPRINT = 7242351510874302759L

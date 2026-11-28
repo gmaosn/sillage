@@ -31,6 +31,7 @@ fun main(args: Array<String>) {
             "water" -> water(n ?: 400)
             "queries" -> queries(n ?: 40_000)
             "fingerprints" -> fingerprints()
+            "walls" -> walls()
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -445,6 +446,40 @@ private fun water(count: Int) {
             t.report("  $name, $count corps, ${if (withWater) "dans l'eau" else "sans eau"}")
         }
     }
+}
+
+/**
+ * Fast bodies thrown at a wall 5 cm thick (a static box, or a closed mesh of triangles), from 20 to
+ * 1500 m/s, turned and spinning at random: how many end up through it, per kind of shape.
+ */
+private fun walls() {
+    val t = .025f
+    val c = floatArrayOf(-t, -2f, -2f, t, -2f, -2f, t, 2f, -2f, -t, 2f, -2f, -t, -2f, 2f, t, -2f, 2f, t, 2f, 2f, -t, 2f, 2f)
+    val faces = intArrayOf(0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2)
+    val tris = ArrayList<Float>()
+    for (f in 0 until 6) { val q = IntArray(4) { faces[4 * f + it] }; for (k in intArrayOf(q[0], q[1], q[2], q[0], q[2], q[3])) for (a in 0..2) tris.add(c[3 * k + a]) }
+    val shapes = listOf<Pair<String, Shape>>("ballon 22 cm" to Sphere(.22f), "bille 2 cm" to Sphere(.02f), "caisse 50 cm" to Box(.25f, .25f, .25f),
+        "planche 6 cm" to Box(.4f, .03f, .2f), "capsule" to Capsule(.08f, .3f),
+        "caillou" to ConvexHull(floatArrayOf(-.2f, -.15f, -.1f, .25f, -.1f, -.12f, .05f, .2f, -.15f, -.1f, .05f, .2f, .15f, -.2f, .18f, 0f, .1f, .05f)),
+        "table" to Compound(listOf(Compound.Part(Box(.3f, .03f, .2f), Vec3(0f, .2f, 0f)), Compound.Part(Box(.03f, .2f, .03f)))))
+    println("Corps rapides contre un mur de 5 cm (boîte fixe | maillage fermé), 5 vitesses × 8 essais, 0,5 s chacun :")
+    val rnd = java.util.Random(3)
+    var steps = 0L; var nanos = 0L
+    for ((name, shape) in shapes) {
+        val crossed = IntArray(2)
+        for (mesh in 0..1) for (speed in floatArrayOf(20f, 60f, 150f, 400f, 1500f)) repeat(8) {
+            val w = PhysicsWorld(gravity = Vec3.ZERO)
+            if (mesh == 1) w.addMesh(TriangleMesh(tris.toFloatArray())) else w.add(Box(t, 2f, 2f), Vec3.ZERO, type = BodyType.STATIC)
+            val q = Quat.axisAngle(Vec3(rnd.nextFloat() - .5f, rnd.nextFloat() - .5f, rnd.nextFloat() - .5f).normalized(), rnd.nextFloat() * 6f)
+            val b = w.add(shape, Vec3(-3f, rnd.nextFloat() * 2f - 1f, rnd.nextFloat() * 2f - 1f), q, density = 300f)
+            b.velocity = Vec3(1f, (rnd.nextFloat() - .5f) * .6f, (rnd.nextFloat() - .5f) * .6f).normalized() * speed
+            b.angularVelocity = Vec3(rnd.nextFloat() - .5f, rnd.nextFloat() - .5f, rnd.nextFloat() - .5f) * 20f
+            repeat(30) { val t0 = System.nanoTime(); w.step(DT); nanos += System.nanoTime() - t0; steps++ }
+            if (b.position.x > t && abs(b.position.y) < 2f && abs(b.position.z) < 2f) crossed[mesh]++
+        }
+        println("  $name : ${crossed[0]} / 40 à travers la boîte, ${crossed[1]} / 40 à travers le maillage")
+    }
+    println("  (${"%.1f".format(nanos / 1e3 / steps)} µs par pas en moyenne)")
 }
 
 /**

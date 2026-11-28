@@ -973,7 +973,12 @@ internal fun collideTriangle(mesh: TriangleMesh, index: Int, b: Shape, pb: Pose,
         is Sphere -> triangleSphere(t, pb.px, pb.py, pb.pz, b.radius, margin, out, 0)
         is Capsule -> triangleCapsule(t, b, pb, margin, out)
         is Box -> triangleBox(t, b, pb, margin, out)
-        is ConvexHull -> triangleHull(t, b.poly, pb, margin, out)
+        is ConvexHull -> {
+            // Its centre behind the face by more than twice its inner radius (in a closed mesh, half through a thin
+            // wall): the face does not push it, as for spheres and capsules, or it would push it through to the far side.
+            val h = (pb.px - t.ax) * t.nx + (pb.py - t.ay) * t.ny + (pb.pz - t.az) * t.nz
+            if (h >= -2f * b.inradius) triangleHull(t, b.poly, pb, margin, out)
+        }
         is Compound -> {
             val first = out.count
             for (i in 0 until b.count) {
