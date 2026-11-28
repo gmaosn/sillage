@@ -8,6 +8,7 @@ import sillage.*
  * image). `crates` : 10 000 caisses vues de haut ; `forest` : 40 000 blocs vus de l'intérieur (qa `mondes`) ;
  * `heap` : un tas de 3 000 caisses en jeu ; `island` et `night` : l'île vue de haut, de jour et de nuit (vues
  * « ile » et « nuit » du qa) ; `temple` : le temple au départ du joueur. Le nombre est celui des images mesurées.
+ * BANC_FENETRE=1 : dans une fenêtre, au rythme de l'écran (dans un KWin isolé : tools/kwin_isole.sh).
  */
 internal fun render(name: String, frames: Int) {
     val (args, scene) = when (name) {
