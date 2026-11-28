@@ -765,7 +765,6 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             rigidJoints(h)
             solveJoints(true, h); solve(h, true); lap(5)
             integratePositions(h)
-            jointTrees.refresh(h, substepStart = false)  // the bodies have moved: the rows where they are now
             solveJoints(false, h); solve(h, false); lap(6)
         }
         if (wideActive) wide!!.finish()

@@ -114,16 +114,42 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
         out[o + 6] = lb.x.toDouble(); out[o + 7] = lb.y.toDouble(); out[o + 8] = lb.z.toDouble()
         out[o + 9] = ab.x.toDouble(); out[o + 10] = ab.y.toDouble(); out[o + 11] = ab.z.toDouble()
     }
-    /** The three rows that keep the anchors together, at row [first] of [out] (from [at]). */
-    internal fun pointRows(out: DoubleArray, at: Int, first: Int) {
-        val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
-        for (k in 0..2) {
-            val e = when (k) { 0 -> Vec3.X; 1 -> Vec3.Y; else -> Vec3.Z }
-            jacobianRow(out, at + 12 * (first + k), -e, -(ra cross e), e, rb cross e)
-        }
+    // The anchors from each centre as turned since the step began (dq · frame), in plain floats: (rax, ray, raz), (rbx…).
+    private var rax = 0.0; private var ray = 0.0; private var raz = 0.0; private var rbx = 0.0; private var rby = 0.0; private var rbz = 0.0
+    private fun turnedAnchors() {
+        val s = world.st
+        if (ia < 0) { rax = frameA.x.toDouble(); ray = frameA.y.toDouble(); raz = frameA.z.toDouble() }
+        else { val o = ia * SS + 16; turn(s[o], s[o + 1], s[o + 2], s[o + 3], frameA); rax = tx; ray = ty; raz = tz }
+        val o = ib * SS + 16; turn(s[o], s[o + 1], s[o + 2], s[o + 3], frameB); rbx = tx; rby = ty; rbz = tz
     }
-    /** The anchors' separation now (b's minus a's). */
-    internal fun pointError(): Vec3 = dp(ib) - dp(ia) + (dq(ib).rotate(frameB) - dq(ia).rotate(frameA)) + deltaCenter
+    private var tx = 0.0; private var ty = 0.0; private var tz = 0.0
+    /** v turned by the unit quaternion (x, y, z, w) into (tx, ty, tz): v + w t + q × t, t = 2 q × v (as [Quat.rotate]). */
+    private fun turn(x: Float, y: Float, z: Float, w: Float, v: Vec3) {
+        val cx = 2f * (y * v.z - z * v.y); val cy = 2f * (z * v.x - x * v.z); val cz = 2f * (x * v.y - y * v.x)
+        tx = (v.x + w * cx + (y * cz - z * cy)).toDouble(); ty = (v.y + w * cy + (z * cx - x * cz)).toDouble(); tz = (v.z + w * cz + (x * cy - y * cx)).toDouble()
+    }
+
+    /** The three rows that keep the anchors together, at row [first] of [out] (from [at]): ± e_k, and ∓ r × e_k on each side. */
+    internal fun pointRows(out: DoubleArray, at: Int, first: Int) {
+        turnedAnchors()
+        val o = at + 12 * first
+        out.fill(0.0, o, o + 36)
+        // Row x: a (−1, 0, 0 | 0, −raz, ray), b (1, 0, 0 | 0, rbz, −rby); rows y and z likewise.
+        out[o] = -1.0; out[o + 4] = -raz; out[o + 5] = ray; out[o + 6] = 1.0; out[o + 10] = rbz; out[o + 11] = -rby
+        val p = o + 12
+        out[p + 1] = -1.0; out[p + 3] = raz; out[p + 5] = -rax; out[p + 7] = 1.0; out[p + 9] = -rbz; out[p + 11] = rbx
+        val q = o + 24
+        out[q + 2] = -1.0; out[q + 3] = -ray; out[q + 4] = rax; out[q + 8] = 1.0; out[q + 9] = rby; out[q + 10] = -rbx
+    }
+    /** The anchors' separation now (b's minus a's), into [out] at [at]. */
+    internal fun pointErrorInto(out: DoubleArray, at: Int) {
+        turnedAnchors()
+        val s = world.st
+        var x = rbx - rax + deltaCenter.x; var y = rby - ray + deltaCenter.y; var z = rbz - raz + deltaCenter.z
+        val b = ib * SS + 13; x += s[b]; y += s[b + 1]; z += s[b + 2]
+        if (ia >= 0) { val a = ia * SS + 13; x -= s[a]; y -= s[a + 1]; z -= s[a + 2] }
+        out[at] = x; out[at + 1] = y; out[at + 2] = z
+    }
     /** The three rows that lock the rotation, at row [first]. */
     internal fun lockRows(out: DoubleArray, at: Int, first: Int) {
         for (k in 0..2) {
@@ -364,7 +390,7 @@ class BallJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, anc
     override val directForce: Float get() = impulse.length()
     override fun directReset() { impulse = Vec3.ZERO }
     override fun directJacobian(out: DoubleArray, at: Int) = pointRows(out, at, 0)
-    override fun directError(out: DoubleArray, at: Int) = writeVec(out, at, pointError())
+    override fun directError(out: DoubleArray, at: Int) = pointErrorInto(out, at)
     override fun directAccumulate(lambda: DoubleArray, at: Int) { impulse += readVec(lambda, at) }
 }
 
@@ -512,7 +538,7 @@ class HingeJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
         jacobianRow(out, at + 48, Vec3.ZERO, -across2, Vec3.ZERO, across2)
     }
     override fun directError(out: DoubleArray, at: Int) {
-        writeVec(out, at, pointError())
+        pointErrorInto(out, at)
         val e = dq(ia).rotate(axisA0) cross dq(ib).rotate(axisB0)
         out[at + 3] = (e dot across1).toDouble(); out[at + 4] = (e dot across2).toDouble()
     }
@@ -827,7 +853,7 @@ class FixedJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
     override val directForce: Float get() = impulse.length()
     override fun directReset() { impulse = Vec3.ZERO; angular = Vec3.ZERO }
     override fun directJacobian(out: DoubleArray, at: Int) { pointRows(out, at, 0); lockRows(out, at, 3) }
-    override fun directError(out: DoubleArray, at: Int) { writeVec(out, at, pointError()); writeVec(out, at + 3, lockError(relative0)) }
+    override fun directError(out: DoubleArray, at: Int) { pointErrorInto(out, at); writeVec(out, at + 3, lockError(relative0)) }
     override fun directAccumulate(lambda: DoubleArray, at: Int) { impulse += readVec(lambda, at); angular += readVec(lambda, at + 3) }
 }
 
