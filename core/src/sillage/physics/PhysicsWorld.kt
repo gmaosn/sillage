@@ -456,7 +456,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         noCollideCount = n
     }
     private fun pairKey(i: Int, j: Int) = (min(i, j).toLong() shl 32) or max(i, j).toLong()
-    internal fun joinedApart(i: Int, j: Int) = noCollideCount > 0 && jointed[i] && jointed[j] &&
+    // (A body added since the last rebuild has no joint: past the end of [jointed], it is joined to nothing.)
+    internal fun joinedApart(i: Int, j: Int) = noCollideCount > 0 && i < jointed.size && j < jointed.size && jointed[i] && jointed[j] &&
         sortedHas(noCollide, noCollideCount, pairKey(i, j))
 
     private var jointParent = IntArray(0); private var jointAwake = BooleanArray(0)
