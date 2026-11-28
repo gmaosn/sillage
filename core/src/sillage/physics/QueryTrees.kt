@@ -18,6 +18,11 @@ internal class QueryTrees {
     private var inMoving = BooleanArray(0)      // per body: in which tree
     private var dirty = BooleanArray(0)         // per body: moved by hand, added or removed since the last refresh
     private var last = FloatArray(0)            // per body: position and rotation when its leaf was last checked
+    private var watching = BooleanArray(0)      // per body: in [watched]
+    // The bodies marked dirty, and those that move by themselves (kinematic and dynamic, with a leaf): a refresh
+    // looks at these alone, never at the static scenery, which only moves by hand (and is then marked dirty).
+    private var dirtyIds = IntArray(16); private var dirtyCount = 0
+    private var watched = IntArray(16); private var watchedCount = 0
     private val bounds = FloatArray(6)
     private val pose = Pose()
     /** Refreshes since the trees were made and leaves moved (diagnostics, tests). */
@@ -27,22 +32,26 @@ internal class QueryTrees {
     /** Body [i] was placed by hand, added or removed: its leaf is checked at the next refresh. */
     fun touched(i: Int) {
         if (i >= dirty.size) grow(i + 1)
-        dirty[i] = true; valid = false
+        if (!dirty[i]) {
+            dirty[i] = true
+            if (dirtyCount == dirtyIds.size) dirtyIds = dirtyIds.copyOf(2 * dirtyCount)
+            dirtyIds[dirtyCount++] = i
+        }
+        valid = false
     }
 
     private fun grow(n: Int) {
         val c = maxOf(n, 2 * dirty.size, 16)
         val old = leaf.size
         leaf = leaf.copyOf(c); for (k in old until c) leaf[k] = -1
-        inMoving = inMoving.copyOf(c); dirty = dirty.copyOf(c); last = last.copyOf(7 * c)
-        for (k in old until c) dirty[k] = true
+        inMoving = inMoving.copyOf(c); dirty = dirty.copyOf(c); last = last.copyOf(7 * c); watching = watching.copyOf(c)
     }
 
     /** Brings every leaf up to date with its body. */
     fun refresh(w: PhysicsWorld) {
-        val n = w.count
-        if (leaf.size < n) grow(n)
-        for (i in 0 until n) update(w, i)
+        if (leaf.size < w.count) grow(w.count)
+        updateDirty(w)
+        updateWatched(w, kinematicOnly = false)
         refreshes++
         valid = true
     }
@@ -52,10 +61,28 @@ internal class QueryTrees {
      * by hand), for the broad phase at the start of a step: the dynamic ones wait for the next query.
      */
     fun refreshStill(w: PhysicsWorld) {
+        if (leaf.size < w.count) grow(w.count)
+        updateDirty(w)
+        updateWatched(w, kinematicOnly = true)
+    }
+
+    private fun updateDirty(w: PhysicsWorld) {
         val n = w.count
-        if (leaf.size < n) grow(n)
-        val types = w.types
-        for (i in 0 until n) if (types[i] != BodyType.DYNAMIC || dirty[i]) update(w, i)
+        for (k in 0 until dirtyCount) { val i = dirtyIds[k]; if (i < n) update(w, i) else dirty[i] = false }
+        dirtyCount = 0
+    }
+
+    /** Updates the watched bodies (only the kinematic ones if [kinematicOnly]), and lets go of those removed. */
+    private fun updateWatched(w: PhysicsWorld, kinematicOnly: Boolean) {
+        val types = w.types; val removed = w.removed
+        var kept = 0
+        for (k in 0 until watchedCount) {
+            val i = watched[k]
+            if (removed[i] || types[i] == BodyType.STATIC) { watching[i] = false; continue }
+            if (!kinematicOnly || types[i] == BodyType.KINEMATIC) update(w, i)
+            watched[kept++] = i
+        }
+        watchedCount = kept
     }
 
     /** Brings body [i]'s leaf up to date (a body put back by continuous collision while the trees serve). */
@@ -80,6 +107,11 @@ internal class QueryTrees {
         val b = bounds
         val margin = if (type == BodyType.STATIC) 0f else BoxTree.MARGIN
         val tree = if (dynamic) moving else still
+        if (type != BodyType.STATIC && !watching[i]) {
+            watching[i] = true
+            if (watchedCount == watched.size) watched = watched.copyOf(2 * watchedCount)
+            watched[watchedCount++] = i
+        }
         if (leaf[i] < 0) { leaf[i] = tree.insert(i, b[0], b[1], b[2], b[3], b[4], b[5], margin); inMoving[i] = dynamic }
         else if (!tree.holds(leaf[i], b[0], b[1], b[2], b[3], b[4], b[5])) { tree.move(leaf[i], b[0], b[1], b[2], b[3], b[4], b[5], margin); moves++ }
     }
