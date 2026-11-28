@@ -37,10 +37,10 @@ class Body internal constructor(internal val world: PhysicsWorld, val id: Int) {
     val shape: Shape get() = world.shapes[id]!!
     var position: Vec3
         get() = Vec3(world.px[id], world.py[id], world.pz[id])
-        set(v) { world.px[id] = v.x; world.py[id] = v.y; world.pz[id] = v.z; world.wake(id); world.queryGrid.valid = false }
+        set(v) { world.px[id] = v.x; world.py[id] = v.y; world.pz[id] = v.z; world.wake(id); world.queryTrees.touched(id) }
     var rotation: Quat
         get() = Quat(world.qx[id], world.qy[id], world.qz[id], world.qw[id])
-        set(q) { val u = q.normalized(); world.qx[id] = u.x; world.qy[id] = u.y; world.qz[id] = u.z; world.qw[id] = u.w; world.wake(id); world.queryGrid.valid = false }
+        set(q) { val u = q.normalized(); world.qx[id] = u.x; world.qy[id] = u.y; world.qz[id] = u.z; world.qw[id] = u.w; world.wake(id); world.queryTrees.touched(id) }
     var velocity: Vec3
         get() = Vec3(world.st[o + VX], world.st[o + VY], world.st[o + VZ])
         set(v) { world.st[o + VX] = v.x; world.st[o + VY] = v.y; world.st[o + VZ] = v.z; world.wake(id) }
@@ -248,8 +248,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     fun add(shape: Shape, position: Vec3, rotation: Quat = Quat.IDENTITY, type: BodyType = BodyType.DYNAMIC,
             density: Float = 1000f, mass: Float? = null, friction: Float = .6f, restitution: Float = 0f,
             rollingResistance: Float? = null): Body {
-        queryGrid.valid = false
         val i = if (free.size > 0) free.pop() else { if (count == capacity) grow(); count++ }
+        queryTrees.touched(i)
         // A reused slot starts afresh.
         removed[i] = false; sleeping[i] = false; sleepClock[i] = 0f; tags[i] = null; poses[i].px = Float.NaN; bullet[i] = false
         wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
@@ -315,7 +315,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         if (types[i] == BodyType.KINEMATIC) kinematics--
         removed[i] = true; types[i] = BodyType.STATIC; sleeping[i] = false; tags[i] = null
         wet[i] = 0f; wetBefore[i] = 0f; wetIn[i] = null; lastWater[i] = null
-        queryGrid.valid = false
+        queryTrees.touched(i)
         st.fill(0f, i * S, i * S + 6)
         free.add(i)
     }
@@ -688,14 +688,15 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     // Scratch for the queries (single-threaded, not reentrant: a query's filter must not query again).
     internal val queryStack = IntList(); internal val queryFound = IntList(); internal val queryScratch = ContactPoints()
     internal val queryPose = Pose(); internal val ray = RayQuery()
-    internal val queryGrid = QueryGrid(); internal val queryBodies = IntList()
+    internal val queryTrees = QueryTrees(); internal val queryBodies = IntList()
+    internal var queryStackT = FloatArray(64)
 
-    /** The grid of the bodies for a query, built if bodies moved since; null for a small world (searched body by body). */
-    internal var queryGridEnabled = true
-    internal fun gridFor(): QueryGrid? {
-        if (!queryGridEnabled || count - free.size < QueryGrid.MIN_BODIES) return null
-        if (!queryGrid.valid) queryGrid.build(this)
-        return queryGrid
+    /** The trees of the bodies for a query, brought up to date if bodies moved since; null for a small world (searched body by body). */
+    internal var queryTreesEnabled = true
+    internal fun treesFor(): QueryTrees? {
+        if (!queryTreesEnabled || count - free.size < QueryTrees.MIN_BODIES) return null
+        if (!queryTrees.valid) queryTrees.refresh(this)
+        return queryTrees
     }
     private val events = ArrayList<() -> Unit>()
 
@@ -739,7 +740,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val spare = previous; previous = points; points = spare
         patches.keep()
         val spareP = previousPatches; previousPatches = patches; patches = spareP
-        queryGrid.valid = false
+        queryTrees.valid = false
         // Zones last, and their callbacks after every zone is checked: a callback may move or add things.
         if (triggers.isNotEmpty()) {
             events.clear()
@@ -852,8 +853,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 BodyType.STATIC -> false
             }
             if (!coming) return
-            if (di && sleeping[i]) wake(i)
-            if (dj && sleeping[j]) wake(j)
+            if (di && sleeping[i]) { wake(i); if (recordWakes) woken.add(i) }
+            if (dj && sleeping[j]) { wake(j); if (recordWakes) woken.add(j) }
         }
         pairsA.add(min(i, j)); pairsB.add(max(i, j))
     }
@@ -870,8 +871,55 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         for (g in from until to) pairsInCell(groups[2 * g], groups[2 * g + 1], sc)
     }
 
+    // Static bodies are not entered in the cells: the tree of still bodies ([QueryTrees.still]) gives their
+    // pairs with the dynamic bodies, which are then put in the very order the cells would have given them
+    // (a large world of scenery no longer costs its size at every step, and every result stays the same).
+    private val nonStatic = IntList()
+    private var staticKey = LongArray(0); private var staticOther = IntArray(0); private var staticCount = 0
+    private var largeKeys = LongArray(0); private var largeCount = 0
+    private val woken = IntList()
+    private val staticFound = IntList()
+    private var recordWakes = false
+
+    private fun addStaticPair(key: Long, other: Int) {
+        if (staticCount == staticKey.size) { val c = max(64, 2 * staticCount); staticKey = staticKey.copyOf(c); staticOther = staticOther.copyOf(c) }
+        staticKey[staticCount] = key; staticOther[staticCount] = other; staticCount++
+    }
+    private fun addLargePair(owner: Int, other: Int) {
+        if (largeCount == largeKeys.size) largeKeys = largeKeys.copyOf(max(64, 2 * largeCount))
+        largeKeys[largeCount++] = (owner.toLong() shl 32) or other.toLong()
+    }
+    /** The cell in which the grid reports the pair (i, j) (that of the lowest corner of their bounds' overlap), packed as its entries are. */
+    private fun pairCell(i: Int, j: Int): Long {
+        val x = max(cellMin[3 * i], cellMin[3 * j]); val y = max(cellMin[3 * i + 1], cellMin[3 * j + 1]); val z = max(cellMin[3 * i + 2], cellMin[3 * j + 2])
+        return (x.toLong() shl 26) or (y.toLong() shl 13) or z.toLong()
+    }
+    private fun overlap(i: Int, j: Int): Boolean {
+        val oi = 6 * i; val oj = 6 * j
+        return !(box[oj] > box[oi + 3] || box[oj + 3] < box[oi] || box[oj + 1] > box[oi + 4] || box[oj + 4] < box[oi + 1] ||
+            box[oj + 2] > box[oi + 5] || box[oj + 5] < box[oi + 2])
+    }
+
+    /**
+     * The static bodies whose bounds overlap those of awake dynamic body [m]: small ones as pairs of the
+     * cells (keyed by cell, then the two bodies), large ones as pairs of the large bodies' pass when [large] is set.
+     */
+    private fun staticPairsOf(m: Int, small: Boolean, large: Boolean) {
+        val o = 6 * m; val g = speculativeDistance + 1e-3f
+        staticFound.clear()
+        queryTrees.still.query(box[o] - g, box[o + 1] - g, box[o + 2] - g, box[o + 3] + g, box[o + 4] + g, box[o + 5] + g, staticFound, queryStack)
+        for (k in 0 until staticFound.size) {
+            val s = staticFound[k]
+            if (types[s] != BodyType.STATIC || removed[s] || !overlap(m, s)) continue
+            if (isLarge[s]) { if (large) addLargePair(s, m); continue }
+            if (!small || joinedApart(m, s)) continue
+            val a = min(m, s); val b = max(m, s)
+            addStaticPair((pairCell(m, s) shl 24) or a.toLong(), b)
+        }
+    }
+
     private fun findPairs() {
-        pairsA.clear(); pairsB.clear(); large.clear()
+        pairsA.clear(); pairsB.clear(); large.clear(); nonStatic.clear()
         if (isLarge.size < count) { isLarge = BooleanArray(capacity); cellMin = IntArray(3 * capacity) }
         // Cell size: twice the typical moving body, so most bodies touch one to eight cells.
         var sum = 0f; var n = 0
@@ -882,6 +930,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         }
         cellSize = if (n == 0) 2f else (2f * sum / n).coerceIn(.25f, 16f)
         var entries = 0
+        var smallStatics = 0; var largeStatics = 0; var largeMovers = 0
         for (i in 0 until count) {
             if (removed[i]) { isLarge[i] = false; continue }
             val o = 6 * i
@@ -890,10 +939,28 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             cellMin[3 * i] = x0; cellMin[3 * i + 1] = y0; cellMin[3 * i + 2] = z0
             val span = (x1 - x0 + 1).toLong() * (y1 - y0 + 1) * (z1 - z0 + 1)
             isLarge[i] = span > 27
-            if (isLarge[i]) { large.add(i); continue }
+            val still = types[i] == BodyType.STATIC
+            if (isLarge[i]) { large.add(i); if (still) largeStatics++ else largeMovers++ }
+            if (still) { if (!isLarge[i]) smallStatics++; continue }
+            nonStatic.add(i)
+            if (isLarge[i]) continue
             if (cells.size < entries + span) cells = cells.copyOf(max(cells.size * 2, entries + span.toInt() + 1024))
             for (x in x0..x1) for (y in y0..y1) for (z in z0..z1)
                 cells[entries++] = (x.toLong() shl 50) or (y.toLong() shl 37) or (z.toLong() shl 24) or i.toLong()
+        }
+        // Pairs with the static bodies, from the awake dynamic ones (only they can pair with what does not move):
+        // the small static bodies' as the cells would give them, and — when the large bodies are many and none
+        // of them moves (nothing can then wake a body during their pass) — the large ones' too.
+        staticCount = 0; largeCount = 0; woken.clear()
+        val largeByTree = largeMovers == 0 && largeStatics > 8
+        if (smallStatics > 0 || largeByTree) {
+            queryTrees.refreshStill(this)
+            for (k in 0 until nonStatic.size) {
+                val m = nonStatic[k]
+                if (types[m] != BodyType.DYNAMIC || sleeping[m] || isLarge[m]) continue
+                staticPairsOf(m, smallStatics > 0, largeByTree)
+            }
+            sortPairs(staticKey, staticOther, 0, staticCount)
         }
         cells.sort(0, entries)
         groups.clear()
@@ -910,15 +977,40 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         val chunks = (ng + CELL_CHUNK - 1) / CELL_CHUNK
         while (cellScratch.size < chunks) cellScratch.add(CellScratch())
         forChunks(ng, CELL_CHUNK, entries >= PARALLEL_BODIES, cellsJob)
+        // The cells' pairs and the small static bodies' pairs, merged by cell, then by bodies.
+        recordWakes = largeByTree
+        var s = 0
         for (c in 0 until chunks) {
             val l = cellScratch[c].pairs
             var k = 0
-            while (k < l.size) { acceptPair(l[k], l[k + 1]); k += 2 }
+            while (k < l.size) {
+                val i = l[k]; val j = l[k + 1]
+                if (s < staticCount) {
+                    val key = (pairCell(i, j) shl 24) or i.toLong()
+                    while (s < staticCount && (staticKey[s] < key || (staticKey[s] == key && staticOther[s] < j))) { acceptStatic(s); s++ }
+                }
+                acceptPair(i, j); k += 2
+            }
         }
-        for (k in 0 until large.size) {
+        while (s < staticCount) { acceptStatic(s); s++ }
+        recordWakes = false
+        // The large bodies, each with every body after it (or every small one): in the order of their ids.
+        if (largeByTree) {
+            // Bodies woken by the cells' pairs may touch large static bodies too.
+            for (k in 0 until woken.size) { val m = woken[k]; if (types[m] == BodyType.DYNAMIC && !isLarge[m]) staticPairsOf(m, small = false, large = true) }
+            largeKeys.sort(0, largeCount)
+            for (k in 0 until largeCount) { val p = largeKeys[k]; considerPair((p ushr 32).toInt(), (p and 0xffffffffL).toInt()) }
+        } else for (k in 0 until large.size) {
             val i = large[k]
-            for (j in 0 until count) if (j != i && !removed[j] && !(isLarge[j] && j < i)) considerPair(i, j)
+            // A static body pairs only with what is not: the others need not be looked at.
+            if (types[i] == BodyType.STATIC) for (q in 0 until nonStatic.size) { val j = nonStatic[q]; if (!(isLarge[j] && j < i)) considerPair(i, j) }
+            else for (j in 0 until count) if (j != i && !removed[j] && !(isLarge[j] && j < i)) considerPair(i, j)
         }
+    }
+
+    private fun acceptStatic(s: Int) {
+        val i = (staticKey[s] and 0xffffff).toInt(); val j = staticOther[s]
+        acceptPair(i, j)
     }
 
     /** The pairs of one cell: each pair is reported only from the cell holding the lowest corner of the two bounds' overlap. */
@@ -1812,7 +1904,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             if (vu < 0f) { st[o] -= ux * vu; st[o + 1] -= uy * vu; st[o + 2] -= uz * vu }
             squeezes++
             wake(i)
-            queryGrid.valid = false
+            queryTrees.valid = false
         }
         for (n in 0 until squeezed.size) { val i = squeezed[n]; squeezeK[i] = 0; squeezeS[i] = 0 }
     }
@@ -1851,6 +1943,9 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             if (dx * dx + dy * dy + dz * dz > core * core) fast.add(i)
         }
         val anythingStill = still.size > 0 || meshes.isNotEmpty()
+        // The bodies have moved since the step began: the trees are brought up to date for the sweeps.
+        queryTrees.valid = false
+        val trees = if (fast.size > 0) treesFor() else null
         for (k in 0 until fast.size) {
             val i = fast[k]; val o = i * S
             if (!bullet[i] && !anythingStill) continue            // nothing that stays put to go through
@@ -1867,16 +1962,18 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
                 val pose = ccdPose.set(px[i], py[i], pz[i], qx[i], qy[i], qz[i], qw[i])
                 for (j in 0 until shape.count) {
                     val part = ccdPart.setPart(pose, shape, j)
-                    val h = sweepCore(part.px - dx, part.py - dy, part.pz - dz, ux, uy, uz, travel, .5f * coreOf(shape.shapes[j]), i, targets)
+                    val h = sweepCore(part.px - dx, part.py - dy, part.pz - dz, ux, uy, uz, travel, .5f * coreOf(shape.shapes[j]), i, targets, trees, bullet[i])
                     if (!h.isNaN() && (t.isNaN() || h < t)) t = h
                 }
-            } else t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, targets)
+            } else t = sweepCore(fx, fy, fz, ux, uy, uz, travel, core(i), i, targets, trees, bullet[i])
             if (t.isNaN() || t <= 0f || t >= travel) continue
             val back = max(0f, t - CCD_SLOP)
             px[i] = fx + ux * back; py[i] = fy + uy * back; pz[i] = fz + uz * back
             continuousHits++
+            // The next sweeps find it where it now is (a bullet may come after it).
+            if (trees != null) trees.update(this, i)
         }
-        if (continuousHits != hitsBefore) queryGrid.valid = false
+        if (continuousHits != hitsBefore) queryTrees.valid = false
     }
 
     /** Sweeps that put a body back since the world was made (diagnostics). */
@@ -2125,6 +2222,34 @@ internal class PatchSet {
 
 /** The solver on SIMD lanes for [world], or null where there is none. */
 internal expect fun platformWideSolver(world: PhysicsWorld): WideContacts?
+
+/** Sorts the pairs (a[k], b[k]) of [from, to) by a, then b, in place (quicksort, insertion sort for short runs). */
+internal fun sortPairs(a: LongArray, b: IntArray, from: Int, to: Int) {
+    var lo = from; var hi = to - 1
+    while (hi - lo > 16) {
+        // Median of three as the pivot.
+        val mid = (lo + hi) ushr 1
+        if (less(a, b, mid, lo)) swapPairs(a, b, mid, lo)
+        if (less(a, b, hi, lo)) swapPairs(a, b, hi, lo)
+        if (less(a, b, hi, mid)) swapPairs(a, b, hi, mid)
+        val pa = a[mid]; val pb = b[mid]
+        var i = lo; var j = hi
+        while (i <= j) {
+            while (a[i] < pa || (a[i] == pa && b[i] < pb)) i++
+            while (a[j] > pa || (a[j] == pa && b[j] > pb)) j--
+            if (i <= j) { swapPairs(a, b, i, j); i++; j-- }
+        }
+        // The smaller side by recursion, the larger by the loop: the stack stays shallow.
+        if (j - lo < hi - i) { sortPairs(a, b, lo, j + 1); lo = i } else { sortPairs(a, b, i, hi + 1); hi = j }
+    }
+    for (i in lo + 1..hi) {
+        val ka = a[i]; val kb = b[i]; var j = i - 1
+        while (j >= lo && (a[j] > ka || (a[j] == ka && b[j] > kb))) { a[j + 1] = a[j]; b[j + 1] = b[j]; j-- }
+        a[j + 1] = ka; b[j + 1] = kb
+    }
+}
+private fun less(a: LongArray, b: IntArray, i: Int, j: Int) = a[i] < a[j] || (a[i] == a[j] && b[i] < b[j])
+private fun swapPairs(a: LongArray, b: IntArray, i: Int, j: Int) { val x = a[i]; a[i] = a[j]; a[j] = x; val y = b[i]; b[i] = b[j]; b[j] = y }
 
 /** Whether [key] is among the first [count] values of [sorted] (ascending). */
 private fun sortedHas(sorted: LongArray, count: Int, key: Long): Boolean {
