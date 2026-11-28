@@ -29,6 +29,10 @@ fun main(args: Array<String>) {
             "hullsettle" -> hullSettle(n ?: 300)
             "rockpit" -> rockPit(n ?: 70)
             "water" -> water(n ?: 400)
+            "queries" -> queries(n ?: 40_000)
+            "fingerprints" -> fingerprints()
+            "walls" -> walls()
+            "loads" -> loads()
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -443,4 +447,199 @@ private fun water(count: Int) {
             t.report("  $name, $count corps, ${if (withWater) "dans l'eau" else "sans eau"}")
         }
     }
+}
+
+/**
+ * Joints under heavy loads: a suspended bridge of 10 planks of 5 kg on hinges between two posts, the
+ * character (70 kg) walking onto its middle and standing there; chains holding crates of 50 to 500 kg.
+ * How far the bridge sags under the character, how far the joints come apart, the time per step.
+ */
+private fun loads() {
+    fun gaps(w: PhysicsWorld) = w.jointList.maxOf { (it.anchorA - it.anchorB).length() }
+    println("Pont suspendu de 10 planches de 5 kg (5 m de planches, charnières, entre deux poteaux), le marin (70 kg) au milieu :")
+    for ((span, substeps) in listOf(5f to 4, 5f to 8, 4.8f to 4)) {
+        val w = PhysicsWorld(); w.substeps = substeps
+        w.addMesh(TriangleMesh(floatArrayOf(-30f, -3f, -30f, -30f, -3f, 30f, 30f, -3f, 30f, -30f, -3f, -30f, 30f, -3f, 30f, 30f, -3f, -30f)))
+        // The posts' tops, where the bridge hangs, and two landings to walk from.
+        w.add(Box(1f, 1f, 1f), Vec3(-span / 2 - 1.05f, -.025f - 1f, 0f), type = BodyType.STATIC)
+        w.add(Box(1f, 1f, 1f), Vec3(span / 2 + 1.05f, -.025f - 1f, 0f), type = BodyType.STATIC)
+        // Taut, or laid as a V that it leaves to hang in its own curve (2.5 m a side over 2.4 m).
+        val drop = kotlin.math.sqrt(max(0f, 2.5f * 2.5f - span * span / 4f)); val slope = drop / (span / 2f)
+        fun at(s: Float) = if (s <= 2.5f) Vec3(-span / 2 + s * span / 5f, -s * drop / 2.5f, 0f) else Vec3(span / 2 - (5f - s) * span / 5f, -(5f - s) * drop / 2.5f, 0f)
+        val planks = (0 until 10).map { k ->
+            val tilt = sillage.math.Quat.axisAngle(Vec3.Z, kotlin.math.atan(if (k < 5) -slope else slope))
+            w.add(Box(.25f, .025f, .4f), at(.25f + .5f * k), tilt, mass = 5f)
+        }
+        w.addHinge(null, planks[0], at(0f), Vec3.Z)
+        for (k in 1 until 10) w.addHinge(planks[k - 1], planks[k], at(.5f * k), Vec3.Z)
+        w.addHinge(null, planks[9], at(5f), Vec3.Z)
+        val hero = Character(w, feet = Vec3(-span / 2 - .7f, .03f, 0f))
+        var restSag = 0f; var sag = 0f; var gap = 0f; var vmax = 0f; var t = 0L; var n = 0
+        for (s in 0 until 60 * 12) {
+            val walk = if (s >= 240 && hero.position.x < 0f) Vec3(2f, 0f, 0f) else Vec3.ZERO
+            val t0 = System.nanoTime(); w.step(DT); t += System.nanoTime() - t0; n++
+            // (After the step: the hero's weight, given to the plank between steps, is not a motion of the bridge.)
+            if (s >= 60 * 8) { sag = max(sag, -planks.minOf { it.position.y }); gap = max(gap, gaps(w)); vmax = max(vmax, planks.maxOf { it.velocity.length() }) }
+            hero.update(walk, 0f, DT)
+            if (s == 239) restSag = -planks.minOf { it.position.y }
+        }
+        println("  ${if (span == 5f) "tendu" else "lâche (4,8 m entre les poteaux)"}, $substeps sous-pas : seul ${"%.1f".format(restSag * 100)} cm sous les poteaux ; " +
+            "le marin au milieu (x = ${"%.2f".format(hero.position.x)}, ${if (hero.onGround) "debout" else "en l'air"}) ${"%.1f".format(sag * 100)} cm, " +
+            "charnières ouvertes de ${"%.1f".format(gap * 1000)} mm au plus, planches à ${"%.2f".format(vmax)} m/s au plus, ${"%.3f".format(t / 1e6 / n)} ms par pas")
+    }
+    println("Chaîne de 10 maillons (1,5 m) qui tient une caisse :")
+    for (load in listOf(50f, 200f, 500f)) {
+        val w = PhysicsWorld()
+        val links = w.addChain(Vec3(0f, 5f, 0f), Vec3(0f, 3.5f, 0f), 10, radius = .03f)
+        val crate = w.add(Box(.3f, .3f, .3f), Vec3(0f, 3.2f, 0f), mass = load)
+        w.addBall(links.last(), crate, Vec3(0f, 3.5f, 0f))
+        repeat(60 * 6) { w.step(DT) }
+        val stretch = 3.2f - crate.position.y
+        println("  ${load.toInt()} kg : la caisse descend de ${"%.1f".format(stretch * 100)} cm (chaîne de ${"%.2f".format(links.sumOf { it.mass.toDouble() })} kg), " +
+            "maillons écartés de ${"%.1f".format(gaps(w) * 1000)} mm au plus, ${if (links.all { it.position.length().isFinite() }) "finie" else "EXPLOSÉE"}")
+    }
+}
+
+/**
+ * Fast bodies thrown at a wall 5 cm thick (a static box, or a closed mesh of triangles), from 20 to
+ * 1500 m/s, turned and spinning at random: how many end up through it, per kind of shape.
+ */
+private fun walls() {
+    val t = .025f
+    val c = floatArrayOf(-t, -2f, -2f, t, -2f, -2f, t, 2f, -2f, -t, 2f, -2f, -t, -2f, 2f, t, -2f, 2f, t, 2f, 2f, -t, 2f, 2f)
+    val faces = intArrayOf(0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2)
+    val tris = ArrayList<Float>()
+    for (f in 0 until 6) { val q = IntArray(4) { faces[4 * f + it] }; for (k in intArrayOf(q[0], q[1], q[2], q[0], q[2], q[3])) for (a in 0..2) tris.add(c[3 * k + a]) }
+    val shapes = listOf<Pair<String, Shape>>("ballon 22 cm" to Sphere(.22f), "bille 2 cm" to Sphere(.02f), "caisse 50 cm" to Box(.25f, .25f, .25f),
+        "planche 6 cm" to Box(.4f, .03f, .2f), "capsule" to Capsule(.08f, .3f),
+        "caillou" to ConvexHull(floatArrayOf(-.2f, -.15f, -.1f, .25f, -.1f, -.12f, .05f, .2f, -.15f, -.1f, .05f, .2f, .15f, -.2f, .18f, 0f, .1f, .05f)),
+        "table" to Compound(listOf(Compound.Part(Box(.3f, .03f, .2f), Vec3(0f, .2f, 0f)), Compound.Part(Box(.03f, .2f, .03f)))))
+    println("Corps rapides contre un mur de 5 cm (boîte fixe | maillage fermé), 5 vitesses × 8 essais, 0,5 s chacun :")
+    val rnd = java.util.Random(3)
+    var steps = 0L; var nanos = 0L
+    for ((name, shape) in shapes) {
+        val crossed = IntArray(2)
+        for (mesh in 0..1) for (speed in floatArrayOf(20f, 60f, 150f, 400f, 1500f)) repeat(8) {
+            val w = PhysicsWorld(gravity = Vec3.ZERO)
+            if (mesh == 1) w.addMesh(TriangleMesh(tris.toFloatArray())) else w.add(Box(t, 2f, 2f), Vec3.ZERO, type = BodyType.STATIC)
+            val q = Quat.axisAngle(Vec3(rnd.nextFloat() - .5f, rnd.nextFloat() - .5f, rnd.nextFloat() - .5f).normalized(), rnd.nextFloat() * 6f)
+            val b = w.add(shape, Vec3(-3f, rnd.nextFloat() * 2f - 1f, rnd.nextFloat() * 2f - 1f), q, density = 300f)
+            b.velocity = Vec3(1f, (rnd.nextFloat() - .5f) * .6f, (rnd.nextFloat() - .5f) * .6f).normalized() * speed
+            b.angularVelocity = Vec3(rnd.nextFloat() - .5f, rnd.nextFloat() - .5f, rnd.nextFloat() - .5f) * 20f
+            repeat(30) { val t0 = System.nanoTime(); w.step(DT); nanos += System.nanoTime() - t0; steps++ }
+            if (b.position.x > t && abs(b.position.y) < 2f && abs(b.position.z) < 2f) crossed[mesh]++
+        }
+        println("  $name : ${crossed[0]} / 40 à travers la boîte, ${crossed[1]} / 40 à travers le maillage")
+    }
+    println("  (${"%.1f".format(nanos / 1e3 / steps)} µs par pas en moyenne)")
+}
+
+/**
+ * Fingerprints of mixed scenes after a few seconds, to compare two versions of the engine bit for bit:
+ * few or many static bodies, small and large, kinematic platforms, a large dynamic raft, sleeping piles
+ * woken by impacts, joints, hulls and compounds, fast bodies. The same numbers mean the same simulation.
+ */
+private fun fingerprints() {
+    fun digest(w: PhysicsWorld): String {
+        var h = 1125899906842597L
+        for (i in 0 until w.bodyCount) {
+            val b = w.body(i)
+            if (b.isRemoved) continue
+            for (f in floatArrayOf(b.position.x, b.position.y, b.position.z, b.rotation.x, b.rotation.y, b.rotation.z, b.rotation.w, b.velocity.x, b.velocity.y, b.velocity.z))
+                h = 31 * h + f.toRawBits()
+        }
+        return java.lang.Long.toHexString(h) + " (${w.pairCount} paires, ${w.contactCount} points)"
+    }
+    for (scene in 0 until 6) {
+        val rnd = java.util.Random(scene * 7L + 1)
+        fun f(a: Float, b: Float) = a + rnd.nextFloat() * (b - a)
+        val w = PhysicsWorld()
+        if (scene % 2 == 0) ground(w, 60f) else w.add(Box(40f, .5f, 40f), Vec3(0f, -.5f, 0f), type = BodyType.STATIC)
+        // Walls: four (the large bodies' loop) or twenty (their tree).
+        val walls = if (scene < 3) 4 else 20
+        for (k in 0 until walls) {
+            val a = k * 6.2832f / walls
+            w.add(Box(.3f, 2f, 4f), Vec3(14f * kotlin.math.cos(a), 2f, 14f * kotlin.math.sin(a)), Quat.axisAngle(Vec3.Y, -a), type = BodyType.STATIC)
+        }
+        // Small static posts and steps.
+        for (k in 0 until (if (scene == 0) 0 else 60)) w.add(Box(f(.1f, .4f), f(.2f, 1f), f(.1f, .4f)), Vec3(f(-12f, 12f), f(0f, 1f), f(-12f, 12f)), type = BodyType.STATIC)
+        val lift = w.add(Box(1.5f, .2f, 1.5f), Vec3(-6f, .5f, -6f), type = BodyType.KINEMATIC)
+        if (scene == 2 || scene == 5) w.add(Box(6f, .3f, 6f), Vec3(3f, 6f, 3f), density = 100f)      // a large dynamic raft
+        val bodies = ArrayList<Body>()
+        for (k in 0 until 400) {
+            val p = Vec3(f(-10f, 10f), f(.5f, 9f), f(-10f, 10f))
+            bodies.add(when (k % 5) {
+                0 -> w.add(Box(f(.15f, .4f), f(.15f, .4f), f(.15f, .4f)), p, Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), k * .37f))
+                1 -> w.add(Sphere(f(.1f, .35f)), p, restitution = .3f)
+                2 -> w.add(Capsule(f(.08f, .2f), f(.1f, .3f)), p, Quat.axisAngle(Vec3.X, k * .5f))
+                3 -> w.add(ConvexHull(FloatArray(36) { f(-.3f, .3f) }), p)
+                else -> w.add(Compound(listOf(Compound.Part(Box(.25f, .05f, .25f)), Compound.Part(Sphere(.1f), Vec3(0f, .15f, 0f)))), p)
+            })
+        }
+        w.addChain(Vec3(5f, 8f, -5f), Vec3(5f, 4f, -5f), 8)
+        for (s in 0 until 360) {
+            lift.moveTo(Vec3(-6f, 1.5f + kotlin.math.sin(s * .05f), -6f), DT)
+            if (s == 200) for (k in 0 until 10) bodies[k * 37].velocity = Vec3(f(-40f, 40f), f(-60f, -20f), f(-40f, 40f))   // fast hits on sleepers
+            if (s == 250) bodies[5].isBullet = true
+            w.step(DT)
+        }
+        println("  scène $scene : ${digest(w)}")
+    }
+}
+
+/**
+ * Queries in a large world: [count] static pillars over a wide plain, 300 crates and balls tumbling in a
+ * pit, 200 more asleep. Each frame steps the world, then casts 60 rays (a camera, shadows), 20 sphere
+ * sweeps of 0.3 m and 10 of 1 m (wheels, a wide sweep), and places 30 shapes (spawn checks, a character).
+ */
+private fun queries(count: Int) {
+    println("Requêtes dans un grand monde : $count piliers fixes, 300 corps qui roulent, 200 endormis :")
+    val w = PhysicsWorld(); ground(w, 400f)
+    val rnd = java.util.Random(5)
+    fun f(a: Float, b: Float) = a + rnd.nextFloat() * (b - a)
+    for (k in 0 until count) {
+        val x = f(-380f, 380f); val z = f(-380f, 380f)
+        if (abs(x) < 20f && abs(z) < 20f) continue
+        w.add(Box(f(.2f, .6f), f(.5f, 3f), f(.2f, .6f)), Vec3(x, 1.5f, z), Quat.axisAngle(Vec3.Y, f(0f, 3f)), type = BodyType.STATIC)
+    }
+    for ((x, z, hx, hz) in listOf(arrayOf(-10f, 0f, .5f, 10.5f), arrayOf(10f, 0f, .5f, 10.5f), arrayOf(0f, -10f, 10.5f, .5f), arrayOf(0f, 10f, 10.5f, .5f)))
+        w.add(Box(hx, 2f, hz), Vec3(x, 2f, z), type = BodyType.STATIC)
+    val sleepers = ArrayList<Body>()
+    for (k in 0 until 200) sleepers.add(w.add(Box(.3f, .3f, .3f), Vec3(f(-300f, 300f), .3f, f(-300f, 300f))))
+    val movers = ArrayList<Body>()
+    for (k in 0 until 300) {
+        val p = Vec3(f(-8f, 8f), f(1f, 8f), f(-8f, 8f))
+        movers.add(if (k % 2 == 0) w.add(Box(.3f, .25f, .2f), p, Quat.axisAngle(Vec3(1f, 2f, 3f).normalized(), k * .37f)) else w.add(Sphere(.25f), p))
+    }
+    repeat(120) { w.step(DT) }
+    w.profiling = true
+    val step = Timing(); val rays = Timing(); val sweeps = Timing(); val wide = Timing(); val shapes = Timing()
+    var hits = 0L
+    for (frame in 0 until 600) {
+        if (frame % 90 == 0) for (b in movers) if (b.position.x in -9f..9f && b.position.z in -9f..9f) b.velocity = Vec3(f(-3f, 3f), f(2f, 6f), f(-3f, 3f))
+        var t0 = System.nanoTime(); w.step(DT); step.samples.add(System.nanoTime() - t0)
+        t0 = System.nanoTime()
+        for (k in 0 until 60) {
+            val o = Vec3(f(-60f, 60f), f(1f, 6f), f(-60f, 60f)); val d = Vec3(f(-1f, 1f), f(-.3f, .1f), f(-1f, 1f))
+            if (w.raycast(o, d, f(10f, 60f)) != null) hits++
+        }
+        rays.samples.add(System.nanoTime() - t0)
+        t0 = System.nanoTime()
+        for (k in 0 until 20) { val o = Vec3(f(-15f, 15f), f(1f, 3f), f(-15f, 15f)); if (w.raycast(o, Vec3(0f, -1f, 0f), 2f, radius = .3f) != null) hits++ }
+        sweeps.samples.add(System.nanoTime() - t0)
+        t0 = System.nanoTime()
+        for (k in 0 until 10) { val o = Vec3(f(-40f, 40f), f(1f, 3f), f(-40f, 40f)); if (w.raycast(o, Vec3(f(-1f, 1f), 0f, f(-1f, 1f)), 8f, radius = 1f) != null) hits++ }
+        wide.samples.add(System.nanoTime() - t0)
+        t0 = System.nanoTime()
+        for (k in 0 until 30) hits += w.overlaps(if (k % 2 == 0) Capsule(.28f, .62f) else Box(.5f, .5f, .5f), Vec3(f(-50f, 50f), f(.5f, 2f), f(-50f, 50f)), margin = .02f).size
+        shapes.samples.add(System.nanoTime() - t0)
+    }
+    step.report("pas physique")
+    val names = listOf("corps", "paires", "contacts", "préparation", "démarrage à chaud", "résolution", "détente", "sommeil et collision continue")
+    println("    phases (moyenne par pas) : " + names.indices.joinToString { "${names[it]} ${"%.2f".format(w.phaseNanos[it] / 1e6 / 600)} ms" })
+    rays.report("60 rayons")
+    sweeps.report("20 sphères de 0,3 m balayées")
+    wide.report("10 sphères de 1 m balayées")
+    shapes.report("30 formes placées")
+    println("  ($hits touches, ${sleepers.count { it.isSleeping }} / ${sleepers.size} endormis)")
 }

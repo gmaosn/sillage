@@ -249,4 +249,68 @@ fun Qa.articulations() {
         }
         (if (traverses.isEmpty()) "aucune traversée" else traverses.joinToString()) to traverses.isEmpty()
     }
+
+    controle("pont suspendu de 10 planches de 5 kg : le marin (70 kg) marche jusqu'au milieu", "charnières ≤ 3 mm, valeurs finies, planches calmes (≤ 0,6 m/s)") {
+        // Charnières bout à bout, 5 m de planches entre deux poteaux à 4,8 m, posé en V et laissé pendre (amorti le temps de pendre).
+        val w = PhysicsWorld()
+        w.addMesh(TriangleMesh(floatArrayOf(-30f, -3f, -30f, -30f, -3f, 30f, 30f, -3f, 30f, -30f, -3f, -30f, 30f, -3f, 30f, 30f, -3f, -30f)))
+        w.add(Box(1f, 1f, 1f), Vec3(-3.45f, -1.025f, 0f), type = BodyType.STATIC); w.add(Box(1f, 1f, 1f), Vec3(3.45f, -1.025f, 0f), type = BodyType.STATIC)
+        val drop = .7f
+        fun at(s: Float) = if (s <= 2.5f) Vec3(-2.4f + s * .96f, -s * drop / 2.5f, 0f) else Vec3(2.4f - (5f - s) * .96f, -(5f - s) * drop / 2.5f, 0f)
+        val planches = (0 until 10).map { k -> w.add(Box(.25f, .025f, .4f), at(.25f + .5f * k), Quat.axisAngle(Vec3.Z, atan(if (k < 5) -drop / 2.4f else drop / 2.4f)), mass = 5f) }
+        w.addHinge(null, planches[0], at(0f), Vec3.Z)
+        for (k in 1 until 10) w.addHinge(planches[k - 1], planches[k], at(.5f * k), Vec3.Z)
+        w.addHinge(null, planches[9], at(5f), Vec3.Z)
+        for (p in planches) { p.linearDamping = 2f; p.angularDamping = 2f }
+        repeat(360) { w.step(DT) }
+        val marin = Character(w, feet = Vec3(-3.1f, .03f, 0f))
+        var ecart = 0f; var vite = 0f
+        for (s in 0 until 600) {
+            w.step(DT)
+            if (s > 300) { ecart = max(ecart, w.jointList.maxOf { (it.anchorA - it.anchorB).length() }); vite = max(vite, planches.maxOf { it.velocity.length() }) }
+            marin.update(if (marin.position.x < 0f) Vec3(1.5f, 0f, 0f) else Vec3.ZERO, 0f, DT)
+        }
+        val finies = planches.all { it.fini() }
+        "charnières ${mm(ecart)} au plus, planches à ${f2(vite)} m/s, le marin en x = ${f2(marin.position.x)}${if (marin.onGround) ", debout" else ", en l'air"}" to
+            (finies && ecart <= .003f && vite <= .6f && marin.onGround && abs(marin.position.x) < .1f)
+    }
+
+    controle("chaînes de 10 maillons (7 kg) tenant 50 à 2000 kg, puis poussées", "la caisse descend de ≤ 2 mm, maillons ≤ 1 mm au repos et ≤ 5 mm en balançant") {
+        var descente = 0f; var repos = 0f; var balance = 0f
+        for (charge in floatArrayOf(50f, 200f, 500f, 2000f)) {
+            val w = PhysicsWorld()
+            val maillons = w.addChain(Vec3(0f, 5f, 0f), Vec3(0f, 3.5f, 0f), 10, radius = .03f)
+            val caisse = w.add(Box(.3f, .3f, .3f), Vec3(0f, 3.2f, 0f), mass = charge)
+            w.addBall(maillons.last(), caisse, Vec3(0f, 3.5f, 0f))
+            repeat(240) { w.step(DT) }
+            descente = max(descente, 3.2f - caisse.position.y); repos = max(repos, w.jointList.maxOf { (it.anchorA - it.anchorB).length() })
+            caisse.applyImpulse(Vec3(charge * rnd.f(-3f, 3f), 0f, charge * rnd.f(-3f, 3f)))
+            repeat(300) { w.step(DT); balance = max(balance, w.jointList.maxOf { (it.anchorA - it.anchorB).length() }) }
+            if (!maillons.all { it.fini() }) balance = Float.MAX_VALUE
+        }
+        "descente ${mm(descente)}, maillons ${mm(repos)} au repos, ${mm(balance)} en balançant" to (descente <= .002f && repos <= .001f && balance <= .005f)
+    }
+
+    controle("collision continue sur la forme entière : ballon et caisse de 20 à 1500 m/s contre un mur de 5 cm",
+        "aucune traversée (mur boîte et mur maillé, tournés et lancés au hasard)") {
+        // Un mur fermé de triangles, 5 cm d'épaisseur, 4 m sur 4, sur le plan x = 0.
+        val e = .025f
+        val c = floatArrayOf(-e, -2f, -2f, e, -2f, -2f, e, 2f, -2f, -e, 2f, -2f, -e, -2f, 2f, e, -2f, 2f, e, 2f, 2f, -e, 2f, 2f)
+        val faces = intArrayOf(0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2)
+        val murMaille = FloatArray(6 * 18).also { t -> var k = 0; for (f in 0 until 6) for (s in intArrayOf(0, 1, 2, 0, 2, 3)) for (a in 0..2) t[k++] = c[3 * faces[4 * f + s] + a] }
+        val traverses = ArrayList<String>(); var essais = 0
+        for ((nom, forme) in listOf("ballon" to Sphere(.22f), "caisse" to Box(.25f, .25f, .25f))) for (maille in listOf(false, true))
+            for (v in floatArrayOf(20f, 60f, 150f, 400f, 1500f)) repeat(cas(3, 10)) {
+                val w = PhysicsWorld(gravity = Vec3.ZERO)
+                if (maille) w.addMesh(TriangleMesh(murMaille)) else w.add(Box(e, 2f, 2f), Vec3.ZERO, type = BodyType.STATIC)
+                val q = Quat.axisAngle(Vec3(rnd.f(-1f, 1f), rnd.f(-1f, 1f), rnd.f(-1f, 1f) + 3f).normalized(), rnd.f(0f, 6f))
+                val b = w.add(forme, Vec3(-3f, rnd.f(-1f, 1f), rnd.f(-1f, 1f)), q, density = 100f)
+                b.velocity = Vec3(1f, rnd.f(-.3f, .3f), rnd.f(-.3f, .3f)).normalized() * v
+                b.angularVelocity = Vec3(rnd.f(-4f, 4f), rnd.f(-4f, 4f), rnd.f(-4f, 4f))
+                repeat(30) { w.step(DT) }
+                essais++
+                if (b.position.x > e && abs(b.position.y) < 2f && abs(b.position.z) < 2f) traverses.add("$nom ${if (maille) "maillé" else "boîte"} ${v.toInt()} m/s")
+            }
+        (if (traverses.isEmpty()) "aucune traversée sur $essais lancers" else "${traverses.size} sur $essais : " + traverses.take(4).joinToString()) to traverses.isEmpty()
+    }
 }

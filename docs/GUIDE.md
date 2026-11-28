@@ -201,7 +201,7 @@ When a model is animated, a collider can follow one of its parts: `port.collider
 
 The world is `physics`, a `PhysicsWorld`: `raycast(origin, direction, distance, radius)` for rays and sphere sweeps, `overlaps(shape, position)` for what a shape would touch, `groundBelow(x, z)`, and gravity. `groundHeight(x, z)` is the height of the solid meshes below a point, handy to put things on a terrain.
 
-The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours, continuous collision for fast bodies (`body.isBullet` for projectiles).
+The solver is a soft-step solver in the spirit of Box2D v3: stable stacks, friction patches, mass ratios handled, sleeping bodies woken by their neighbours, continuous collision of the whole shape for fast bodies (`body.isBullet` for projectiles), joints solved exactly under heavy loads (a bridge under the player, a crate on a chain).
 
 Bodies can be joined, once dynamic:
 
@@ -528,7 +528,7 @@ Models are glTF binary files (`.glb`), as Blender exports them: meshes with colo
 
 Normals: by default the engine makes its own, soft ones (each vertex takes the mean of the faces around it; edges sharper than 55° stay crisp), which suits the soft toon look. `model(path, normals = Normals.FROM_FILE)` keeps Blender's instead: flat-shaded faces stay flat, edges marked sharp stay sharp, custom normals are kept.
 
-`node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part. Cubic-spline curves and morph targets are refused with a clear message; metal/roughness and occlusion maps are ignored (the toon look has no use for them).
+`node.play("clip", loop, speed, fade)` plays a clip with a cross-fade; `node.animator` gives the clip in progress and the pose of each part. Clips may use linear, step or cubic-spline curves, and animate morph targets (blend shapes: a face, a flag, a bulging muscle), which deform the positions and normals on the processor, as skins do, with the weights the file gives the mesh or the node at rest. `KHR_texture_transform` (a texture's offset, rotation and scale, from Blender's mapping node) is applied to the texture coordinates when the model is read. Metal/roughness and occlusion maps are ignored (the toon look has no use for them).
 
 Paths are looked up on disk first, then in the classpath resources (`resources/models/…` in the module).
 
@@ -576,7 +576,7 @@ What the engine does by itself:
 - **Keys acting on the next picture.** When the driver can tell when a frame is on screen (Mesa does), the loop waits for the last frame to be shown before reading the keys: a key press reaches the screen one refresh later (16.6 ms at 60 Hz, against about 100 ms with the frames queued in FIFO mode). A tap shorter than a frame is never lost.
 - **Shadows in cascades.** Three shadow squares one inside the other: the finest (`lighting.shadowRange`, 24 m) around what the camera looks at, then three times wider, then out to the haze's end, so that far things keep their shadows, softer. The finest is drawn every frame, the second every two frames and the third every four: at most two shadow passes per frame. In a forest of 3,600 pillars at dusk, shadows out to the horizon cost about 0.7 ms of GPU more than the finest square alone; `lighting.shadowCascades = 1` keeps only the finest. Each pass draws only what stands in its square.
 - **The picture in linear light.** The scene is drawn in 16-bit floating point with 4× anti-aliasing, then a halo (five levels down and up) and a last pass for the ink lines, the tone and the vignette. This is what the GPU spends most on: on the island, about 0.8 ms per frame in 1280 × 800 and 2.9 ms in 2560 × 1600 (0.4 and 1.1 ms before, with plain 8-bit colour); in 2560 × 1600 the 16-bit image costs about 0.9 ms, the anti-aliasing 1 ms, the textures 0.3 ms and the halo 0.1 ms.
-- **Queries through a grid.** Rays, sphere sweeps and contact queries (the player, shadows, the camera) only look at the bodies near them.
+- **Queries through trees of boxes.** Rays, sphere sweeps of any radius and contact queries (the player, shadows, the camera) only look at the bodies near them, and the still scenery costs nothing to keep.
 - **No garbage in the hot loops.** Collision tests, rays and sweeps work on plain numbers and create no objects; the physics step, the mixer and the frame recording reuse their buffers. The garbage collector has little to do while the game runs.
 
 Measured on an Intel Core Ultra 7 laptop (efficiency cores, Arc B390): the demo island takes about 0.6 ms of CPU and 0.8 ms of GPU per frame in 1280 × 800 (before the pass in linear light: 0.4 ms of GPU); 10,000 crates on screen, 1.4 ms CPU and 0.4 ms GPU; a heap of 3,000 falling crates with shadows, about 2 ms per frame; 10,000 awake bodies in a heap, about 22 ms per physics step.

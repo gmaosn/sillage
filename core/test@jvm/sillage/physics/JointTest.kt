@@ -68,8 +68,8 @@ class JointTest {
         assertTrue(links.last().isSleeping, "la chaîne amortie devrait s'endormir")
         val bottom = links.last().position
         assertTrue(abs(bottom.x) < .05f, "la chaîne devrait pendre sous son attache : $bottom")
-        // Au repos, chaque articulation souple cède en proportion de ce qu'elle porte : celle du haut porte les
-        // vingt maillons (2 mm), la chaîne s'allonge de 2,7 cm sur 3 m (bas idéal : 5 − 19,5 × 0,15 = 2,075).
+        // Au repos, des articulations souples céderaient en proportion de ce qu'elles portent (2,7 cm sur 3 m) ; celle
+        // du haut, qui porte la chaîne, la fait résoudre d'un coup : elle ne s'allonge plus (bas idéal : 5 − 19,5 × 0,15 = 2,075).
         val still = w.jointList.maxOf { (it.anchorA - it.anchorB).length() }
         assertTrue(still < .003f, "au repos, maillons écartés de ${still * 1000} mm")
         assertEquals(2.075f, bottom.y, .04f)

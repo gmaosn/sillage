@@ -33,6 +33,12 @@ class ModelNode internal constructor(
     val properties: Map<String, Any?> = emptyMap(),
     /** The lamp it carries (KHR_lights_punctual: Blender's lights), or null. */
     val light: ModelLight? = null,
+    /** Its morph targets' weights at rest (the node's, else its mesh's), one per target; empty without targets. */
+    internal val morphWeights: FloatArray = FloatArray(0),
+    /** Per target, per triangle, how far a, b, c move at weight 1 (9 floats); [triangles] already hold the rest weights. */
+    internal val morphPositions: FloatArray = FloatArray(0),
+    /** The same for the file's normals (9 floats per triangle and target), empty when the targets have none. */
+    internal val morphNormals: FloatArray = FloatArray(0),
 ) {
     /**
      * What it is for in a scene, from its name and its `sillage` property (see [Role]): Blender's way of
@@ -93,17 +99,45 @@ enum class Normals {
 enum class ChannelTarget(val components: Int) { TRANSLATION(3), ROTATION(4), SCALE(3) }
 
 /** One animated property of one node: key times and values, linear (slerp for rotations) or step. */
-class Channel internal constructor(val node: Int, val target: ChannelTarget, val times: FloatArray, val values: FloatArray, val step: Boolean) {
+class Channel internal constructor(val node: Int, val target: ChannelTarget, val times: FloatArray, val values: FloatArray, val step: Boolean,
+                                   /** glTF's CUBICSPLINE: per key, its in-tangent then its out-tangent (2 × components floats); null for linear or step. */
+                                   internal val tangents: FloatArray? = null) {
     init {
         require(times.isNotEmpty()) { "Animation channel without keys" }
         require(values.size == times.size * target.components) { "Animation channel: ${values.size} values for ${times.size} keys" }
+        require(tangents == null || tangents.size == 2 * values.size) { "Animation channel: ${tangents?.size} tangents for ${times.size} keys" }
+        for (i in 1 until times.size) require(times[i] > times[i - 1]) { "Animation key times must increase" }
+    }
+}
+
+/**
+ * The morph target weights of one node, animated: key times, then [count] weights per key; linear, step, or a
+ * cubic spline (per key, [count] in-tangents then [count] out-tangents).
+ */
+internal class WeightChannel(val node: Int, val count: Int, val times: FloatArray, val values: FloatArray, val step: Boolean, val tangents: FloatArray?) {
+    init {
+        require(times.isNotEmpty()) { "Animation channel without keys" }
+        require(values.size == times.size * count) { "GLB: ${values.size} morph weights for ${times.size} keys of $count targets" }
         for (i in 1 until times.size) require(times[i] > times[i - 1]) { "Animation key times must increase" }
     }
 }
 
 /** A glTF animation: several channels sharing one timeline. */
-class Clip internal constructor(val name: String, val channels: List<Channel>) {
-    val duration: Float = channels.maxOfOrNull { it.times.last() } ?: 0f
+class Clip internal constructor(val name: String, val channels: List<Channel>,
+                                /** Its channels of morph target weights. */
+                                internal val weights: List<WeightChannel> = emptyList()) {
+    val duration: Float = maxOf(channels.maxOfOrNull { it.times.last() } ?: 0f, weights.maxOfOrNull { it.times.last() } ?: 0f)
+}
+
+/**
+ * The value of a cubic Hermite spline between keys [lo] and [hi] at [u] ∈ [0, 1] (glTF's CUBICSPLINE): component [j]
+ * of [k], the values in [v], the tangents in [tan] (per key, in then out), [span] seconds between the keys.
+ */
+internal fun hermite(v: FloatArray, tan: FloatArray, k: Int, j: Int, lo: Int, hi: Int, u: Float, span: Float): Float {
+    val u2 = u * u; val u3 = u2 * u
+    val p0 = v[lo * k + j]; val p1 = v[hi * k + j]
+    val m0 = tan[(2 * lo + 1) * k + j] * span; val m1 = tan[2 * hi * k + j] * span     // out-tangent of lo, in-tangent of hi
+    return (2f * u3 - 3f * u2 + 1f) * p0 + (u3 - 2f * u2 + u) * m0 + (-2f * u3 + 3f * u2) * p1 + (u3 - u2) * m1
 }
 
 /** Floats per model triangle: 9 positions, r, g, b, material index. */
@@ -254,7 +288,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
     /**
      * The material maps of the triangles of a mesh ([Mesh.surface]): tangents ([tangent]: triangle, corner → x, y, z,
      * handedness, null: none), normal and emission maps, the opacity of blended materials (when [blendable]: not
-     * for a skinned part, whose mesh changes every frame and is not split); null when no material has any.
+     * for a part deformed every frame — skinned, or its morph weights animated —, whose mesh changes and is not split); null when no material has any.
      */
     private fun surfaceOf(mats: IntArray, blendable: Boolean, tangent: (Int, Int) -> FloatArray?): FloatArray? {
         val looks = looks ?: return null
@@ -300,8 +334,11 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         for (r in roots) visit(r)
     }.toIntArray()
 
-    /** A node's triangles as a mesh in its space (in its bind space when skinned), and per vertex its 4 joints and 4 weights. */
-    private class LocalMesh(val mesh: Mesh, val weights: FloatArray?)
+    /**
+     * A node's triangles as a mesh in its space (in its bind space when skinned), per vertex its 4 joints and 4 weights,
+     * and its morph targets (per target, 3 floats per vertex of the mesh; positions, then the file's normals).
+     */
+    private class LocalMesh(val mesh: Mesh, val weights: FloatArray?, val morph: FloatArray? = null, val morphNormals: FloatArray? = null)
 
     /** Each node's triangles as a mesh in node space (knowing each triangle's material), shared by every instance of the model. */
     private val localMeshes: Map<Int, LocalMesh> by lazy {
@@ -315,10 +352,27 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             val mesh = normalsOf(g.build(), List(kept.size) { i }, kept, null) { null }.withMaterials(mats.toIntArray())
             val uvs = nodes[i].uvs
             val imaged = imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
-            val textured = surfaceOf(mats.toIntArray(), nodes[i].skin < 0) { t, k -> tangentOf(i, kept[t], k, null, false) }?.let { imaged.withSurface(it) } ?: imaged
+            // A part deformed every frame (skinned, or its morph weights animated) is not split for blending; its tangents stay those at rest.
+            val textured = surfaceOf(mats.toIntArray(), nodes[i].skin < 0 && !morphAnimated[i]) { t, k -> tangentOf(i, kept[t], k, null, false) }?.let { imaged.withSurface(it) } ?: imaged
             val sw = nodes[i].skinWeights
-            LocalMesh(textured, if (nodes[i].skin < 0) null else FloatArray(kept.size * 24) { j -> sw[24 * kept[j / 24] + j % 24] })
+            LocalMesh(textured, if (nodes[i].skin < 0) null else FloatArray(kept.size * 24) { j -> sw[24 * kept[j / 24] + j % 24] },
+                keptMorph(nodes[i], nodes[i].morphPositions, kept), keptMorph(nodes[i], nodes[i].morphNormals, kept))
         }
+    }
+
+    /** A node's morph targets ([deltas]: per target, 9 floats per triangle) for the triangles kept in its mesh; null without. */
+    private fun keptMorph(n: ModelNode, deltas: FloatArray, kept: List<Int>): FloatArray? {
+        if (deltas.isEmpty()) return null
+        val tris = n.triangles.size / TRI; val targets = n.morphWeights.size
+        return FloatArray(targets * kept.size * 9) { j ->
+            val t = j / (kept.size * 9); val q = (j / 9) % kept.size
+            deltas[(t * tris + kept[q]) * 9 + j % 9]
+        }
+    }
+
+    /** Nodes whose morph target weights some clip animates: their parts are deformed at every pose. */
+    private val morphAnimated: BooleanArray by lazy {
+        BooleanArray(nodes.size).also { a -> for (c in clips.values) for (w in c.weights) if (w.node in a.indices) a[w.node] = true }
     }
 
     /** The whole scene in its rest pose as one world-space mesh (static models), knowing each triangle's material. */
@@ -387,13 +441,29 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         return pos.toFloatArray() to mat.toIntArray()
     }
 
-    /** New parts for one instance: one per node that has triangles; a skinned one gets its own mesh, deformed every frame. */
+    /**
+     * New parts for one instance: one per node that has triangles; a skinned one, or one whose morph target weights
+     * are animated, gets its own mesh, deformed every frame.
+     */
     fun parts(): List<Part> = order.filter { it in localMeshes }.map { i ->
         val local = localMeshes.getValue(i)
         val w = local.weights
-        if (w == null) Part(i, local.mesh)
-        else Part(i, local.mesh.dynamicCopy()).also { it.skin = SkinBinding(nodes[i].skin, local.mesh.vertices, w) }
+        val morph = local.morph?.takeIf { morphAnimated[i] }
+        if (w == null && morph == null) Part(i, local.mesh)
+        else Part(i, local.mesh.dynamicCopy()).also {
+            if (w != null) it.skin = SkinBinding(nodes[i].skin, local.mesh.vertices, w)
+            if (morph != null) it.morph = MorphBinding(nodes[i].morphWeights, local.mesh.vertices, morph, local.morphNormals)
+        }
     }
+}
+
+/**
+ * What deforms a part by its morph targets: the weights at rest (those its [bind] vertices already hold), and per
+ * target how far each vertex moves at weight 1 (3 floats per vertex), its normal too when the file gives it.
+ */
+internal class MorphBinding(val rest: FloatArray, val bind: FloatArray, val positions: FloatArray, val normals: FloatArray?) {
+    /** The morphed vertices, for a part that is also skinned (scratch). */
+    var morphed = FloatArray(0)
 }
 
 /** What deforms a skinned part: its skin, its vertices as bound (9 floats each), per vertex 4 joints and 4 weights. */
@@ -407,6 +477,7 @@ class Part internal constructor(val node: Int, mesh: Mesh) {
     var mesh: Mesh = mesh
         internal set
     internal var skin: SkinBinding? = null
+    internal var morph: MorphBinding? = null
     /**
      * Its pose's 16 coefficients, column first as [Mat4] names them (m00, m01… m33), written in place by its
      * animator at every pose: the renderer reads them, and [pose] is made from them only when asked for.
@@ -501,6 +572,12 @@ class Animator(val model: Model, private val parts: List<Part>) {
     private val world = FloatArray(16 * n)
     private val local = FloatArray(16)
     private val joint = FloatArray(16)
+    // The morph target weights of each node that has targets (null for the others), and as frozen for a cross-fade.
+    private val weights: Array<FloatArray?> = Array(n) { model.nodes[it].morphWeights.takeIf { w -> w.isNotEmpty() }?.copyOf() }
+    private val frozenWeights: Array<FloatArray?> = Array(n) { weights[it]?.copyOf() }
+
+    /** Node [node]'s morph target weights as posed now (null: it has none). */
+    internal fun morphWeights(node: Int): FloatArray? = weights[node]
     /** The inverse bind matrices of each skin, 16 coefficients per joint. */
     private val inverseBinds: Array<FloatArray> = Array(model.skins.size) { k ->
         val s = model.skins[k]; FloatArray(16 * s.inverseBind.size).also { a -> for (j in s.inverseBind.indices) copyMat4(s.inverseBind[j], a, 16 * j) }
@@ -536,6 +613,7 @@ class Animator(val model: Model, private val parts: List<Part>) {
         this.loop = loop
         if (c === clip) return
         pt.copyInto(ft); pr.copyInto(fr); ps.copyInto(fs)
+        for (i in 0 until n) weights[i]?.copyInto(frozenWeights[i]!!)
         this.fade = fade; fadeTotal = fade
         clip = c; time = 0f
     }
@@ -556,6 +634,7 @@ class Animator(val model: Model, private val parts: List<Part>) {
             pt[3 * i] = nd.translation.x; pt[3 * i + 1] = nd.translation.y; pt[3 * i + 2] = nd.translation.z
             pr[4 * i] = nd.rotation.x; pr[4 * i + 1] = nd.rotation.y; pr[4 * i + 2] = nd.rotation.z; pr[4 * i + 3] = nd.rotation.w
             ps[3 * i] = nd.scale.x; ps[3 * i + 1] = nd.scale.y; ps[3 * i + 2] = nd.scale.z
+            weights[i]?.let { nd.morphWeights.copyInto(it) }
         }
     }
 
@@ -568,6 +647,22 @@ class Animator(val model: Model, private val parts: List<Part>) {
             else -> minOf(time, c.duration)
         }
         for (channel in c.channels) sample(channel, x)
+        for (channel in c.weights) sample(channel, x)
+    }
+
+    /** Morph target weights at [x]: linear, step or a cubic spline, between the two keys around it. */
+    private fun sample(c: WeightChannel, x: Float) {
+        val dst = weights[c.node] ?: return
+        val k = c.count; val t = c.times; val v = c.values
+        val m = minOf(k, dst.size)
+        if (t.size == 1 || x <= t[0]) { v.copyInto(dst, 0, 0, m); return }
+        if (x >= t[t.size - 1]) { v.copyInto(dst, 0, (t.size - 1) * k, (t.size - 1) * k + m); return }
+        var lo = 0; var hi = t.size - 1
+        while (hi - lo > 1) { val mid = (lo + hi) ushr 1; if (t[mid] <= x) lo = mid else hi = mid }
+        if (c.step) { v.copyInto(dst, 0, lo * k, lo * k + m); return }
+        val span = t[hi] - t[lo]; val u = (x - t[lo]) / span
+        val tan = c.tangents
+        for (j in 0 until m) dst[j] = if (tan != null) hermite(v, tan, k, j, lo, hi, u, span) else v[lo * k + j] + (v[hi * k + j] - v[lo * k + j]) * u
     }
 
     private fun sample(c: Channel, x: Float) {
@@ -581,6 +676,17 @@ class Animator(val model: Model, private val parts: List<Part>) {
         while (hi - lo > 1) { val mid = (lo + hi) ushr 1; if (t[mid] <= x) lo = mid else hi = mid }
         if (c.step) { v.copyInto(dst, base, lo * k, lo * k + k); return }
         val u = (x - t[lo]) / (t[hi] - t[lo])
+        val tan = c.tangents
+        if (tan != null) {
+            // glTF's cubic spline (Hermite, tangents scaled by the keys' spacing); a rotation is brought back to unit length.
+            val span = t[hi] - t[lo]
+            for (j in 0 until k) dst[base + j] = hermite(v, tan, k, j, lo, hi, u, span)
+            if (c.target == ChannelTarget.ROTATION) {
+                val l = kotlin.math.sqrt(dst[base] * dst[base] + dst[base + 1] * dst[base + 1] + dst[base + 2] * dst[base + 2] + dst[base + 3] * dst[base + 3])
+                if (l > 0f) for (j in 0..3) dst[base + j] /= l
+            }
+            return
+        }
         if (c.target == ChannelTarget.ROTATION) slerpInto(v, lo * 4, v, hi * 4, u, dst, base)
         else for (j in 0 until k) dst[base + j] = v[lo * k + j] + (v[hi * k + j] - v[lo * k + j]) * u
     }
@@ -590,6 +696,7 @@ class Animator(val model: Model, private val parts: List<Part>) {
         for (j in pt.indices) pt[j] = ft[j] + (pt[j] - ft[j]) * u
         for (j in ps.indices) ps[j] = fs[j] + (ps[j] - fs[j]) * u
         for (i in 0 until n) slerpInto(fr, 4 * i, pr, 4 * i, u, pr, 4 * i)
+        for (i in 0 until n) { val w = weights[i] ?: continue; val f = frozenWeights[i]!!; for (j in w.indices) w[j] = f[j] + (w[j] - f[j]) * u }
     }
 
     private fun pose() {
@@ -602,8 +709,14 @@ class Animator(val model: Model, private val parts: List<Part>) {
         }
         for (k in parts.indices) {
             val p = parts[k]
-            val s = p.skin
-            if (s == null) world.copyInto(p.m, 0, 16 * p.node, 16 * p.node + 16) else { copyMat4(Mat4.IDENTITY, p.m, 0); deform(p, s) }
+            val s = p.skin; val mb = p.morph
+            // Morph targets first (glTF's order), then the skin.
+            if (mb != null) {
+                if (s != null && mb.morphed.size < mb.bind.size) mb.morphed = mb.bind.copyOf()
+                morph(mb, weights[p.node]!!, if (s == null) p.mesh.vertices else mb.morphed)
+                if (s == null) p.mesh.version++
+            }
+            if (s == null) world.copyInto(p.m, 0, 16 * p.node, 16 * p.node + 16) else { copyMat4(Mat4.IDENTITY, p.m, 0); deform(p, s, if (mb != null) mb.morphed else s.bind) }
             p.version++
         }
     }
@@ -612,7 +725,7 @@ class Animator(val model: Model, private val parts: List<Part>) {
      * A skinned part's vertices where its joints are now: each the weighted sum of what its joints'
      * matrices (joint's pose × inverse bind matrix) make of it, normals likewise (uniform scales).
      */
-    private fun deform(p: Part, s: SkinBinding) {
+    private fun deform(p: Part, s: SkinBinding, src: FloatArray) {
         val skin = model.skins[s.skin]
         val n = skin.joints.size
         if (s.joints.size < 12 * n) s.joints = FloatArray(12 * n)
@@ -625,7 +738,7 @@ class Animator(val model: Model, private val parts: List<Part>) {
             j[o + 4] = m[1]; j[o + 5] = m[5]; j[o + 6] = m[9]; j[o + 7] = m[13]
             j[o + 8] = m[2]; j[o + 9] = m[6]; j[o + 10] = m[10]; j[o + 11] = m[14]
         }
-        val src = s.bind; val dst = p.mesh.vertices; val w = s.weights
+        val dst = p.mesh.vertices; val w = s.weights
         for (v in 0 until src.size / 9) {
             val i = 9 * v; val wo = 8 * v
             val px = src[i]; val py = src[i + 1]; val pz = src[i + 2]; val nx = src[i + 3]; val ny = src[i + 4]; val nz = src[i + 5]
@@ -646,5 +759,31 @@ class Animator(val model: Model, private val parts: List<Part>) {
             if (l > 0f) { dst[i + 3] = a / l; dst[i + 4] = b / l; dst[i + 5] = c / l }
         }
         p.mesh.version++
+    }
+
+    /**
+     * A part's vertices moved by its morph targets: each the bound one (at the rest weights) plus, per target, how far
+     * it moves times the weight's change from rest; normals likewise when the file gives them, back to unit length.
+     */
+    private fun morph(mb: MorphBinding, w: FloatArray, dst: FloatArray) {
+        val src = mb.bind; val d = mb.positions; val dn = mb.normals
+        val count = minOf(w.size, mb.rest.size); val verts = src.size / 9
+        for (v in 0 until verts) {
+            val i = 9 * v
+            var x = src[i]; var y = src[i + 1]; var z = src[i + 2]
+            var a = src[i + 3]; var b = src[i + 4]; var c = src[i + 5]
+            for (t in 0 until count) {
+                val f = w[t] - mb.rest[t]
+                if (f == 0f) continue
+                val o = 3 * (t * verts + v)
+                x += f * d[o]; y += f * d[o + 1]; z += f * d[o + 2]
+                if (dn != null) { a += f * dn[o]; b += f * dn[o + 1]; c += f * dn[o + 2] }
+            }
+            dst[i] = x; dst[i + 1] = y; dst[i + 2] = z
+            if (dn != null) {
+                val l = kotlin.math.sqrt(a * a + b * b + c * c)
+                if (l > 0f) { dst[i + 3] = a / l; dst[i + 4] = b / l; dst[i + 5] = c / l }
+            }
+        }
     }
 }

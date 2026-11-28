@@ -53,41 +53,9 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
     else { r.dx = direction.x / dl; r.dy = direction.y / dl; r.dz = direction.z / dl }
     r.radius = radius; r.best = maxDistance; r.hit = false; r.body = -1; r.material = null
     val ox = r.ox; val oy = r.oy; val oz = r.oz; val dx = r.dx; val dy = r.dy; val dz = r.dz
-    val grid = if (radius <= QueryGrid.PAD) gridFor() else null
-    if (grid == null) for (i in 0 until count) consider(i, r, filter)
-    else {
-        // Walk the cells along the ray (Amanatides–Woo), within the grid's bounds, until no closer body can come.
-        grid.begin()
-        val cand = queryBodies; cand.clear()
-        for (k in 0 until grid.large.size) consider(grid.large[k], r, filter)
-        var t0 = 0f; var t1 = r.best
-        for (axis in 0..2) {
-            val o = when (axis) { 0 -> ox; 1 -> oy; else -> oz }
-            val v = when (axis) { 0 -> dx; 1 -> dy; else -> dz }
-            val lo = when (axis) { 0 -> grid.minX; 1 -> grid.minY; else -> grid.minZ }
-            val hi = when (axis) { 0 -> grid.maxX; 1 -> grid.maxY; else -> grid.maxZ }
-            if (abs(v) < 1e-12f) { if (o < lo || o > hi) t1 = -1f }
-            else { val a = (lo - o) / v; val b = (hi - o) / v; t0 = max(t0, min(a, b)); t1 = min(t1, max(a, b)) }
-        }
-        if (t0 <= t1) {
-            val s = grid.size
-            var x = grid.cell(ox + dx * t0); var y = grid.cell(oy + dy * t0); var z = grid.cell(oz + dz * t0)
-            val stepX = if (dx > 0f) 1 else -1; val stepY = if (dy > 0f) 1 else -1; val stepZ = if (dz > 0f) 1 else -1
-            var tx = if (abs(dx) < 1e-12f) Float.MAX_VALUE else (boundary(x, stepX, s) - ox) / dx
-            var ty = if (abs(dy) < 1e-12f) Float.MAX_VALUE else (boundary(y, stepY, s) - oy) / dy
-            var tz = if (abs(dz) < 1e-12f) Float.MAX_VALUE else (boundary(z, stepZ, s) - oz) / dz
-            val ddx = if (abs(dx) < 1e-12f) Float.MAX_VALUE else s / abs(dx)
-            val ddy = if (abs(dy) < 1e-12f) Float.MAX_VALUE else s / abs(dy)
-            val ddz = if (abs(dz) < 1e-12f) Float.MAX_VALUE else s / abs(dz)
-            while (true) {
-                cand.clear(); grid.collect(x, y, z, cand); cand.sort()
-                for (k in 0 until cand.size) consider(cand[k], r, filter)
-                val next = min(tx, min(ty, tz))
-                if (next > r.best || next > t1) break
-                if (tx <= ty && tx <= tz) { x += stepX; tx += ddx } else if (ty <= tz) { y += stepY; ty += ddy } else { z += stepZ; tz += ddz }
-            }
-        }
-    }
+    val trees = treesFor()
+    if (trees == null) for (i in 0 until count) consider(i, r, filter)
+    else { rayTree(trees.still, r, filter); rayTree(trees.moving, r, filter) }
     if (meshes && radius > 0f) {
         val stack = queryStack; val found = queryFound
         val ex = ox + dx * r.best; val ey = oy + dy * r.best; val ez = oz + dz * r.best
@@ -117,33 +85,52 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
     return RayHit(r.best, Vec3(r.hx, r.hy, r.hz), Vec3(r.nx, r.ny, r.nz), if (r.body >= 0) handle(r.body) else null, r.material)
 }
 
-private fun boundary(c: Int, step: Int, size: Float) = (c - 4096 + (if (step > 0) 1 else 0)) * size
-
 /**
- * Continuous collision's sweep: a sphere of [radius] from (ox, oy, oz) along the unit (dx, dy, dz) over
- * [length], against the meshes and the bodies in [targets] (every body when null), body [self] and the
- * bodies a joint keeps apart from it excepted. No grid, no allocation: the distance, or NaN.
+ * Walks [tree] along the ray of [r] (grown by its radius), nearest branch first, and tests the bodies of the
+ * leaves it reaches; a branch is skipped once it starts beyond the nearest hit so far.
  */
-internal fun PhysicsWorld.sweepCore(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, length: Float,
-                                    radius: Float, self: Int, targets: IntList?): Float {
-    val r = ray
-    r.ox = ox; r.oy = oy; r.oz = oz; r.dx = dx; r.dy = dy; r.dz = dz
-    r.radius = radius; r.best = length; r.hit = false; r.body = -1; r.material = null
-    if (targets == null) { for (i in 0 until count) if (i != self && !joinedApart(self, i)) consider(i, r, null) }
-    else for (k in 0 until targets.size) { val i = targets[k]; if (i != self && !joinedApart(self, i)) consider(i, r, null) }
-    val stack = queryStack; val found = queryFound
-    val ex = ox + dx * length; val ey = oy + dy * length; val ez = oz + dz * length
-    for (mesh in meshes) {
-        found.clear()
-        mesh.query(min(ox, ex) - radius, min(oy, ey) - radius, min(oz, ez) - radius,
-            max(ox, ex) + radius, max(oy, ey) + radius, max(oz, ez) + radius, found, stack)
-        for (f in 0 until found.size) {
-            val t = found[f]
-            val h = sweepTriangle(r, r.tri.load(mesh, t), r.best, 0)
-            if (h <= r.best) r.keep(h, 0, -1, null)
-        }
+private fun PhysicsWorld.rayTree(tree: BoxTree, r: RayQuery, filter: ((Body) -> Boolean)?) {
+    if (tree.root < 0) return
+    val stack = queryStack; stack.clear()
+    if (queryStackT.size < 2 * tree.leaves + 64) queryStackT = FloatArray(2 * tree.leaves + 64)
+    val enter = rayEnter(tree, tree.root, r)
+    if (enter.isNaN()) return
+    stack.add(tree.root); queryStackT[0] = enter
+    while (stack.size > 0) {
+        val at = stack.size - 1
+        val n = stack.pop()
+        // Branches start a little before their box, for the rounding: the shape tests decide.
+        if (queryStackT[at] > r.best * (1f + 1e-5f) + 1e-4f) continue
+        val c1 = tree.child1[n]
+        if (c1 < 0) { consider(tree.item[n], r, filter); continue }
+        val c2 = tree.child2[n]
+        val t1 = rayEnter(tree, c1, r); val t2 = rayEnter(tree, c2, r)
+        // The nearer child is popped first.
+        if (!t1.isNaN() && !t2.isNaN()) {
+            if (t1 <= t2) { queryStackT[stack.size] = t2; stack.add(c2); queryStackT[stack.size] = t1; stack.add(c1) }
+            else { queryStackT[stack.size] = t1; stack.add(c1); queryStackT[stack.size] = t2; stack.add(c2) }
+        } else if (!t1.isNaN()) { queryStackT[stack.size] = t1; stack.add(c1) }
+        else if (!t2.isNaN()) { queryStackT[stack.size] = t2; stack.add(c2) }
     }
-    return if (r.hit) r.best else Float.NaN
+}
+
+/** Where the ray of [r] enters node [n]'s box grown by the ray's radius (0 if it starts inside), NaN if it misses it within its best distance. */
+private fun rayEnter(tree: BoxTree, n: Int, r: RayQuery): Float {
+    val b = tree.box; val o = 6 * n; val pad = r.radius + 1e-4f
+    var t0 = 0f; var t1 = r.best * (1f + 1e-5f) + 1e-4f
+    for (axis in 0..2) {
+        val p = when (axis) { 0 -> r.ox; 1 -> r.oy; else -> r.oz }
+        val d = when (axis) { 0 -> r.dx; 1 -> r.dy; else -> r.dz }
+        val lo = b[o + axis] - pad; val hi = b[o + 3 + axis] + pad
+        if (abs(d) < 1e-12f) { if (p < lo || p > hi) return Float.NaN; continue }
+        val inv = 1f / d
+        var ta = (lo - p) * inv; var tb = (hi - p) * inv
+        if (ta > tb) { val x = ta; ta = tb; tb = x }
+        if (ta > t0) t0 = ta
+        if (tb < t1) t1 = tb
+        if (t0 > t1) return Float.NaN
+    }
+    return t0
 }
 
 /** Tests body [i] against the ray, keeping it if it is the nearest hit so far. */
@@ -457,12 +444,12 @@ internal fun PhysicsWorld.touching(shape: Shape, pose: Pose, margin: Float, excl
     out.clear()
     val scratch = queryScratch
     val reach = shape.boundingRadius + margin
-    val grid = gridFor()
+    val trees = treesFor()
     val cand = queryBodies
-    if (grid != null) grid.bodiesIn(pose.px - reach, pose.py - reach, pose.pz - reach, pose.px + reach, pose.py + reach, pose.pz + reach, cand)
-    val n = if (grid != null) cand.size else count
+    if (trees != null) trees.bodiesIn(pose.px - reach, pose.py - reach, pose.pz - reach, pose.px + reach, pose.py + reach, pose.pz + reach, false, cand, queryStack)
+    val n = if (trees != null) cand.size else count
     for (k in 0 until n) {
-        val i = if (grid != null) cand[k] else k
+        val i = if (trees != null) cand[k] else k
         if (i == exclude || removed[i]) continue
         val r = shapes[i]!!.boundingRadius + reach
         val dx = px[i] - pose.px; val dy = py[i] - pose.py; val dz = pz[i] - pose.pz
