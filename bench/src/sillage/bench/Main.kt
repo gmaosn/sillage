@@ -32,6 +32,7 @@ fun main(args: Array<String>) {
             "queries" -> queries(n ?: 40_000)
             "fingerprints" -> fingerprints()
             "walls" -> walls()
+            "loads" -> loads()
             else -> if (name.toIntOrNull() == null) error("Banc inconnu : $name")
         }
         i += if (n != null) 2 else 1
@@ -445,6 +446,57 @@ private fun water(count: Int) {
             repeat(240) { s -> if (s % 60 == 0) for (b in bodies) b.velocity = Vec3(0f, -.5f, 0f); val t0 = System.nanoTime(); w.step(DT); t.samples.add(System.nanoTime() - t0) }
             t.report("  $name, $count corps, ${if (withWater) "dans l'eau" else "sans eau"}")
         }
+    }
+}
+
+/**
+ * Joints under heavy loads: a suspended bridge of 10 planks of 5 kg on hinges between two posts, the
+ * character (70 kg) walking onto its middle and standing there; chains holding crates of 50 to 500 kg.
+ * How far the bridge sags under the character, how far the joints come apart, the time per step.
+ */
+private fun loads() {
+    fun gaps(w: PhysicsWorld) = w.jointList.maxOf { (it.anchorA - it.anchorB).length() }
+    println("Pont suspendu de 10 planches de 5 kg (5 m de planches, charnières, entre deux poteaux), le marin (70 kg) au milieu :")
+    for ((span, substeps) in listOf(5f to 4, 5f to 8, 4.8f to 4)) {
+        val w = PhysicsWorld(); w.substeps = substeps
+        w.addMesh(TriangleMesh(floatArrayOf(-30f, -3f, -30f, -30f, -3f, 30f, 30f, -3f, 30f, -30f, -3f, -30f, 30f, -3f, 30f, 30f, -3f, -30f)))
+        // The posts' tops, where the bridge hangs, and two landings to walk from.
+        w.add(Box(1f, 1f, 1f), Vec3(-span / 2 - 1.05f, -.025f - 1f, 0f), type = BodyType.STATIC)
+        w.add(Box(1f, 1f, 1f), Vec3(span / 2 + 1.05f, -.025f - 1f, 0f), type = BodyType.STATIC)
+        // Taut, or laid as a V that it leaves to hang in its own curve (2.5 m a side over 2.4 m).
+        val drop = kotlin.math.sqrt(max(0f, 2.5f * 2.5f - span * span / 4f)); val slope = drop / (span / 2f)
+        fun at(s: Float) = if (s <= 2.5f) Vec3(-span / 2 + s * span / 5f, -s * drop / 2.5f, 0f) else Vec3(span / 2 - (5f - s) * span / 5f, -(5f - s) * drop / 2.5f, 0f)
+        val planks = (0 until 10).map { k ->
+            val tilt = sillage.math.Quat.axisAngle(Vec3.Z, kotlin.math.atan(if (k < 5) -slope else slope))
+            w.add(Box(.25f, .025f, .4f), at(.25f + .5f * k), tilt, mass = 5f)
+        }
+        w.addHinge(null, planks[0], at(0f), Vec3.Z)
+        for (k in 1 until 10) w.addHinge(planks[k - 1], planks[k], at(.5f * k), Vec3.Z)
+        w.addHinge(null, planks[9], at(5f), Vec3.Z)
+        val hero = Character(w, feet = Vec3(-span / 2 - .7f, .03f, 0f))
+        var restSag = 0f; var sag = 0f; var gap = 0f; var vmax = 0f; var t = 0L; var n = 0
+        for (s in 0 until 60 * 12) {
+            val walk = if (s >= 240 && hero.position.x < 0f) Vec3(2f, 0f, 0f) else Vec3.ZERO
+            val t0 = System.nanoTime(); w.step(DT); t += System.nanoTime() - t0; n++
+            // (After the step: the hero's weight, given to the plank between steps, is not a motion of the bridge.)
+            if (s >= 60 * 8) { sag = max(sag, -planks.minOf { it.position.y }); gap = max(gap, gaps(w)); vmax = max(vmax, planks.maxOf { it.velocity.length() }) }
+            hero.update(walk, 0f, DT)
+            if (s == 239) restSag = -planks.minOf { it.position.y }
+        }
+        println("  ${if (span == 5f) "tendu" else "lâche (4,8 m entre les poteaux)"}, $substeps sous-pas : seul ${"%.1f".format(restSag * 100)} cm sous les poteaux ; " +
+            "le marin au milieu (x = ${"%.2f".format(hero.position.x)}, ${if (hero.onGround) "debout" else "en l'air"}) ${"%.1f".format(sag * 100)} cm, " +
+            "charnières ouvertes de ${"%.1f".format(gap * 1000)} mm au plus, planches à ${"%.2f".format(vmax)} m/s au plus, ${"%.3f".format(t / 1e6 / n)} ms par pas")
+    }
+    println("Chaîne de 10 maillons (1,5 m) qui tient une caisse :")
+    for (load in listOf(50f, 200f, 500f)) {
+        val w = PhysicsWorld()
+        val links = w.addChain(Vec3(0f, 5f, 0f), Vec3(0f, 3.5f, 0f), 10, radius = .03f)
+        val crate = w.add(Box(.3f, .3f, .3f), Vec3(0f, 3.2f, 0f), mass = load)
+        w.addBall(links.last(), crate, Vec3(0f, 3.5f, 0f))
+        repeat(60 * 6) { w.step(DT) }
+        val stretch = 3.2f - crate.position.y
+        println("  ${load.toInt()} kg : la caisse descend de ${"%.1f".format(stretch * 100)} cm (chaîne de ${"%.2f".format(links.sumOf { it.mass.toDouble() })} kg), " +
+            "maillons écartés de ${"%.1f".format(gaps(w) * 1000)} mm au plus, ${if (links.all { it.position.length().isFinite() }) "finie" else "EXPLOSÉE"}")
     }
 }
 

@@ -486,6 +486,36 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     }
 
     private val activeJoints = ArrayList<Joint>()
+    private val jointTrees = JointTrees(this)
+    private val touchingPairs = LongIntMap(); private var touchingStamp = -1L; private var stepCount = 0L
+
+    /** Whether bodies [i] and [j] have contact points this step (after the narrow phase). */
+    internal fun touchingEachOther(i: Int, j: Int): Boolean {
+        if (touchingStamp != stepCount) {
+            touchingStamp = stepCount
+            touchingPairs.clear()
+            val c = points
+            for (k in 0 until c.size) if (c.a[k] >= 0 && (k == 0 || c.key[k] != c.key[k - 1])) touchingPairs.putIfAbsent(c.key[k], k)
+        }
+        return touchingPairs.get((min(i, j).toLong() shl 32) or max(i, j).toLong()) >= 0
+    }
+
+    /** Whether body [i] has contact points with a kinematic body this step (after the narrow phase). */
+    internal fun touchingKinematic(i: Int): Boolean {
+        if (kinematicStamp != stepCount) {
+            kinematicStamp = stepCount
+            if (byKinematic.size < capacity) byKinematic = BooleanArray(capacity) else byKinematic.fill(false)
+            val c = points
+            for (k in 0 until c.size) {
+                val a = c.a[k]; val b = c.b[k]
+                if (a >= 0 && types[a] == BodyType.KINEMATIC) byKinematic[b] = true
+                if (a >= 0 && types[b] == BodyType.KINEMATIC) byKinematic[a] = true
+            }
+        }
+        return byKinematic[i]
+    }
+    private var byKinematic = BooleanArray(0); private var kinematicStamp = -1L
+    private val jointSoftness = Softness()
     private fun prepareJoints(h: Float) {
         activeJoints.clear()
         val hertz = min(jointHertz, .25f / h)
@@ -496,9 +526,15 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             j.prepare(h, hertz, jointDampingRatio)
             activeJoints.add(j)
         }
+        jointSoftness.set(hertz, jointDampingRatio, h)
+        jointTrees.prepare(activeJoints, h * substeps)
     }
-    private fun warmStartJoints() { for (k in activeJoints.indices) activeJoints[k].warmStart() }
-    private fun solveJoints(useBias: Boolean, h: Float) { val invH = 1f / h; for (k in activeJoints.indices) activeJoints[k].solve(useBias, invH) }
+    private fun warmStartJoints() { for (k in activeJoints.indices) { val j = activeJoints[k]; if (j.direct) { j.treeLoad = j.directForce; if (j.treeStiff) j.directReset() }; j.warmStart() } }
+    private fun solveJoints(useBias: Boolean, h: Float) {
+        val invH = 1f / h
+        for (k in activeJoints.indices) activeJoints[k].solve(useBias, invH)
+        jointTrees.solve(useBias, jointSoftness.biasRate, jointSoftness.massScale)
+    }
     /**
      * The joints' rigid velocity pass, before the soft one in each substep: what the bodies' velocities do to
      * the joints (an impulse, a hit, a contact) is stopped at once, as a real pin would, instead of leaking
@@ -508,6 +544,9 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     private fun rigidJoints(h: Float) {
         val invH = 1f / h
         for (k in activeJoints.indices) { val j = activeJoints[k]; j.rigid = true; j.solve(false, invH); j.rigid = false }
+        // The trees' rows where the bodies are in this substep, then the velocities brought to keep them.
+        jointTrees.refresh(h, substepStart = true)
+        jointTrees.solve(false, 0f, 1f)
     }
 
     /** Applies a force at the centre during the next step. */
@@ -703,6 +742,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     /** Advances the simulation by [dt] seconds, then tells the [Trigger]s who came in and who left. */
     fun step(dt: Float) {
         if (dt <= 0f || count == 0) return
+        stepCount++
         val h = dt / substeps
         var t = if (profiling) sillage.math.nanoTime() else 0L
         fun lap(k: Int) { if (profiling) { val n = sillage.math.nanoTime(); phaseNanos[k] += n - t; t = n } }
@@ -725,6 +765,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             rigidJoints(h)
             solveJoints(true, h); solve(h, true); lap(5)
             integratePositions(h)
+            jointTrees.refresh(h, substepStart = false)  // the bodies have moved: the rows where they are now
             solveJoints(false, h); solve(h, false); lap(6)
         }
         if (wideActive) wide!!.finish()

@@ -80,6 +80,65 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
     internal abstract fun warmStart()
     internal abstract fun solve(useBias: Boolean, invH: Float)
 
+    // ---- rigid rows solved by the joint trees ([JointTrees]): this step, the iterative passes leave them out
+
+    /** Set for the steps in which [JointTrees] solves this joint's rigid rows. */
+    internal var direct = false
+    /** Its rigid rows (anchors together, axes aligned, rotations locked, a rod's length), 0 for none. */
+    internal open val directRows: Int get() = 0
+    /** What its rigid rows carry as a force: the size of their accumulated impulse (N·s per substep), the anchors' or the sides'. */
+    internal open val directForce: Float get() = 0f
+    /**
+     * Whether a body of it had its inertia stiffened by the trees in the last substep (see [JointTrees]): then its
+     * rigid rows are not warm started ([directReset]), as the trees solve them whole and the warm start would give
+     * them through the body's own inertia.
+     */
+    internal var treeStiff = false
+    /** Forgets the rigid rows' impulses before a substep's warm start (see [treeStiff]). */
+    internal open fun directReset() {}
+    /** [directForce] as the last substep left it, taken before the warm start (the trees' geometric stiffness). */
+    internal var treeLoad = 0f
+    /** Whether a limit of its own (beside the rigid rows) is reached, or close (by a margin and what it may turn in [dt]). */
+    internal open fun nearLimits(dt: Float): Boolean = false
+    /** Its rows where the bodies are now: per row 12 values, linear and angular parts on a, then on b. */
+    internal open fun directJacobian(out: DoubleArray, at: Int) {}
+    /** Their position errors now (the row speeds integrate them). */
+    internal open fun directError(out: DoubleArray, at: Int) {}
+    /** Adds the trees' impulses (one per row) to its own. */
+    internal open fun directAccumulate(lambda: DoubleArray, at: Int) {}
+
+    /** Writes one row at [o]: linear and angular parts on a (la, aa), then on b (lb, ab). */
+    internal fun jacobianRow(out: DoubleArray, o: Int, la: Vec3, aa: Vec3, lb: Vec3, ab: Vec3) {
+        out[o] = la.x.toDouble(); out[o + 1] = la.y.toDouble(); out[o + 2] = la.z.toDouble()
+        out[o + 3] = aa.x.toDouble(); out[o + 4] = aa.y.toDouble(); out[o + 5] = aa.z.toDouble()
+        out[o + 6] = lb.x.toDouble(); out[o + 7] = lb.y.toDouble(); out[o + 8] = lb.z.toDouble()
+        out[o + 9] = ab.x.toDouble(); out[o + 10] = ab.y.toDouble(); out[o + 11] = ab.z.toDouble()
+    }
+    /** The three rows that keep the anchors together, at row [first] of [out] (from [at]). */
+    internal fun pointRows(out: DoubleArray, at: Int, first: Int) {
+        val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
+        for (k in 0..2) {
+            val e = when (k) { 0 -> Vec3.X; 1 -> Vec3.Y; else -> Vec3.Z }
+            jacobianRow(out, at + 12 * (first + k), -e, -(ra cross e), e, rb cross e)
+        }
+    }
+    /** The anchors' separation now (b's minus a's). */
+    internal fun pointError(): Vec3 = dp(ib) - dp(ia) + (dq(ib).rotate(frameB) - dq(ia).rotate(frameA)) + deltaCenter
+    /** The three rows that lock the rotation, at row [first]. */
+    internal fun lockRows(out: DoubleArray, at: Int, first: Int) {
+        for (k in 0..2) {
+            val e = when (k) { 0 -> Vec3.X; 1 -> Vec3.Y; else -> Vec3.Z }
+            jacobianRow(out, at + 12 * (first + k), Vec3.ZERO, -e, Vec3.ZERO, e)
+        }
+    }
+    /** How far b's rotation relative to a is from [relative0], as a small rotation in the world (as [solveLock] measures it). */
+    internal fun lockError(relative0: Quat): Vec3 {
+        val qa = rot(ia)
+        var e = qa.conjugate() * rot(ib) * relative0.conjugate()
+        if (e.w < 0f) e = Quat(-e.x, -e.y, -e.z, -e.w)
+        return qa.rotate(Vec3(e.x, e.y, e.z) * 2f)
+    }
+
     // ---- body state in the world's solver arrays; a = −1 is the world: still, without mass
 
     /** Rotation now (at the step's start in prepare, as integrated so far in the substeps). */
@@ -300,8 +359,17 @@ class BallJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, anc
     private var impulse = Vec3.ZERO
     override fun prepare(h: Float, hertz: Float, dampingRatio: Float) { super.prepare(h, hertz, dampingRatio); lastImpulse = impulse.length() }
     override fun warmStart() = apply(impulse, dq(ia).rotate(frameA), dq(ib).rotate(frameB))
-    override fun solve(useBias: Boolean, invH: Float) { impulse += solvePoint(useBias, impulse) }
+    override fun solve(useBias: Boolean, invH: Float) { if (!direct) impulse += solvePoint(useBias, impulse) }
+    override val directRows: Int get() = 3
+    override val directForce: Float get() = impulse.length()
+    override fun directReset() { impulse = Vec3.ZERO }
+    override fun directJacobian(out: DoubleArray, at: Int) = pointRows(out, at, 0)
+    override fun directError(out: DoubleArray, at: Int) = writeVec(out, at, pointError())
+    override fun directAccumulate(lambda: DoubleArray, at: Int) { impulse += readVec(lambda, at) }
 }
+
+internal fun writeVec(out: DoubleArray, at: Int, v: Vec3) { out[at] = v.x.toDouble(); out[at + 1] = v.y.toDouble(); out[at + 2] = v.z.toDouble() }
+internal fun readVec(v: DoubleArray, at: Int) = Vec3(v[at].toFloat(), v[at + 1].toFloat(), v[at + 2].toFloat())
 
 /**
  * A hinge: the anchors stay together and the bodies turn about one axis only (doors, wheels, levers,
@@ -406,7 +474,7 @@ class HingeJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
             impulse += applyCoupled(axis * l, hold * l, ra, rb)
         }
         // The axes stay aligned: two rows across a's axis, about the anchor too.
-        run {
+        if (!direct) run {
             val j1 = perpendicular(axis); val j2 = axis cross j1
             val rel = w(ib) - w(ia)
             var b1 = rel dot j1; var b2 = rel dot j2
@@ -428,7 +496,29 @@ class HingeJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
                 angular += step; impulse += applyCoupled(step, h1 * s1 + h2 * s2, ra, rb)
             }
         }
-        impulse += solvePoint(useBias, impulse)
+        if (!direct) impulse += solvePoint(useBias, impulse)
+    }
+
+    // The trees' rows: the point, then the two axes across a's axis (where the bodies are now).
+    private var across1 = Vec3.X; private var across2 = Vec3.Z
+    override val directRows: Int get() = 5
+    override val directForce: Float get() = impulse.length()
+    override fun directReset() { impulse = Vec3.ZERO; angular = Vec3.ZERO }
+    override fun nearLimits(dt: Float): Boolean = limitsEnabled && run { val m = .2f + 2f * abs(speed) * dt; val a = angle; a - lowerAngle < m || upperAngle - a < m }
+    override fun directJacobian(out: DoubleArray, at: Int) {
+        pointRows(out, at, 0)
+        val axis = dq(ia).rotate(axisA0); across1 = perpendicular(axis); across2 = axis cross across1
+        jacobianRow(out, at + 36, Vec3.ZERO, -across1, Vec3.ZERO, across1)
+        jacobianRow(out, at + 48, Vec3.ZERO, -across2, Vec3.ZERO, across2)
+    }
+    override fun directError(out: DoubleArray, at: Int) {
+        writeVec(out, at, pointError())
+        val e = dq(ia).rotate(axisA0) cross dq(ib).rotate(axisB0)
+        out[at + 3] = (e dot across1).toDouble(); out[at + 4] = (e dot across2).toDouble()
+    }
+    override fun directAccumulate(lambda: DoubleArray, at: Int) {
+        impulse += readVec(lambda, at)
+        angular += across1 * lambda[at + 3].toFloat() + across2 * lambda[at + 4].toFloat()
     }
 }
 
@@ -535,6 +625,7 @@ class SliderJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, a
             if (side == 0) lowerImpulse = new else upperImpulse = new
             applyRow(axis, sign * (new - old))
         }
+        if (direct) return
         angular += solveLock(useBias, relative0, angular)
         // Across the axis: two rows.
         val t1 = perpendicular(axis); val t2 = axis cross t1
@@ -547,6 +638,32 @@ class SliderJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, a
             linear += n * lambda
             applyRow(n, lambda)
         }
+    }
+
+    // The trees' rows: two across the axis (a's turning about b's anchor counts), then the rotation locked.
+    private var across1 = Vec3.X; private var across2 = Vec3.Z
+    override val directRows: Int get() = 5
+    override val directForce: Float get() = linear.length()
+    override fun directReset() { linear = Vec3.ZERO; angular = Vec3.ZERO }
+    override fun nearLimits(dt: Float): Boolean = limitsEnabled && run { val m = .02f + 2f * abs(speed) * dt; val t = translation; t - lower < m || upper - t < m }
+    override fun directJacobian(out: DoubleArray, at: Int) {
+        val axis = dq(ia).rotate(axis0); across1 = perpendicular(axis); across2 = axis cross across1
+        val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
+        val d = dp(ib) - dp(ia) + (rb - ra) + deltaCenter
+        for (k in 0..1) {
+            val n = if (k == 0) across1 else across2
+            jacobianRow(out, at + 12 * k, -n, -((ra + d) cross n), n, rb cross n)
+        }
+        lockRows(out, at, 2)
+    }
+    override fun directError(out: DoubleArray, at: Int) {
+        val d = dp(ib) - dp(ia) + (dq(ib).rotate(frameB) - dq(ia).rotate(frameA)) + deltaCenter
+        out[at] = (d dot across1).toDouble(); out[at + 1] = (d dot across2).toDouble()
+        writeVec(out, at + 2, lockError(relative0))
+    }
+    override fun directAccumulate(lambda: DoubleArray, at: Int) {
+        linear += across1 * lambda[at].toFloat() + across2 * lambda[at + 1].toFloat()
+        angular += readVec(lambda, at + 2)
     }
 }
 
@@ -689,6 +806,8 @@ class ConeTwistJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body
         } else { lowerImpulse = 0f; upperImpulse = 0f }
         impulse += solvePoint(useBias, impulse)
     }
+    // No rows for the joint trees: a ragdoll's cones and twists bound every limb at once, and are solved with their
+    // points as before (a limb is no load-carrying structure; measured, the trees made the limits overshoot more).
 }
 
 /** A fixed joint: the two bodies move as one (glued, welded); [b] keeps its place and rotation relative to [a]. */
@@ -700,9 +819,16 @@ class FixedJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body, an
     override fun prepare(h: Float, hertz: Float, dampingRatio: Float) { super.prepare(h, hertz, dampingRatio); lastImpulse = impulse.length() }
     override fun warmStart() = apply(impulse, dq(ia).rotate(frameA), dq(ib).rotate(frameB), angular)
     override fun solve(useBias: Boolean, invH: Float) {
+        if (direct) return
         angular += solveLock(useBias, relative0, angular)
         impulse += solvePoint(useBias, impulse)
     }
+    override val directRows: Int get() = 6
+    override val directForce: Float get() = impulse.length()
+    override fun directReset() { impulse = Vec3.ZERO; angular = Vec3.ZERO }
+    override fun directJacobian(out: DoubleArray, at: Int) { pointRows(out, at, 0); lockRows(out, at, 3) }
+    override fun directError(out: DoubleArray, at: Int) { writeVec(out, at, pointError()); writeVec(out, at + 3, lockError(relative0)) }
+    override fun directAccumulate(lambda: DoubleArray, at: Int) { impulse += readVec(lambda, at); angular += readVec(lambda, at + 3) }
 }
 
 /**
@@ -769,7 +895,7 @@ class DistanceJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body,
     override fun solve(useBias: Boolean, invH: Float) {
         val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
         val m = measure(ra, rb)
-        if (!rope && !(rigid && springHertz > 0f)) {
+        if (!rope && !(rigid && springHertz > 0f) && !direct) {
             // A spring pulls in both passes (softness is its nature); a rigid rod corrects only with bias.
             val c = current - length
             val s = if (springHertz > 0f) spring else soft
@@ -797,6 +923,24 @@ class DistanceJoint internal constructor(world: PhysicsWorld, a: Body?, b: Body,
             applyAlong(ra, rb, sign * (new - old))
         }
     }
+
+    // A rigid rod: one row along the rod (where the bodies are now).
+    private var along = Vec3.Y
+    override val directRows: Int get() = if (!rope && springHertz <= 0f) 1 else 0
+    override val directForce: Float get() = abs(impulse)
+    override fun directReset() { impulse = 0f }
+    override fun directJacobian(out: DoubleArray, at: Int) {
+        val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
+        val d = dp(ib) - dp(ia) + (rb - ra) + deltaCenter
+        val l = d.length()
+        along = if (l > 1e-6f) d / l else Vec3.Y
+        jacobianRow(out, at, -along, -(ra cross along), along, rb cross along)
+    }
+    override fun directError(out: DoubleArray, at: Int) {
+        val d = dp(ib) - dp(ia) + (dq(ib).rotate(frameB) - dq(ia).rotate(frameA)) + deltaCenter
+        out[at] = (d.length() - length).toDouble()
+    }
+    override fun directAccumulate(lambda: DoubleArray, at: Int) { impulse += lambda[at].toFloat() }
 }
 
 /** A 3 × 3 matrix by columns, for the joints' effective masses. */
