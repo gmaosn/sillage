@@ -217,7 +217,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
 
     private fun createInstance() = stack.frame { s ->
         if(validation) require("VK_LAYER_KHRONOS_validation" in VkLoader.layerNames()) {
-            "Installer vulkan-validation-layers pour utiliser --validation" }
+            "--validation needs the Vulkan validation layers: install vulkan-validation-layers" }
         val extensions=(target?.instanceExtensions ?: emptyList()) + (if(validation) listOf(VK_EXT_DEBUG_UTILS_EXTENSION_NAME) else emptyList())
         val app=s.struct(VkApplicationInfo, "pApplicationName" to s.allocateFrom("Sillage"),
             "pEngineName" to s.allocateFrom("Sillage Kotlin"), "apiVersion" to VK_API_VERSION_1_0)

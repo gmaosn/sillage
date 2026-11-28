@@ -23,7 +23,8 @@ internal class AlsaOutput(override val device: String, private val mixer: Mixer,
 
     init {
         val handle = arena.allocate(ADDRESS)
-        check(OPEN.invokeExact(fOpen, handle, arena.allocateFrom(device), 0 /* playback */, 0) as Int, "snd_pcm_open($device)")
+        val opened = OPEN.invokeExact(fOpen, handle, arena.allocateFrom(device), 0 /* playback */, 0) as Int
+        if (opened < 0) { arena.close(); throw IllegalStateException("the sound output \"$device\" would not open (ALSA says: ${error(opened)})") }
         pcm = handle.get(ADDRESS, 0)
         try {
             check(SET_PARAMS.invokeExact(fSetParams, pcm, 2 /* S16_LE */, 3 /* RW_INTERLEAVED */, 2, rate, 1, latencyMs * 1000) as Int,
@@ -50,7 +51,8 @@ internal class AlsaOutput(override val device: String, private val mixer: Mixer,
                 val n = WRITEI.invokeExact(fWritei, pcm, pcm16.asSlice(4L * done), (period - done).toLong()) as Long
                 if (n < 0) {
                     // Underrun (the game stalled) or suspend: recover and go on; give up on anything else.
-                    if ((RECOVER.invokeExact(fRecover, pcm, n.toInt(), 1) as Int) < 0) { System.err.println("Sillage : son interrompu (${error(n.toInt())})"); running = false }
+                    if ((RECOVER.invokeExact(fRecover, pcm, n.toInt(), 1) as Int) < 0) {
+                        System.err.println("Sillage: the sound stopped (ALSA says: ${error(n.toInt())}). The game goes on without sound."); running = false }
                 } else done += n.toInt()
             }
             written += period
@@ -69,7 +71,7 @@ internal class AlsaOutput(override val device: String, private val mixer: Mixer,
         arena.close()
     }
 
-    private fun check(code: Int, what: String) { if (code < 0) throw IllegalStateException("$what: ${error(code)}") }
+    private fun check(code: Int, what: String) { if (code < 0) throw IllegalStateException("the sound output \"$device\" refused 16-bit stereo at $rate Hz ($what: ${error(code)})") }
     private fun error(code: Int) = Native.string(STRERROR.invokeExact(fStrerror, code) as MemorySegment)
 
     private companion object {
@@ -97,10 +99,16 @@ internal class AlsaOutput(override val device: String, private val mixer: Mixer,
  * a device given by its path (`--audio-device /dev/dsp`, `/dev/audio`) is written to as an OSS device on any
  * system — the way to sound under another system's Linux emulation, where there is no ALSA.
  */
-internal actual fun platformAudioOutput(device: String, mixer: Mixer, rate: Int, latencyMs: Int): AudioOutput = when {
-    sillage.platform.Os.windows -> WaveOutOutput(mixer, rate, latencyMs)
-    device.startsWith("/dev/") -> OssOutput(device, mixer, rate, latencyMs)
-    sillage.platform.Os.freebsd -> OssOutput("/dev/dsp", mixer, rate, latencyMs)
-    sillage.platform.Os.linux -> AlsaOutput(device, mixer, rate, latencyMs)
-    else -> throw IllegalStateException("no sound output yet on " + sillage.platform.Os.label)
+internal actual fun platformAudioOutput(device: String, mixer: Mixer, rate: Int, latencyMs: Int): AudioOutput = try {
+    when {
+        sillage.platform.Os.windows -> WaveOutOutput(mixer, rate, latencyMs)
+        device.startsWith("/dev/") -> OssOutput(device, mixer, rate, latencyMs)
+        sillage.platform.Os.freebsd -> OssOutput("/dev/dsp", mixer, rate, latencyMs)
+        sillage.platform.Os.linux -> AlsaOutput(device, mixer, rate, latencyMs)
+        else -> throw IllegalStateException("the engine has no sound output yet on " + sillage.platform.Os.label)
+    }
+} catch (e: Throwable) {
+    // A library that is not there comes up as an error of its class's start: said in plain words.
+    if (e is VirtualMachineError) throw e
+    throw IllegalStateException(sillage.platform.Advice.soundReason(e), e)
 }

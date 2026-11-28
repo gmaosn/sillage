@@ -46,7 +46,7 @@ class Audio(val mixer: Mixer, private val output: AudioOutput?) : AutoCloseable 
             val mixer = Mixer(rate)
             return try { Audio(mixer, platformAudioOutput(device, mixer, rate, latencyMs)) }
             catch (e: Throwable) {
-                println("Sillage: no sound (${e.message})")
+                println("Sillage: no sound, " + (e.message ?: e.toString()) + ". The game goes on without sound (--mute hides this line).")
                 Audio(mixer, null)
             }
         }

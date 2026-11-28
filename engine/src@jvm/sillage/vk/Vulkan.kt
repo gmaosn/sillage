@@ -84,7 +84,7 @@ internal object VkLoader {
     private val library: SymbolLookup by lazy {
         val names = if (sillage.platform.Os.windows) listOf("vulkan-1.dll", "vulkan-1") else listOf("libvulkan.so.1", "libvulkan.so")
         names.firstNotNullOfOrNull { n -> runCatching { SymbolLookup.libraryLookup(n, Arena.global()) }.getOrNull() }
-            ?: throw IllegalStateException("No Vulkan loader found (${names.joinToString()}). Install vulkan-icd-loader.")
+            ?: throw IllegalStateException("No Vulkan loader found (${names.joinToString()}): " + sillage.platform.Advice.install(sillage.platform.Advice.vulkanLoader))
     }
     private val getInstanceProcAddr: MemorySegment by lazy {
         library.find("vkGetInstanceProcAddr").orElseThrow { IllegalStateException("vkGetInstanceProcAddr missing from the Vulkan loader") }

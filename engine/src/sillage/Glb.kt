@@ -22,7 +22,7 @@ object Glb {
 
     /** The model with its hierarchy and animations. */
     fun loadModel(path: String, normals: Normals = Normals.SMOOTH): Model =
-        readModel(bytes(path), { uri -> bytes(if ('/' in path) path.substringBeforeLast('/') + "/" + uri else uri) }, normals)
+        readModel(bytes(path), { uri -> sillage.io.Assets.bytes(if ('/' in path) path.substringBeforeLast('/') + "/" + uri else uri, "Texture") }, normals)
 
     /** [load] from the bytes of a file. */
     fun read(bytes: ByteArray): Mesh = readModel(bytes).flatten().also { require(it.triangleCount > 0) { "GLB without triangles" } }

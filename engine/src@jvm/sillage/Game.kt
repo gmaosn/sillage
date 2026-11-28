@@ -6,6 +6,7 @@ import sillage.dev.DevLink
 import sillage.dev.DevOverlay
 import sillage.math.Mat4
 import sillage.math.Vec3
+import sillage.platform.Advice
 import sillage.platform.Window
 import sillage.platform.openWindow
 import java.nio.file.Path
@@ -27,6 +28,8 @@ private class Times {
 actual fun game(title: String, args: Array<String>, setup: Scene.() -> Unit): RunReport {
     // Under ./sillage dev, a reloaded game hands its scene to the loop already running.
     if (DevLink.offer(setup)) return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
+    // Something missing (Vulkan, a screen, a file) that nobody catches is told in plain words, not as a trace.
+    Advice.explainUncaught()
     return Runtime(title, args, setup).run()
 }
 

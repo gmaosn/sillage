@@ -20,7 +20,40 @@ object Assets {
     }
 
     /** The bytes of [path]; [what] names the kind of file in the error ("GLB", "Sound"…). */
-    fun bytes(path: String, what: String): ByteArray =
-        bytesOrNull(path) ?: error("$what not found: $path (looked for the file, " +
-            (if (roots.isEmpty()) "" else "in ${roots.joinToString()}, ") + "and in the resources)")
+    fun bytes(path: String, what: String): ByteArray = bytesOrNull(path) ?: throw AssetMissing(missing(path, what))
+
+    /** Every place looked in, said plainly, and a file of nearly that name when there is one. */
+    private fun missing(path: String, what: String): String {
+        val kind = when (what) { "GLB" -> "model file"; "Sound" -> "sound file"; "Font" -> "font file"; "Texture" -> "texture image"; else -> what.lowercase() + " file" }
+        val here = Storage.setting("user.dir")?.trimEnd('/')
+        val places = ArrayList<String>()
+        places.add(if (path.startsWith("/") || here == null) path else "$here/$path")
+        if (!path.startsWith("/")) for (root in roots) places.add(root.trimEnd('/') + "/" + path)
+        val text = StringBuilder("This $kind is missing: $path\n")
+        text.append("  Looked for it here:\n")
+        for (p in places) text.append("    ").append(p).append('\n')
+        if (!path.startsWith("/")) text.append("    and as ").append(path.removePrefix("/")).append(" in the game's resources (the resources/ folder of the game: mygame/resources/")
+            .append(path.removePrefix("/")).append(")\n")
+        nearly(places)?.let { text.append("  A file with nearly that name: ").append(it).append(" (capital letters count)\n") }
+        text.append("  Check the name and the folder.")
+        return text.toString()
+    }
+
+    /** A file in the folder of one of [places] named like it but for capitals, or with another extension. */
+    private fun nearly(places: List<String>): String? {
+        for (p in places) {
+            val dir = p.substringBeforeLast('/', "")
+            if (dir.isEmpty()) continue
+            val name = p.substringAfterLast('/')
+            val stem = name.substringBeforeLast('.')
+            // The folder's files, those nearest first (the list goes into the folders inside it).
+            val files = (try { Storage.list(dir) } catch (e: Exception) { emptyList() }).sortedBy { it.count { c -> c == '/' } }
+            files.firstOrNull { it.substringAfterLast('/').equals(name, ignoreCase = true) }?.let { return it }
+            files.firstOrNull { it.substringAfterLast('/').substringBeforeLast('.').equals(stem, ignoreCase = true) }?.let { return it }
+        }
+        return null
+    }
 }
+
+/** A model, sound, image or font that is nowhere to be found: the message says where it was looked for. */
+internal class AssetMissing(message: String) : IllegalStateException(message)
