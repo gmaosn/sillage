@@ -11,9 +11,10 @@ import sillage.math.Vec3
  * glTF 2.0 binary (.glb) loader, in Kotlin. It reads the node hierarchy, the material or vertex
  * colours, the material names, the base colour textures (PNG or JPEG, in the file, in a data URI or
  * beside it; alpha masks), skins (joints, inverse bind matrices, four weights per vertex) and the node
- * animations (translation, rotation, scale; linear or step). Cubic-spline curves and morph targets are
- * refused with a message that says so. A path is looked up as a file, then in [sillage.io.Assets.roots], then in the
- * classpath resources.
+ * animations (translation, rotation, scale, morph target weights; linear, step or cubic spline), morph targets
+ * (positions and normals, deformed on the processor like the skins) and KHR_texture_transform (applied to the
+ * texture coordinates as they are read). A path is looked up as a file, then in [sillage.io.Assets.roots], then in
+ * the classpath resources.
  */
 object Glb {
     /** The model in its rest pose as one mesh (static scenery). */
@@ -50,7 +51,7 @@ object Glb {
         }
         val doc = requireNotNull(json) { "Missing JSON chunk" }
         val required = doc.arr("extensionsRequired")?.map { (it as? Json.Str)?.value ?: it.toString() }.orEmpty()
-            .filter { it != "KHR_lights_punctual" }
+            .filter { it != "KHR_lights_punctual" && it != "KHR_texture_transform" }
         require(required.isEmpty()) { "Unsupported required GLB extensions: " + required }
         val buffers = doc.arr("buffers")
         val buffer: LeBuffer = if (buffers == null || buffers.size == 0) LeBuffer(ByteArray(0)) else {
@@ -145,6 +146,9 @@ object Glb {
             require((t.int("texCoord") ?: 0) == 0) { "GLB: only the first set of texture coordinates (TEXCOORD_0) is read" }
             image(requireNotNull(doc.arr("textures").at(t.int("index"), "texture").int("source")) { "GLB: texture without an image (source)" })
         }
+        // KHR_texture_transform of each material's base colour texture, applied to the texture coordinates as they are read
+        // (the one set of coordinates its other textures share).
+        val uvTransforms = List(materialsJson.size) { m -> textureTransform(materialsJson.obj(m).obj("pbrMetallicRoughness")?.obj("baseColorTexture")) }
         // Alpha: MASK cuts out what is below alphaCutoff; BLEND is blended (Model), its shadow cut out at 0.5.
         val cutoffs = FloatArray(materialsJson.size) { m ->
             val mat = materialsJson.obj(m)
@@ -155,19 +159,21 @@ object Glb {
          * Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; their
          * texture coordinates (6 floats each); their skin weights (24 floats each: per vertex 4 joints, 4 weights).
          */
-        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray, val tints: FloatArray, val tangents: FloatArray)
+        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray, val tints: FloatArray, val tangents: FloatArray,
+                   val morph: MorphRead? = null)
         fun triangles(meshIndex: Int): Read {
             val out = ArrayList<Float>(); val uvOut = ArrayList<Float>(); val skinOut = ArrayList<Float>(); val nOut = ArrayList<Float>()
             val tintOut = ArrayList<Float>(); var tinted = false; var triangleCount = 0
             val tanOut = ArrayList<Float>(); var tangented = false
             var everyNormal = true
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
+            val morph = MorphRead.of(mesh)
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
                 val p = primitive as Json.Obj
                 require((p.int("mode") ?: 4) == 4) { "Only triangles are supported" }
                 val attributes = requireNotNull(p.obj("attributes"))
                 val positions = values(requireNotNull(attributes.int("POSITION")), "VEC3")
-                require(!p.has("targets")) { "GLB: morph targets are not supported (use a skin or separate nodes)" }
+                val targets = morph?.targetsOf(p, positions.size) { index, type -> values(index, type) }
                 val textured = p.int("material")?.let { it in textures.indices && textures[it] != null } == true
                 val joints = attributes.int("JOINTS_0")?.let { values(it, "VEC4") }
                 val weights = attributes.int("WEIGHTS_0")?.let { values(it, "VEC4") }
@@ -211,7 +217,13 @@ object Glb {
                         for (v in intArrayOf(a, b, c)) for (j in 0..3) tanOut.add(tangents[v][j])
                     } else if (tangented) repeat(12) { tanOut.add(0f) }
                     triangleCount++
-                    for (v in intArrayOf(a, b, c)) { uvOut.add(uvs?.get(v)?.get(0) ?: 0f); uvOut.add(uvs?.get(v)?.get(1) ?: 0f) }
+                    val uvt = p.int("material")?.let { uvTransforms.getOrNull(it) }
+                    for (v in intArrayOf(a, b, c)) {
+                        val u0 = uvs?.get(v)?.get(0) ?: 0f; val v0 = uvs?.get(v)?.get(1) ?: 0f
+                        if (uvt == null) { uvOut.add(u0); uvOut.add(v0) }
+                        else { uvOut.add(uvt[0] * u0 + uvt[1] * v0 + uvt[2]); uvOut.add(uvt[3] * u0 + uvt[4] * v0 + uvt[5]) }
+                    }
+                    if (morph != null) morph.addTriangle(targets, a, b, c)
                     if (fileNormals != null) for (v in intArrayOf(a, b, c)) for (j in 0..2) nOut.add(fileNormals[v][j])
                     if (joints != null) for (v in intArrayOf(a, b, c)) {
                         val w = weights!![v]; val sum = w[0] + w[1] + w[2] + w[3]
@@ -223,7 +235,7 @@ object Glb {
             }
             // Normals from the file only when every primitive of the mesh has them.
             return Read(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray(), if (everyNormal) nOut.toFloatArray() else FloatArray(0), tintOut.toFloatArray(),
-                tanOut.toFloatArray())
+                tanOut.toFloatArray(), morph)
         }
 
         val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
@@ -249,6 +261,8 @@ object Glb {
         val meshCache = HashMap<Int, Read>()
         val nodes = List(nodesJson.size) { i ->
             val node = nodesJson.obj(i)
+            node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) } }
+            val rest = node.int("mesh")?.let { m -> val r = meshCache.getValue(m); r.morph?.atRest(node.arr("weights")?.floats(), r.triangles, r.normals) }
             val matrix = node.arr("matrix")?.let { Mat4.fromColumnMajor(it.floats().taille(16, "matrix")) }
             ModelNode(
                 name = node.string("name"),
@@ -258,9 +272,9 @@ object Glb {
                 rotation = node.arr("rotation")?.floats()?.taille(4, "rotation")?.let { Quat(it[0], it[1], it[2], it[3]).normalized() } ?: Quat.IDENTITY,
                 scale = node.arr("scale")?.floats()?.taille(3, "scale")?.let { Vec3(it[0], it[1], it[2]) } ?: Vec3.ONE,
                 matrix = matrix,
-                triangles = node.int("mesh")?.let { m -> meshCache.getOrPut(m) { triangles(m) }.triangles } ?: FloatArray(0),
+                triangles = rest?.triangles ?: node.int("mesh")?.let { m -> meshCache.getValue(m).triangles } ?: FloatArray(0),
                 uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).uvs } ?: FloatArray(0),
-                normals = node.int("mesh")?.let { m -> meshCache.getValue(m).normals } ?: FloatArray(0),
+                normals = rest?.normals ?: node.int("mesh")?.let { m -> meshCache.getValue(m).normals } ?: FloatArray(0),
                 tints = node.int("mesh")?.let { m -> meshCache.getValue(m).tints } ?: FloatArray(0),
                 tangents = node.int("mesh")?.let { m -> meshCache.getValue(m).tangents } ?: FloatArray(0),
                 skin = node.int("skin")?.also { require(it in 0 until (doc.arr("skins")?.size ?: 0)) { "GLB: node $i uses a missing skin" } } ?: -1,
@@ -268,6 +282,9 @@ object Glb {
                 properties = node.obj("extras")?.fields?.mapValues { plain(it.value) } ?: emptyMap(),
                 light = node.obj("extensions")?.obj("KHR_lights_punctual")?.int("light")?.let { k ->
                     require(k in lights.indices) { "GLB: node $i uses a missing light $k" }; lights[k] },
+                morphWeights = rest?.weights ?: FloatArray(0),
+                morphPositions = rest?.positions ?: FloatArray(0),
+                morphNormals = rest?.morphNormals ?: FloatArray(0),
             )
         }
         val scenes = doc.arr("scenes")
@@ -279,26 +296,37 @@ object Glb {
         doc.arr("animations")?.forEachIndexed { index, a ->
             val anim = a as Json.Obj
             val samplers = requireNotNull(anim.arr("samplers")) { "GLB animation without samplers" }
-            val canaux = requireNotNull(anim.arr("channels")) { "GLB animation without channels" }.map { ch ->
+            val morphs = ArrayList<WeightChannel>()
+            val canaux = requireNotNull(anim.arr("channels")) { "GLB animation without channels" }.mapNotNull { ch ->
                 val c = ch as Json.Obj
                 val target = requireNotNull(c.obj("target")) { "Animation channel without a target" }
                 val node = requireNotNull(target.int("node")) { "Animation channel without a node" }
                 require(node in nodes.indices) { "Animation channel: no node $node" }
-                require(nodes[node].matrix == null) { "An animated node must use translation/rotation/scale, not matrix" }
-                val chemin = when (val path = target.string("path")) {
-                    "translation" -> ChannelTarget.TRANSLATION; "rotation" -> ChannelTarget.ROTATION; "scale" -> ChannelTarget.SCALE
-                    else -> throw IllegalArgumentException("Animation de « $path » non prise en charge (seulement translation, rotation, scale)")
-                }
                 val sampler = samplers.at(c.int("sampler"), "sampler")
-                val palier = when (val interp = sampler.string("interpolation") ?: "LINEAR") {
-                    "LINEAR" -> false; "STEP" -> true
-                    else -> throw IllegalArgumentException("Unsupported interpolation $interp (LINEAR or STEP)")
+                val interp = sampler.string("interpolation") ?: "LINEAR"
+                require(interp == "LINEAR" || interp == "STEP" || interp == "CUBICSPLINE") { "Unsupported interpolation $interp (LINEAR, STEP or CUBICSPLINE)" }
+                val times = floats(requireNotNull(sampler.int("input")), "SCALAR")
+                val path = target.string("path")
+                if (path == "weights") {
+                    // Morph target weights: one per target and key (three times as many for a cubic spline).
+                    val count = nodes[node].morphWeights.size
+                    require(count > 0) { "GLB: animation of the morph weights of node $node, which has no morph targets" }
+                    val out = floats(requireNotNull(sampler.int("output")), "SCALAR")
+                    val (values, tangents) = splitKeys(out, times.size, count, interp == "CUBICSPLINE")
+                    morphs.add(WeightChannel(node, count, times, values, interp == "STEP", tangents))
+                    return@mapNotNull null
                 }
-                Channel(node, chemin, floats(requireNotNull(sampler.int("input")), "SCALAR"),
-                    floats(requireNotNull(sampler.int("output")), if (chemin == ChannelTarget.ROTATION) "VEC4" else "VEC3"), palier)
+                require(nodes[node].matrix == null) { "An animated node must use translation/rotation/scale, not matrix" }
+                val chemin = when (path) {
+                    "translation" -> ChannelTarget.TRANSLATION; "rotation" -> ChannelTarget.ROTATION; "scale" -> ChannelTarget.SCALE
+                    else -> throw IllegalArgumentException("Animation de « $path » non prise en charge (seulement translation, rotation, scale, weights)")
+                }
+                val out = floats(requireNotNull(sampler.int("output")), if (chemin == ChannelTarget.ROTATION) "VEC4" else "VEC3")
+                val (values, tangents) = splitKeys(out, times.size, chemin.components, interp == "CUBICSPLINE")
+                Channel(node, chemin, times, values, interp == "STEP", tangents)
             }
             val nom = anim.string("name") ?: "animation$index"
-            clips[nom] = Clip(nom, canaux)
+            clips[nom] = Clip(nom, canaux, morphs)
         }
         val materialNames = doc.arr("materials")?.map { (it as Json.Obj).string("name") ?: "" } ?: emptyList()
         val skins = doc.arr("skins")?.mapIndexed { k, s ->
@@ -316,5 +344,108 @@ object Glb {
                 require(n.skinWeights[24 * t + 8 * v + k].toInt() in 0 until count) { "GLB: a vertex names joint ${n.skinWeights[24 * t + 8 * v + k].toInt()} of a skin of $count" }
         }
         return Model(nodes, racines, clips, materialNames, textures, cutoffs, skins, normals, looks)
+    }
+}
+
+// ---- KHR_texture_transform, cubic splines and morph targets (kept apart from the rest of the loader)
+
+/**
+ * The affine map of a texture's KHR_texture_transform (the extension's own formula, uv' = T · R · S · uv): u' = a·u +
+ * b·v + c, v' = d·u + e·v + f as (a, b, c, d, e, f); null without the extension. Only TEXCOORD_0 is read.
+ */
+internal fun textureTransform(info: Json.Obj?): FloatArray? {
+    val t = info?.obj("extensions")?.obj("KHR_texture_transform") ?: return null
+    require((t.int("texCoord") ?: info.int("texCoord") ?: 0) == 0) { "GLB: only the first set of texture coordinates (TEXCOORD_0) is read" }
+    val offset = t.arr("offset")?.floats() ?: floatArrayOf(0f, 0f)
+    val scale = t.arr("scale")?.floats() ?: floatArrayOf(1f, 1f)
+    require(offset.size >= 2 && scale.size >= 2) { "GLB: KHR_texture_transform needs two values for offset and scale" }
+    val r = t.float("rotation") ?: 0f
+    val c = kotlin.math.cos(r); val s = kotlin.math.sin(r)
+    // R = (cos −sin / sin cos): its columns (cos, sin) and (−sin, cos), as the extension's mat3 is written.
+    return floatArrayOf(c * scale[0], -s * scale[1], offset[0], s * scale[0], c * scale[1], offset[1])
+}
+
+/**
+ * An animation sampler's output split into its key values and, for CUBICSPLINE (per key: in-tangent, value,
+ * out-tangent), its tangents: per key its in-tangent then its out-tangent ([k] floats each).
+ */
+internal fun splitKeys(out: FloatArray, keys: Int, k: Int, cubic: Boolean): Pair<FloatArray, FloatArray?> {
+    if (!cubic) return out to null
+    require(out.size == 3 * keys * k) { "GLB: a cubic spline needs three values per key (${out.size} for $keys keys of $k)" }
+    val values = FloatArray(keys * k); val tangents = FloatArray(2 * keys * k)
+    for (key in 0 until keys) for (j in 0 until k) {
+        val o = 3 * key * k
+        tangents[2 * key * k + j] = out[o + j]                 // in
+        values[key * k + j] = out[o + k + j]
+        tangents[(2 * key + 1) * k + j] = out[o + 2 * k + j]   // out
+    }
+    return values to tangents
+}
+
+/**
+ * The morph targets of one glTF mesh as its triangles are read: per target, how far each corner moves at weight 1
+ * (9 floats per triangle), the same for the file's normals, and the mesh's own weights at rest.
+ */
+internal class MorphRead(val count: Int, val weights: FloatArray) {
+    private val positions = Array(count) { ArrayList<Float>() }
+    private val normals = Array(count) { ArrayList<Float>() }
+    private var withNormals = true
+
+    /** One primitive's targets: per target, its position and normal displacements per vertex (null: none). */
+    class Targets(val positions: Array<List<FloatArray>?>, val normals: Array<List<FloatArray>?>)
+
+    fun targetsOf(p: Json.Obj, vertices: Int, values: (Int, String) -> List<FloatArray>): Targets {
+        val list = p.arr("targets")
+        require((list?.size ?: 0) == count) { "GLB: every primitive of a mesh needs its $count morph targets (one has ${list?.size ?: 0})" }
+        val pos = arrayOfNulls<List<FloatArray>>(count); val nrm = arrayOfNulls<List<FloatArray>>(count)
+        for (t in 0 until count) {
+            val target = list!!.obj(t)
+            pos[t] = target.int("POSITION")?.let { values(it, "VEC3") }?.also { require(it.size >= vertices) { "GLB: a morph target has fewer positions than the mesh" } }
+            nrm[t] = target.int("NORMAL")?.let { values(it, "VEC3") }?.also { require(it.size >= vertices) { "GLB: a morph target has fewer normals than the mesh" } }
+            if (nrm[t] == null) withNormals = false
+        }
+        return Targets(pos, nrm)
+    }
+
+    fun addTriangle(targets: Targets?, a: Int, b: Int, c: Int) {
+        for (t in 0 until count) for (v in intArrayOf(a, b, c)) for (j in 0..2) {
+            positions[t].add(targets?.positions?.get(t)?.get(v)?.get(j) ?: 0f)
+            normals[t].add(targets?.normals?.get(t)?.get(v)?.get(j) ?: 0f)
+        }
+    }
+
+    /** What a node made of this mesh holds at rest. */
+    class Rest(val triangles: FloatArray, val normals: FloatArray, val weights: FloatArray, val positions: FloatArray, val morphNormals: FloatArray)
+
+    /**
+     * The mesh's [triangles] (and the file's normals, [fileNormals]) moved to the weights at rest, the node's own
+     * ([nodeWeights]) or the mesh's; the targets laid out per target, then per triangle.
+     */
+    fun atRest(nodeWeights: FloatArray?, triangles: FloatArray, fileNormals: FloatArray): Rest {
+        val w = FloatArray(count) { nodeWeights?.getOrNull(it) ?: weights.getOrNull(it) ?: 0f }
+        val tris = triangles.size / TRI
+        require(positions.all { it.size == tris * 9 }) { "GLB: morph targets out of step with the triangles" }
+        val pos = FloatArray(count * tris * 9) { i -> positions[i / (tris * 9)][i % (tris * 9)] }
+        val nrm = if (withNormals) FloatArray(count * tris * 9) { i -> normals[i / (tris * 9)][i % (tris * 9)] } else FloatArray(0)
+        val t = triangles.copyOf(); val n = fileNormals.copyOf()
+        for (k in 0 until count) {
+            if (w[k] == 0f) continue
+            for (q in 0 until tris) for (j in 0 until 9) {
+                t[q * TRI + j] += w[k] * pos[(k * tris + q) * 9 + j]
+                if (n.isNotEmpty() && nrm.isNotEmpty()) n[q * 9 + j] += w[k] * nrm[(k * tris + q) * 9 + j]
+            }
+        }
+        return Rest(t, n, w, pos, nrm)
+    }
+
+    companion object {
+        /** The morph targets of [mesh], or null when it has none. */
+        fun of(mesh: Json.Obj): MorphRead? {
+            val first = mesh.arr("primitives")?.let { if (it.size > 0) it.obj(0) else null } ?: return null
+            val count = first.arr("targets")?.size ?: 0
+            if (count == 0) return null
+            val w = mesh.arr("weights")?.floats() ?: FloatArray(count)
+            return MorphRead(count, FloatArray(count) { w.getOrElse(it) { 0f } })
+        }
     }
 }
