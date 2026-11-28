@@ -132,4 +132,30 @@ class QueryTreeTest {
         assertTrue(found.isNotEmpty())
         assertTrue(found.all { it >= 2500 })
     }
+
+    @Test fun arbreReconstruitEntier() {
+        // Built again from its leaves: valid, shallow, the same answers, and it goes on taking inserts and removals.
+        val t = BoxTree(); val rnd = Random(9)
+        val lo = FloatArray(3 * 4000); val leaves = IntArray(4000)
+        for (k in 0 until 4000) {
+            for (a in 0..2) lo[3 * k + a] = rnd.nextFloat() * (if (a == 1) 5f else 200f)
+            leaves[k] = t.insert(k, lo[3 * k], lo[3 * k + 1], lo[3 * k + 2], lo[3 * k] + 1f, lo[3 * k + 1] + 1f, lo[3 * k + 2] + 1f, 0f)
+        }
+        val out = IntList(); val stack = IntList()
+        fun answers(): List<Set<Int>> = (0 until 200).map { q ->
+            val x = (q * 37 % 190).toFloat(); val z = (q * 53 % 190).toFloat()
+            out.clear(); t.query(x, 0f, z, x + 6f, 6f, z + 6f, out, stack); (0 until out.size).map { out[it] }.toSet()
+        }
+        val before = answers()
+        var told = 0
+        t.rebuild { id, leaf -> leaves[id] = leaf; told++ }
+        assertEquals(4000, told)
+        t.validate()
+        assertTrue(t.depth <= 13, "profondeur ${t.depth} pour 4000 feuilles")
+        assertEquals(before, answers())
+        for (k in 0 until 4000 step 2) t.remove(leaves[k])
+        for (k in 0 until 100) t.insert(10_000 + k, k.toFloat(), 0f, 0f, k + 1f, 1f, 1f, 0f)
+        t.validate()
+        assertEquals(2100, t.leaves)
+    }
 }

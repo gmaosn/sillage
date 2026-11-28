@@ -183,6 +183,77 @@ internal class BoxTree {
         }
     }
 
+    /**
+     * Builds the tree again from its leaves, top down: each branch split at the median of its leaves' centres
+     * along the longest side of their spread, the nodes laid out branch by branch. After many insertions (a
+     * world of scenery built body by body) a query then walks fewer boxes, close together in memory. The leaves
+     * get new nodes: [moved] is told each item's.
+     */
+    fun rebuild(moved: (item: Int, leaf: Int) -> Unit) {
+        if (leaves < 2) return
+        val m = leaves
+        val ids = IntArray(m); val boxes = FloatArray(6 * m); val centres = FloatArray(3 * m)
+        var k = 0
+        val stack = IntList(64); stack.add(root)
+        while (stack.size > 0) {
+            val n = stack.pop()
+            if (child1[n] >= 0) { stack.add(child2[n]); stack.add(child1[n]); continue }
+            ids[k] = item[n]
+            for (t in 0..5) boxes[6 * k + t] = box[6 * n + t]
+            for (t in 0..2) centres[3 * k + t] = .5f * (box[6 * n + t] + box[6 * n + 3 + t])
+            k++
+        }
+        val order = IntArray(m) { it }
+        next = 0
+        root = build(order, 0, m, -1, ids, boxes, centres)
+        // The other nodes back to the free list.
+        for (n in next until capacity) { parent[n] = if (n + 1 < capacity) n + 1 else -1; height[n] = -1 }
+        freeList = if (next < capacity) next else -1
+        for (n in 0 until next) if (child1[n] < 0) moved(item[n], n)
+    }
+    private var next = 0
+
+    private fun build(order: IntArray, lo: Int, hi: Int, up: Int, ids: IntArray, boxes: FloatArray, centres: FloatArray): Int {
+        val n = next++
+        parent[n] = up
+        if (hi - lo == 1) {
+            val l = order[lo]
+            for (t in 0..5) box[6 * n + t] = boxes[6 * l + t]
+            item[n] = ids[l]; child1[n] = -1; child2[n] = -1; height[n] = 0
+            return n
+        }
+        var x0 = Float.MAX_VALUE; var y0 = Float.MAX_VALUE; var z0 = Float.MAX_VALUE
+        var x1 = -Float.MAX_VALUE; var y1 = -Float.MAX_VALUE; var z1 = -Float.MAX_VALUE
+        for (q in lo until hi) {
+            val c = 3 * order[q]
+            x0 = min(x0, centres[c]); y0 = min(y0, centres[c + 1]); z0 = min(z0, centres[c + 2])
+            x1 = max(x1, centres[c]); y1 = max(y1, centres[c + 1]); z1 = max(z1, centres[c + 2])
+        }
+        val axis = if (x1 - x0 >= y1 - y0 && x1 - x0 >= z1 - z0) 0 else if (y1 - y0 >= z1 - z0) 1 else 2
+        val mid = (lo + hi) ushr 1
+        select(order, lo, hi - 1, mid, centres, axis)
+        item[n] = -1
+        child1[n] = build(order, lo, mid, n, ids, boxes, centres)
+        child2[n] = build(order, mid, hi, n, ids, boxes, centres)
+        fit(n)
+        return n
+    }
+
+    /** Puts in order[k] the leaf whose centre is k-th along [axis] among order[lo..hi], the smaller ones before it. */
+    private fun select(order: IntArray, lo0: Int, hi0: Int, k: Int, centres: FloatArray, axis: Int) {
+        var lo = lo0; var hi = hi0
+        while (hi > lo) {
+            val pivot = centres[3 * order[(lo + hi) ushr 1] + axis]
+            var i = lo; var j = hi
+            while (i <= j) {
+                while (centres[3 * order[i] + axis] < pivot) i++
+                while (centres[3 * order[j] + axis] > pivot) j--
+                if (i <= j) { val t = order[i]; order[i] = order[j]; order[j] = t; i++; j-- }
+            }
+            if (k <= j) hi = j else if (k >= i) lo = i else return
+        }
+    }
+
     /** Height of the tree (diagnostics, tests). */
     val depth: Int get() = if (root < 0) 0 else height[root]
 

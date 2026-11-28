@@ -28,6 +28,15 @@ internal class QueryTrees {
     /** Refreshes since the trees were made and leaves moved (diagnostics, tests). */
     var refreshes = 0L; private set
     var moves = 0L; private set
+    private var stillInserts = 0
+    private val relink: (Int, Int) -> Unit = { id, node -> leaf[id] = node }
+
+    /** After many insertions (a world built), the still tree is built again whole, for faster queries. */
+    private fun rebuildStill() {
+        if (stillInserts < 256 || 2 * stillInserts < still.leaves) return
+        still.rebuild(relink)
+        stillInserts = 0
+    }
 
     /** Body [i] was placed by hand, added or removed: its leaf is checked at the next refresh. */
     fun touched(i: Int) {
@@ -52,6 +61,7 @@ internal class QueryTrees {
         if (leaf.size < w.count) grow(w.count)
         updateDirty(w)
         updateWatched(w, kinematicOnly = false)
+        rebuildStill()
         refreshes++
         valid = true
     }
@@ -64,6 +74,7 @@ internal class QueryTrees {
         if (leaf.size < w.count) grow(w.count)
         updateDirty(w)
         updateWatched(w, kinematicOnly = true)
+        rebuildStill()
     }
 
     private fun updateDirty(w: PhysicsWorld) {
@@ -112,7 +123,7 @@ internal class QueryTrees {
             if (watchedCount == watched.size) watched = watched.copyOf(2 * watchedCount)
             watched[watchedCount++] = i
         }
-        if (leaf[i] < 0) { leaf[i] = tree.insert(i, b[0], b[1], b[2], b[3], b[4], b[5], margin); inMoving[i] = dynamic }
+        if (leaf[i] < 0) { leaf[i] = tree.insert(i, b[0], b[1], b[2], b[3], b[4], b[5], margin); inMoving[i] = dynamic; if (!dynamic) stillInserts++ }
         else if (!tree.holds(leaf[i], b[0], b[1], b[2], b[3], b[4], b[5])) { tree.move(leaf[i], b[0], b[1], b[2], b[3], b[4], b[5], margin); moves++ }
     }
 
