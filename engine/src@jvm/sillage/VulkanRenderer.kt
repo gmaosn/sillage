@@ -130,6 +130,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     // The light grid (RenderBatches.grid), sent through a staging buffer of the frame when the frame uses it.
     private var gridImage: Image?=null
     private var pipelineBlended=0L             // blended surfaces: premultiplied over what is behind, depth kept
+    // The same four for frames with more than 16 lamps: their fragment shaders read the light grid (toon_grid.frag…).
+    private var pipelineGrid=0L; private var pipelineWaterGrid=0L; private var pipelineParticlesGrid=0L; private var pipelineBlendedGrid=0L
     private var sampler=0L                     // compares depths in the shadow map
     private var repeat=0L                      // reads the detail textures: repeating, filtered between levels
     // Detail textures (Texture): one layer each, every level, in one array image; made again when new textures appear.
@@ -935,6 +937,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             lampPipeline=make(s,m("lamp_shadow.vert"),null,sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
             lampPipelineCut=make(s,m("lamp_shadow.vert"),m("shadow.frag"),sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
             pipelineBlended=make(s,m("toon.vert"),m("toon.frag"),scene,renderPass,n,layout,true,false,BLEND_PREMULTIPLIED)
+            pipelineGrid=make(s,m("toon.vert"),m("toon_grid.frag"),scene,renderPass,n,layout,true,true,null)
+            pipelineWaterGrid=make(s,m("toon.vert"),m("water_grid.frag"),scene,renderPass,n,layout,true,true,null)
+            pipelineParticlesGrid=make(s,m("particle.vert"),m("particle_grid.frag"),particleInput(s),renderPass,n,layout,true,false,BLEND_PREMULTIPLIED)
+            pipelineBlendedGrid=make(s,m("toon.vert"),m("toon_grid.frag"),scene,renderPass,n,layout,true,false,BLEND_PREMULTIPLIED)
             pipelineBright=make(s,m("post.vert"),m("bright.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineDown=make(s,m("post.vert"),m("down.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineUp=make(s,m("post.vert"),m("up.frag"),none,postPass,1,postLayout,false,false,null)
@@ -1283,6 +1289,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 drawLampCasters(lampCasters[k],k); drawLampCasters(lampMovers[k],k)
                 dev.cmdEndRenderPass(command)
             }
+            // A cache drawn again may still be read by an earlier frame's copy: those copies end first.
+            var copied=false
+            for(k in lampStatic.indices) if(lampStatic[k] && lampCacheLayouts[k]==VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) copied=true
+            if(copied) dev.cmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT or VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,0,0,MemorySegment.NULL,0,MemorySegment.NULL,0,MemorySegment.NULL)
             for(k in lampStatic.indices) {
                 if(!lampStatic[k]) continue
                 dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampCacheFramebuffers[k],
@@ -1325,14 +1336,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to renderPass, "framebuffer" to framebuffer,
                 "renderArea.extent.width" to largeur, "renderArea.extent.height" to hauteur, "clearValueCount" to 2, "pClearValues" to clear),
                 VK_SUBPASS_CONTENTS_INLINE)
-            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline)
+            val grid=lots.gridOn                       // more than 16 lamps: the variants that read the light grid
+            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineGrid else pipeline)
             dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
             area(largeur,hauteur)
             pushConstants(camera)
             for(b in opaque) draw(b)
             for(b in quiet) draw(b)
             if(waters.isNotEmpty()) {
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineWater)
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineWaterGrid else pipelineWater)
                 for(b in waters) { pushConstants(camera,b.water); draw(b) }
                 pushConstants(camera)
             }
@@ -1348,7 +1360,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             var drawnParticles=0
             fun particlesTo(end: Int) {
                 if(end<=drawnParticles) return
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineParticles)
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineParticlesGrid else pipelineParticles)
                 handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,particleStart)
                 dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
                 dev.cmdDraw(command,6,end-drawnParticles,0,drawnParticles)
@@ -1359,7 +1371,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 var end=drawnParticles
                 while(end<particleCount && particleDistance(extras!!,end,oeil)>d) end++
                 particlesTo(end)
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineBlended)
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineBlendedGrid else pipelineBlended)
                 draw(lots.blendedBatchAt(i),lots.blendedIndexAt(i))
             }
             particlesTo(particleCount)
@@ -1488,7 +1500,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 frames.clear()
                 if(queries!=0L) dev.destroyQueryPool(queries)
                 for(p in longArrayOf(pipeline,pipelineSky,pipelineOmbre,pipelineWater,pipelineParticles,pipelineLines,pipelineLinesXray,pipelineHud,pipelineBright,
-                        pipelineDown,pipelineUp,pipelineComposite,shadowPipeline,shadowPipelineCut,lampPipeline,lampPipelineCut,pipelineBlended)) dev.destroyPipeline(p)
+                        pipelineDown,pipelineUp,pipelineComposite,shadowPipeline,shadowPipelineCut,lampPipeline,lampPipelineCut,pipelineBlended,
+                        pipelineGrid,pipelineWaterGrid,pipelineParticlesGrid,pipelineBlendedGrid)) dev.destroyPipeline(p)
                 for(fb in lampFramebuffers) dev.destroyFramebuffer(fb)
                 for(v in lampLayerViews) dev.destroyImageView(v)
                 lampMap?.let { destroy(it) }; lampMap=null

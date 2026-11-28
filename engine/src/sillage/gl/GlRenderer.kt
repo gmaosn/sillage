@@ -77,6 +77,8 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
     // ---- programs
     private val programs = ArrayList<Int>()
     private val toon: Int; private val water: Int; private val sky: Int; private val ombre: Int
+    // The same for frames with more than 16 lamps: they read the light grid (toon_grid.frag…).
+    private val toonGrid: Int; private val waterGrid: Int; private val particlesGrid: Int
     private val particles: Int; private val lines: Int; private val linesXray: Int
     private val shadow: Int; private val shadowCut: Int; private val lampShadow: Int; private val lampShadowCut: Int
     private val bright: Int; private val down: Int; private val up: Int; private val composite: Int; private val hudProgram: Int
@@ -136,6 +138,8 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         toon = program("toon.vert", "toon.frag"); water = program("toon.vert", "water.frag")
         sky = program("toon.vert", "sky.frag"); ombre = program("toon.vert", "ombre.frag")
         particles = program("particle.vert", "particle.frag")
+        toonGrid = program("toon.vert", "toon_grid.frag"); waterGrid = program("toon.vert", "water_grid.frag")
+        particlesGrid = program("particle.vert", "particle_grid.frag")
         lines = program("lines.vert", "lines.frag"); linesXray = program("lines.vert", "lines_xray.frag")
         shadow = program("shadow.vert", null); shadowCut = program("shadow.vert", "shadow.frag")
         lampShadow = program("lamp_shadow.vert", null); lampShadowCut = program("lamp_shadow.vert", "shadow.frag")
@@ -663,12 +667,13 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         gl.viewport(0, 0, width, height)
         gl.clearColor(lighting.horizon.r, lighting.horizon.g, lighting.horizon.b, 10000f)
         gl.clearDepth(1f); gl.clear(GL.COLOR_BUFFER_BIT or GL.DEPTH_BUFFER_BIT)
-        gl.useProgram(toon)
+        val grid = batches.gridOn                     // more than 16 lamps: the programs that read the light grid
+        gl.useProgram(if (grid) toonGrid else toon)
         push(viewProjection, eye, time, 0, null)
         for (b in batches.opaque) draw(b)
         for (b in batches.quiet) draw(b)
         if (batches.waters.isNotEmpty()) {
-            gl.useProgram(water)
+            gl.useProgram(if (grid) waterGrid else water)
             for (b in batches.waters) { push(viewProjection, eye, time, 0, b.water); draw(b) }
             push(viewProjection, eye, time, 0, null)
         }
@@ -684,7 +689,7 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         var drawnParticles = 0
         fun particlesTo(end: Int) {
             if (end <= drawnParticles) return
-            gl.useProgram(particles); depth(true, false); blend(true, premultiplied = true)
+            gl.useProgram(if (grid) particlesGrid else particles); depth(true, false); blend(true, premultiplied = true)
             gl.bindVertexArray(particleArray)
             gl.vertexAttribPointer(0, 4, GL.FLOAT, false, 4 * PARTICLE_FLOATS, particleStart + 4 * PARTICLE_FLOATS * drawnParticles)
             gl.vertexAttribPointer(1, 4, GL.FLOAT, false, 4 * PARTICLE_FLOATS, particleStart + 4 * PARTICLE_FLOATS * drawnParticles + 16)
@@ -696,7 +701,7 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
             var end = drawnParticles
             while (end < particleCount && particleDistance(extras!!, end, eye) > d) end++
             particlesTo(end)
-            gl.useProgram(toon); depth(true, false); blend(true, premultiplied = true)
+            gl.useProgram(if (grid) toonGrid else toon); depth(true, false); blend(true, premultiplied = true)
             draw(batches.blendedBatchAt(i), batches.blendedIndexAt(i))
         }
         particlesTo(particleCount)
