@@ -1437,6 +1437,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             if(segment>=CHUNK) { chunk(s,segment-CHUNK); return@frame }
             val w=work
             val command=begin(s,0L,0L)
+            if(segment!=SEG_START && segment!=SEG_PICTURE) instancesBound()
             when(segment) {
                 SEG_START -> start(s,w)
                 SEG_LAMPS -> lamps(s,w)
@@ -1472,10 +1473,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             else dev.beginCommandBuffer(command,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
             constants=s.allocate(JAVA_FLOAT,32)
             handles=s.allocate(JAVA_LONG,4); offsets=s.allocate(JAVA_LONG,4)
-            handles.setAtIndex(JAVA_LONG,1,w.f.instances!!.buffer)
             sets=s.longs(w.f.set)
             return command
         }
+
+        /**
+         * The frame's instance buffer for the draws of copies: read only by the parts recorded once the copies are
+         * chosen (the start and the picture are recorded while the render thread may still make that buffer larger).
+         */
+        private fun instancesBound() { handles.setAtIndex(JAVA_LONG,1,work.f.instances!!.buffer) }
 
         /**
          * A chunk of a long pass, in a secondary command buffer: the state its draws are made in (as the pass recorded
@@ -1486,6 +1492,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             val w=work; val seg=w.chunkSegment[i]; val from=w.chunkFrom[i]; val to=w.chunkTo[i]
             if(seg==SEG_SCENE) {
                 val command=begin(s,renderPass,framebuffer)
+                instancesBound()
                 sceneState(s,w)
                 val opaque=lots.opaque; val quiet=lots.quiet
                 for(d in from until to) draw(if(d<opaque.size) opaque[d] else quiet[d-opaque.size])
@@ -1495,6 +1502,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             } else {
                 val k=seg-SEG_CASCADE; val list=w.ordered[k]; val cutFrom=w.cutFrom[k]; val squares=lots.squares
                 val command=begin(s,shadowPass,shadowFramebuffers[k])
+                instancesBound()
                 dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,if(from>=cutFrom) shadowPipelineCut else shadowPipeline)
                 dev.cmdBindDescriptorSets(c,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
                 area(s,shadowSize,shadowSize)
