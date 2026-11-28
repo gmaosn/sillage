@@ -238,7 +238,7 @@ class Character(val world: PhysicsWorld, feet: Vec3, val radius: Float = .28f, v
         if (onRims && ground == -2) gn = Vec3.UP
         if (onGround) {
             groundNormal = gn.normalized(); groundMaterial = material
-            groundBody = if (ground >= 0) Body(world, ground) else null
+            groundBody = if (ground >= 0) world.handle(ground) else null
             // The character weighs on what it stands on.
             groundBody?.let { g -> if (g.type == BodyType.DYNAMIC) g.applyImpulse(world.gravity * (mass * h), groundPoint) }
         } else { groundBody = null; groundMaterial = null; groundNormal = Vec3.UP }

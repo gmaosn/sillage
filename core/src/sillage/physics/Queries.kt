@@ -114,7 +114,7 @@ fun PhysicsWorld.raycast(origin: Vec3, direction: Vec3, maxDistance: Float, radi
         }
     }
     if (!r.hit) return null
-    return RayHit(r.best, Vec3(r.hx, r.hy, r.hz), Vec3(r.nx, r.ny, r.nz), if (r.body >= 0) Body(this, r.body) else null, r.material)
+    return RayHit(r.best, Vec3(r.hx, r.hy, r.hz), Vec3(r.nx, r.ny, r.nz), if (r.body >= 0) handle(r.body) else null, r.material)
 }
 
 private fun boundary(c: Int, step: Int, size: Float) = (c - 4096 + (if (step > 0) 1 else 0)) * size
@@ -157,7 +157,7 @@ private fun PhysicsWorld.consider(i: Int, r: RayQuery, filter: ((Body) -> Boolea
     if (m < -reach || m > r.best + reach) return
     val ex = cx - r.dx * m; val ey = cy - r.dy * m; val ez = cz - r.dz * m
     if (ex * ex + ey * ey + ez * ez > reach * reach) return
-    if (filter != null && !filter(Body(this, i))) return
+    if (filter != null && !filter(handle(i))) return
     val pose = poseOf(i, r.pose)
     val t = when (shape) {
         is Compound -> {

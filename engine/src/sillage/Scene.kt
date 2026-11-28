@@ -84,7 +84,7 @@ class Scene {
     internal val cameraIgnores = HashSet<Int>()              // body ids the camera passes through
     private val linked = ArrayList<Node>()                   // dynamic nodes, following their bodies
     private val kinematicNodes = ArrayList<Node>()
-    private class Follower(val node: Node, val part: String, val offset: Vec3, val body: Body, val rotation: Quat = Quat.IDENTITY)
+    private class Follower(val node: Node, val index: Int, val offset: Vec3, val body: Body, val rotation: Quat = Quat.IDENTITY)
     private val followers = ArrayList<Follower>()
     private class Shadow(val disc: Node, val of: Node, val radius: Float)
     private val shadows = ArrayList<Shadow>()
@@ -527,7 +527,7 @@ class Scene {
             requireNotNull(a.nodePose(part)) { "No part « $part » (the model has: ${a.model.nodes.mapNotNull { it.name }.joinToString()})" }
             val (p, q) = partPose(node, part, offset)
             b = physics.add(shape, p, q * rotation, type = BodyType.KINEMATIC)
-            followers.add(Follower(node, part, offset, b, rotation))
+            followers.add(Follower(node, a.nodeIndex(part), offset, b, rotation))
         }
         b.tag = node; surfaces[b.id] = surface
         if (!blocksCamera) cameraIgnores.add(b.id)
@@ -535,10 +535,59 @@ class Scene {
     }
 
     internal fun partPose(node: Node, part: String, offset: Vec3): Pair<Vec3, Quat> {
-        val m = node.matrix() * node.animator!!.nodePose(part)!!
-        val ax = m.transformDirection(Vec3.X).normalized(); var ay = m.transformDirection(Vec3.Y)
-        ay = (ay - ax * (ay dot ax)).normalized()
-        return m.transformPoint(offset) to Quat.fromAxes(ax, ay, ax cross ay)
+        posePart(node, node.animator!!.nodeIndex(part), offset)
+        return partPoint to partTurn
+    }
+
+    // What posePart found: where [offset] is on the part, and how the part is turned.
+    private var partPoint = Vec3.ZERO
+    private var partTurn = Quat.IDENTITY
+    private val placeData = FloatArray(10)
+    private val nodePlace = FloatArray(16)
+    private val partPlace = FloatArray(16)
+
+    /**
+     * The world place of the part [index] of [node]'s animated model, [offset] in its space: into [partPoint] and
+     * [partTurn]. The very operations of `node.matrix() * nodePose`, `transformDirection`, `transformPoint`,
+     * `normalized` and `Quat.fromAxes`, in the same order, without the matrices and vectors in between.
+     */
+    private fun posePart(node: Node, index: Int, offset: Vec3) {
+        val d = placeData
+        val t = node.position; val r = node.rotation; val k = node.scale
+        d[0] = t.x; d[1] = t.y; d[2] = t.z; d[3] = r.x; d[4] = r.y; d[5] = r.z; d[6] = r.w; d[7] = k; d[8] = k; d[9] = k
+        trsInto(d, 0, d, 3, d, 7, nodePlace, 0)
+        timesInto(nodePlace, 0, node.animator!!.poses, 16 * index, partPlace, 0)
+        val m = partPlace
+        val m00 = m[0]; val m01 = m[1]; val m02 = m[2]; val m10 = m[4]; val m11 = m[5]; val m12 = m[6]
+        val m20 = m[8]; val m21 = m[9]; val m22 = m[10]; val m30 = m[12]; val m31 = m[13]; val m32 = m[14]
+        // ax: transformDirection(X), normalized.
+        var ax = m00 * 1f + m10 * 0f + m20 * 0f; var ay = m01 * 1f + m11 * 0f + m21 * 0f; var az = m02 * 1f + m12 * 0f + m22 * 0f
+        var l = sqrt(ax * ax + ay * ay + az * az)
+        if (l != 0f) { ax /= l; ay /= l; az /= l }
+        // by: transformDirection(Y), less its part along ax, normalized.
+        var bx = m00 * 0f + m10 * 1f + m20 * 0f; var by = m01 * 0f + m11 * 1f + m21 * 0f; var bz = m02 * 0f + m12 * 1f + m22 * 0f
+        val along = bx * ax + by * ay + bz * az
+        bx -= ax * along; by -= ay * along; bz -= az * along
+        l = sqrt(bx * bx + by * by + bz * bz)
+        if (l != 0f) { bx /= l; by /= l; bz /= l }
+        // cz: ax × by.
+        val cx = ay * bz - az * by; val cy = az * bx - ax * bz; val cz = ax * by - ay * bx
+        val o = offset
+        partPoint = Vec3(m00 * o.x + m10 * o.y + m20 * o.z + m30, m01 * o.x + m11 * o.y + m21 * o.z + m31, m02 * o.x + m12 * o.y + m22 * o.z + m32)
+        // Quat.fromAxes(a, b, c) (Shepperd's method), then normalized.
+        val r00 = ax; val r10 = ay; val r20 = az
+        val r01 = bx; val r11 = by; val r21 = bz
+        val r02 = cx; val r12 = cy; val r22 = cz
+        val trace = r00 + r11 + r22
+        var qx: Float; var qy: Float; var qz: Float; var qw: Float
+        when {
+            trace > 0f -> { val s = sqrt(trace + 1f) * 2f; qx = (r21 - r12) / s; qy = (r02 - r20) / s; qz = (r10 - r01) / s; qw = .25f * s }
+            r00 > r11 && r00 > r22 -> { val s = sqrt(1f + r00 - r11 - r22) * 2f; qx = .25f * s; qy = (r01 + r10) / s; qz = (r02 + r20) / s; qw = (r21 - r12) / s }
+            r11 > r22 -> { val s = sqrt(1f + r11 - r00 - r22) * 2f; qx = (r01 + r10) / s; qy = .25f * s; qz = (r12 + r21) / s; qw = (r02 - r20) / s }
+            else -> { val s = sqrt(1f + r22 - r00 - r11) * 2f; qx = (r02 + r20) / s; qy = (r12 + r21) / s; qz = .25f * s; qw = (r10 - r01) / s }
+        }
+        l = sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        partTurn = if (l == 0f) Quat.IDENTITY else Quat(qx / l, qy / l, qz / l, qw / l)
     }
 
     internal fun addShadow(node: Node, radius: Float?) {
@@ -551,8 +600,8 @@ class Scene {
     fun remove(node: Node) {
         if (node.removed) return
         node.removed = true
-        all.remove(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node); behaving.remove(node); animated.remove(node)
-        shadows.filter { it.of === node }.forEach { all.remove(it.disc) }
+        drop(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node); behaving.remove(node); animated.remove(node)
+        shadows.filter { it.of === node }.forEach { drop(it.disc) }
         shadows.removeAll { it.of === node }
         node.body?.let { b -> sounds.untrack(b); surfaces.remove(b.id); cameraIgnores.remove(b.id); physics.remove(b) }
         followers.filter { it.node === node }.forEach { surfaces.remove(it.body.id); cameraIgnores.remove(it.body.id); physics.remove(it.body) }
@@ -623,7 +672,7 @@ class Scene {
 
     /** Where a sound made by [node] (or by its [part], for an animated model) is. */
     internal fun soundPosition(node: Node, part: String?): Vec3 =
-        if (part != null && node.animator?.nodePose(part) != null) partPose(node, part, Vec3.ZERO).first else node.position
+        if (part != null && (node.animator?.nodeIndex(part) ?: -1) >= 0) partPose(node, part, Vec3.ZERO).first else node.position
 
     /** Mutes or unmutes the whole scene. */
     fun toggleMute() { audio?.let { it.volume = if (it.volume > 0f) 0f else 1f } }
@@ -800,24 +849,28 @@ class Scene {
                 p.fxAir = 0f
             } else p.fxAir += dt
             p.fxGrounded = p.onGround
-            splashes(p, p.position.y + .3f, p.velocity.y)
+            splashes(p, p.position.y + .3f)
         }
         // A body splashes when its underside reaches the water (a light crate floats high: its centre never goes under).
         for (k in 0 until linked.size) {
             val n = linked[k]; val shape = n.body?.shape
             val below = if (shape == null) 0f else if (shape is sillage.physics.Sphere) shape.radius else shape.boundingRadius * .58f
-            splashes(n, n.position.y - below, n.body?.velocity?.y ?: 0f)
+            splashes(n, n.position.y - below)
         }
     }
 
-    private fun splashes(n: Node, y: Float, vy: Float) {
+    /** [n] (its underside at [y]) splashes where it falls into water fast enough (its speed read only then). */
+    private fun splashes(n: Node, y: Float) {
         val before = n.fxY
         n.fxY = y
-        if (before.isNaN() || vy > -1.5f) return
+        if (before.isNaN()) return
+        var vy = Float.NaN
         for (k in 0 until waterAreas.size) {
             val w = waterAreas[k]
             val p = n.position
             if (before > w[0] && y <= w[0] && abs(p.x) < w[1] && abs(p.z) < w[1]) {
+                if (vy.isNaN()) vy = if (n is Player) n.velocity.y else n.body?.velocity?.y ?: 0f
+                if (vy > -1.5f) return
                 val count = (8 + 3 * -vy).toInt().coerceAtMost(48)
                 particles.spawn(Particles.SPLASH, p.x, w[0] + .02f, p.z, count)
                 val size = if (n is Player) 1f else ((n.body?.shape?.boundingRadius ?: .3f) / .6f).coerceIn(0f, 1f)
@@ -865,6 +918,7 @@ class Scene {
     /** Advances the scene by [dt] seconds without drawing it (keys read from [Input.source], camera following): for tests and servers. */
     fun step(dt: Float) { input.poll(); update(dt); camera.view(dt) }
 
+    @Suppress("UNCHECKED_CAST")     // the blocks called with the time step already boxed (see boxed)
     internal fun update(dt: Float) {
         if (helpers.pending.isNotEmpty()) helpers.settle()
         time += dt
@@ -876,29 +930,64 @@ class Scene {
             timerCopy.clear(); for (k in 0 until timers.size) timerCopy.add(timers[k])
             for (k in 0 until timerCopy.size) { val t = timerCopy[k]; if (time >= t.at) { t.action(); if (t.every > 0f) t.at = time + t.every + random.nextFloat() * t.spread else timers.remove(t) } }
         }
-        for (k in 0 until updates.size) updates[k](this, dt)
+        val step = boxed(dt)
+        for (k in 0 until updates.size) (updates[k] as (Scene, Any?) -> Unit)(this, step)
         runScripts()
         // Only the nodes that have behaviours, or animations, are visited: a world of 40 000 still blocks costs nothing here.
         if (behaving.isNotEmpty()) {
             nodeCopy.clear(); for (k in 0 until behaving.size) nodeCopy.add(behaving[k])
-            for (k in 0 until nodeCopy.size) { val n = nodeCopy[k]; if (n.removed) continue; val bs = n.behaviours; for (j in 0 until bs.size) n.(bs[j])(dt) }
+            for (k in 0 until nodeCopy.size) { val n = nodeCopy[k]; if (n.removed) continue; val bs = n.behaviours; for (j in 0 until bs.size) (bs[j] as (Node, Any?) -> Unit)(n, step) }
         }
         // The world first (animated scenery, moving platforms, bodies), then the players: they stand where
         // the platforms will be drawn, without sinking into them for a frame.
         for (k in 0 until animated.size) animated[k].animator?.advance(dt)
         val h = dt.coerceIn(1f / 240f, 1f / 30f)
-        for (f in followers) { val (p, q) = partPose(f.node, f.part, f.offset); f.body.moveTo(p, h, if (f.rotation === Quat.IDENTITY) q else q * f.rotation) }
-        for (n in kinematicNodes) n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation)
+        for (k in 0 until followers.size) {
+            val f = followers[k]
+            posePart(f.node, f.index, f.offset)
+            f.body.moveTo(partPoint, h, if (f.rotation === Quat.IDENTITY) partTurn else partTurn * f.rotation)
+        }
+        for (k in 0 until kinematicNodes.size) { val n = kinematicNodes[k]; n.body?.moveTo(n.position + n.rotation.rotate(n.bodyOffset), h, n.rotation) }
         val physicsStart = sillage.math.nanoTime()
         physics.step(h)
         physicsMs = (sillage.math.nanoTime() - physicsStart) / 1e6f
-        for (k in 0 until linked.size) { val n = linked[k]; n.body?.let { b -> n.rotation = b.rotation; n.position = b.position - b.rotation.rotate(n.bodyOffset) } }
+        followBodies()
         for (k in 0 until playerList.size) { val p = playerList[k]; p.forcedClip = forcedPlayerClip; p.update(dt) }
         placeShadows()
         lighting.advance(dt)
         automaticEffects(dt)
         updateEffects(dt)
         sounds.update(dt)
+    }
+
+    /** The time step as an object, for the blocks of type `(Float) -> Unit` (calling them with a Float would box it at each call). */
+    private fun boxed(dt: Float): Any {
+        if (dt != boxedValue) { boxedValue = dt; boxedStep = dt }
+        return boxedStep
+    }
+    private var boxedValue = Float.NaN
+    private var boxedStep: Any = 0f
+
+    /**
+     * Dynamic nodes take their bodies' places (the body's centre is [Node.bodyOffset] away from the node's origin).
+     * Only a node whose body is somewhere else gets new values: a body at rest leaves its node as it is.
+     */
+    private fun followBodies() {
+        for (k in 0 until linked.size) {
+            val n = linked[k]
+            val b = n.body ?: continue
+            val q = b.rotation; val c = b.position; val v = n.bodyOffset
+            // The place q.rotate(v) gives, written out (the same operations).
+            val x = q.x; val y = q.y; val z = q.z; val w = q.w
+            val tx = 2f * (y * v.z - z * v.y); val ty = 2f * (z * v.x - x * v.z); val tz = 2f * (x * v.y - y * v.x)
+            val px = c.x - (v.x + w * tx + (y * tz - z * ty)); val py = c.y - (v.y + w * ty + (z * tx - x * tz)); val pz = c.z - (v.z + w * tz + (x * ty - y * tx))
+            val r = n.rotation
+            if (r.x.toRawBits() != x.toRawBits() || r.y.toRawBits() != y.toRawBits() || r.z.toRawBits() != z.toRawBits() || r.w.toRawBits() != w.toRawBits())
+                n.rotation = Quat(x, y, z, w)
+            val p = n.position
+            if (p.x.toRawBits() != px.toRawBits() || p.y.toRawBits() != py.toRawBits() || p.z.toRawBits() != pz.toRawBits())
+                n.position = Vec3(px, py, pz)
+        }
     }
 
     // With cast shadows, only players keep a round shadow, a light one straight below them: it shows where a
@@ -918,6 +1007,25 @@ class Scene {
             s.disc.position = Vec3(p.x, ground + .03f, p.z)
             s.disc.scale = s.radius * (1f + high * .12f) / (1f + high * .35f)
         }
+    }
+
+    /** The still nodes in cells, for the renderers' culling (see [StillCells]); how many nodes left the draw list so far. */
+    internal val stillCells = StillCells(all)
+
+    /** The cells of [nodes] if it is this scene's draw list ([drawList]), brought up to date for this frame; null otherwise. */
+    internal fun stillCellsOf(nodes: List<Node>): StillCells? {
+        if (nodes !== all) return null
+        stillCells.sync()
+        return stillCells
+    }
+
+    /** Takes [n] out of the draw list, keeping the still cells' indices right. */
+    private fun drop(n: Node) {
+        val r = all.indexOf(n)
+        if (r < 0) return
+        stillCells.forget(n)
+        all.removeAt(r)
+        stillCells.removedAt(r)
     }
 
     /** What the renderer draws this frame (the sky follows the eye; a first-person player is not drawn). */

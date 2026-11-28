@@ -102,13 +102,30 @@ class Lighting {
     }
 
     /** The sun's direction at the hour [t] (it may be below the horizon). */
-    internal fun sunAt(t: Float): Vec3 {
+    internal fun sunAt(t: Float): Vec3 { sunInto(t); return Vec3(sx, sy, sz) }
+
+    // What sunInto found.
+    private var sx = 0f; private var sy = 0f; private var sz = 0f
+
+    /**
+     * [sunAt] into [sx], [sy], [sz]: `(r * cos(a) + noon * sin(a)).normalized()` with r the rising direction and
+     * noon the sun's place at midday, written out with the very operations of the vector functions, in their order.
+     */
+    private fun sunInto(t: Float) {
         val a = (t - 6f) / 12f * PI.toFloat()
-        val r = Vec3(sunrise.x, 0f, sunrise.z).normalized()
-        val side = Vec3(-r.z, 0f, r.x)
+        // r = Vec3(sunrise.x, 0, sunrise.z).normalized()
+        val ux = sunrise.x; val uy = 0f; val uz = sunrise.z
+        val ul = sqrt(ux * ux + uy * uy + uz * uz)
+        val rx: Float; val ry: Float; val rz: Float
+        if (ul == 0f) { rx = ux; ry = uy; rz = uz } else { rx = ux / ul; ry = uy / ul; rz = uz / ul }
+        // side = Vec3(−r.z, 0, r.x); noon = Vec3.Y * cos(tilt) + side * sin(tilt)
         val tilt = sillage.math.toRadians(sunTilt.toDouble()).toFloat()
-        val noon = Vec3.Y * cos(tilt) + side * sin(tilt)
-        return (r * cos(a) + noon * sin(a)).normalized()
+        val ct = cos(tilt); val st = sin(tilt)
+        val nx = 0f * ct + -rz * st; val ny = 1f * ct + 0f * st; val nz = 0f * ct + rx * st
+        val ca = cos(a); val sa = sin(a)
+        val x = rx * ca + nx * sa; val y = ry * ca + ny * sa; val z = rz * ca + nz * sa
+        val l = sqrt(x * x + y * y + z * z)
+        if (l == 0f) { sx = x; sy = y; sz = z } else { sx = x / l; sy = y / l; sz = z / l }
     }
 
     /** The colours of the hour, from the sun's height (keys from deep night to full day, blended smoothly). */
@@ -117,8 +134,8 @@ class Lighting {
         val sun = sunAt(t)
         sunDirection = sun
         // The moon: across the sky from the sun, on a lower path.
-        val m = sunAt(t + 12f)
-        moonDirection = Vec3(m.x * .9f + .25f, m.y * .8f, m.z * .9f - .1f).normalized()
+        sunInto(t + 12f)
+        moonDirection = Vec3(sx * .9f + .25f, sy * .8f, sz * .9f - .1f).normalized()
         val e = sun.y
         var i = 0
         while (i < KEYS.size - 2 && e > KEYS[i + 1].height) i++

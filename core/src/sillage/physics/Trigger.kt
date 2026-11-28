@@ -31,9 +31,11 @@ class Trigger internal constructor(val world: PhysicsWorld, val shape: Shape, va
         world.touching(shape, pose, 0f, -1, touches, meshes = false)
         for (k in 0 until touches.size) {
             val b = touches.body[k]
-            if (b >= 0 && touches.sep[k] < 0f && b !in now && filter(Body(world, b))) now.add(b)
+            if (b >= 0 && touches.sep[k] < 0f && b !in now && filter(world.handle(b))) now.add(b)
         }
-        for (b in now) if (ids.add(b)) onEnter?.let { f -> entered.add { f(Body(world, b)) } }
+        // (Nothing to walk through when nobody is inside: no iterator made.)
+        if (now.isNotEmpty()) for (b in now) if (ids.add(b)) onEnter?.let { f -> entered.add { f(Body(world, b)) } }
+        if (ids.isEmpty()) return
         val it = ids.iterator()
         while (it.hasNext()) { val b = it.next(); if (b !in now) { it.remove(); onExit?.let { f -> entered.add { f(Body(world, b)) } } } }
     }

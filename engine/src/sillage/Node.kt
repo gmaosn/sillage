@@ -22,12 +22,17 @@ import kotlin.math.atan2
 open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** What is drawn (empty for an animated model, which draws its [parts]). */
     var mesh: Mesh = mesh
+        set(v) { if (v !== field) stir(); field = v }
     var name: String? = null
     open var position: Vec3 = Vec3.ZERO
+        set(v) { val f = field; if (v.x != f.x || v.y != f.y || v.z != f.z) stir(); field = v }
     var rotation: Quat = Quat.IDENTITY
+        set(v) { val f = field; if (v.x != f.x || v.y != f.y || v.z != f.z || v.w != f.w) stir(); field = v }
     /** Uniform size factor. Set it before [dynamic] or [solid]: the collision shape is sized then. */
     var scale: Float = 1f
+        set(v) { if (v != field) stir(); field = v }
     var visible: Boolean = true
+        set(v) { if (v != field) stir(); field = v }
     /** Whether it casts a shadow on what is below it (see [Lighting.shadows]); it receives shadows either way. */
     var castsShadow: Boolean = true
     /** Free label for the game (a role, a score…); the engine never reads it. */
@@ -35,11 +40,30 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
 
     /** Parts of an animated model, each drawn with the node's [matrix] times the part's pose. */
     var parts: List<Part> = emptyList()
+        set(v) { if (v !== field) stir(); field = v }
     /**
      * Beyond this distance from the camera (metres) it is not drawn, nor its shadow; infinite by default
      * (the haze already hides what is past [Lighting.fogEnd], and that is not drawn either).
      */
     var drawDistance: Float = Float.POSITIVE_INFINITY
+        set(v) { if (v != field) stir(); field = v }
+
+    // Its place among the still nodes (StillCells): the scene's cells hold the nodes that stopped moving, so
+    // that a frame can leave out a whole cell at once. A change of what places or draws it takes it out again.
+    /** Its index in the scene's draw list, kept by the scene's [StillCells]. */
+    internal var rank = -1
+    /** The cell holding it while it stands still (null: it is visited every frame), and its slot there. */
+    internal var cell: StillCell? = null
+    internal var cellSlot = -1
+    /** Whether its placement or looks changed since the cells last looked; frames in a row without a change. */
+    internal var stirred = false
+    internal var calm = 0
+
+    /** Its placement or what it draws changed: it leaves its cell, if it was in one. */
+    internal fun stir() {
+        stirred = true
+        if (cell != null) scene.stillCells.wake(this)
+    }
 
     // Its sphere in the world for the renderer's culling, and what it was computed from.
     internal val cullCache = FloatArray(4)
@@ -58,8 +82,12 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     fun lod(mesh: Mesh, from: Number): Node {
         require(parts.isEmpty()) { "lod(): an animated model draws its parts, it cannot change its mesh with the distance" }
         lods = (lods + (from.toFloat() to mesh)).sortedBy { it.first }
+        stir()
         return this
     }
+
+    /** Its levels of detail' meshes, nearest first (none for most nodes). */
+    internal val lodMeshes: List<Pair<Float, Mesh>> get() = lods
 
     /** [lod] with a model's file (its rest pose as one mesh). */
     fun lod(path: String, from: Number): Node = lod(scene.flatModel(path), from)
@@ -79,7 +107,7 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
         internal set
     /** Plays the model's clips; null when the node is not an animated model. */
     var animator: Animator? = null
-        internal set(v) { field = v; if (v != null && this !is Player) scene.animates(this) }
+        internal set(v) { if (v !== field) stir(); field = v; if (v != null && this !is Player) scene.animates(this) }
     /** The model it was loaded from, if any. */
     var model: Model? = null
         internal set
@@ -284,7 +312,19 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Turns on itself, [degreesPerSecond] about [axis]. */
     fun spin(degreesPerSecond: Number = 90, axis: Vec3 = Vec3.Y): Node {
         val speed = degreesPerSecond.toFloat() * PI.toFloat() / 180f
-        return onUpdate { dt -> rotation = (Quat.axisAngle(axis, speed * dt) * rotation).normalized() }
+        return onUpdate { dt ->
+            // (Quat.axisAngle(axis, speed * dt) * rotation).normalized(), written out: one quaternion made, not three.
+            val angle = speed * dt
+            val s = kotlin.math.sin(angle * .5f); val c = kotlin.math.cos(angle * .5f)
+            val ax = axis.x * s; val ay = axis.y * s; val az = axis.z * s
+            val q = rotation
+            val x = c * q.x + ax * q.w + ay * q.z - az * q.y
+            val y = c * q.y - ax * q.z + ay * q.w + az * q.x
+            val z = c * q.z + ax * q.y - ay * q.x + az * q.w
+            val w = c * q.w - ax * q.x - ay * q.y - az * q.z
+            val l = kotlin.math.sqrt(x * x + y * y + z * z + w * w)
+            rotation = if (l == 0f) Quat.IDENTITY else Quat(x / l, y / l, z / l, w / l)
+        }
     }
 
     /** Takes it out of the scene (and its body out of the physics). */

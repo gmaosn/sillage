@@ -353,8 +353,79 @@ class Part internal constructor(val node: Int, mesh: Mesh) {
     var mesh: Mesh = mesh
         internal set
     internal var skin: SkinBinding? = null
-    var pose: Mat4 = Mat4.IDENTITY
-        internal set
+    /**
+     * Its pose's 16 coefficients, column first as [Mat4] names them (m00, m01… m33), written in place by its
+     * animator at every pose: the renderer reads them, and [pose] is made from them only when asked for.
+     */
+    internal val m = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f)
+    internal var version = 0
+    private var made: Mat4 = Mat4.IDENTITY
+    private var madeAt = 0
+    var pose: Mat4
+        get() {
+            if (madeAt != version) { made = mat4(m, 0); madeAt = version }
+            return made
+        }
+        internal set(v) { copyMat4(v, m, 0); version++ }
+}
+
+/** The matrix of the 16 coefficients of [a] from [o], column first (as [copyMat4] lays them). */
+internal fun mat4(a: FloatArray, o: Int) = Mat4(a[o], a[o + 1], a[o + 2], a[o + 3], a[o + 4], a[o + 5], a[o + 6], a[o + 7],
+    a[o + 8], a[o + 9], a[o + 10], a[o + 11], a[o + 12], a[o + 13], a[o + 14], a[o + 15])
+
+/** [m]'s 16 coefficients into [a] from [o], column first (m00, m01, m02, m03, m10… m33). */
+internal fun copyMat4(m: Mat4, a: FloatArray, o: Int) {
+    a[o] = m.m00; a[o + 1] = m.m01; a[o + 2] = m.m02; a[o + 3] = m.m03
+    a[o + 4] = m.m10; a[o + 5] = m.m11; a[o + 6] = m.m12; a[o + 7] = m.m13
+    a[o + 8] = m.m20; a[o + 9] = m.m21; a[o + 10] = m.m22; a[o + 11] = m.m23
+    a[o + 12] = m.m30; a[o + 13] = m.m31; a[o + 14] = m.m32; a[o + 15] = m.m33
+}
+
+/**
+ * [a] (at [ao]) × [b] (at [bo]) into [out] (at [o]), 16 coefficients each laid as [copyMat4] lays them: the very
+ * operations of [Mat4.times], in the same order, so that the result is the same to the bit.
+ */
+internal fun timesInto(a: FloatArray, ao: Int, b: FloatArray, bo: Int, out: FloatArray, o: Int) {
+    val m00 = a[ao]; val m01 = a[ao + 1]; val m02 = a[ao + 2]; val m03 = a[ao + 3]
+    val m10 = a[ao + 4]; val m11 = a[ao + 5]; val m12 = a[ao + 6]; val m13 = a[ao + 7]
+    val m20 = a[ao + 8]; val m21 = a[ao + 9]; val m22 = a[ao + 10]; val m23 = a[ao + 11]
+    val m30 = a[ao + 12]; val m31 = a[ao + 13]; val m32 = a[ao + 14]; val m33 = a[ao + 15]
+    val b00 = b[bo]; val b01 = b[bo + 1]; val b02 = b[bo + 2]; val b03 = b[bo + 3]
+    val b10 = b[bo + 4]; val b11 = b[bo + 5]; val b12 = b[bo + 6]; val b13 = b[bo + 7]
+    val b20 = b[bo + 8]; val b21 = b[bo + 9]; val b22 = b[bo + 10]; val b23 = b[bo + 11]
+    val b30 = b[bo + 12]; val b31 = b[bo + 13]; val b32 = b[bo + 14]; val b33 = b[bo + 15]
+    out[o] = m00 * b00 + m10 * b01 + m20 * b02 + m30 * b03
+    out[o + 1] = m01 * b00 + m11 * b01 + m21 * b02 + m31 * b03
+    out[o + 2] = m02 * b00 + m12 * b01 + m22 * b02 + m32 * b03
+    out[o + 3] = m03 * b00 + m13 * b01 + m23 * b02 + m33 * b03
+    out[o + 4] = m00 * b10 + m10 * b11 + m20 * b12 + m30 * b13
+    out[o + 5] = m01 * b10 + m11 * b11 + m21 * b12 + m31 * b13
+    out[o + 6] = m02 * b10 + m12 * b11 + m22 * b12 + m32 * b13
+    out[o + 7] = m03 * b10 + m13 * b11 + m23 * b12 + m33 * b13
+    out[o + 8] = m00 * b20 + m10 * b21 + m20 * b22 + m30 * b23
+    out[o + 9] = m01 * b20 + m11 * b21 + m21 * b22 + m31 * b23
+    out[o + 10] = m02 * b20 + m12 * b21 + m22 * b22 + m32 * b23
+    out[o + 11] = m03 * b20 + m13 * b21 + m23 * b22 + m33 * b23
+    out[o + 12] = m00 * b30 + m10 * b31 + m20 * b32 + m30 * b33
+    out[o + 13] = m01 * b30 + m11 * b31 + m21 * b32 + m31 * b33
+    out[o + 14] = m02 * b30 + m12 * b31 + m22 * b32 + m32 * b33
+    out[o + 15] = m03 * b30 + m13 * b31 + m23 * b32 + m33 * b33
+}
+
+/**
+ * [Mat4.trs] of the translation, rotation and scale at [t], [r], [s] (3, 4 and 3 floats) into [out] at [o], the same
+ * operations in the same order.
+ */
+internal fun trsInto(t: FloatArray, to: Int, r: FloatArray, ro: Int, s: FloatArray, so: Int, out: FloatArray, o: Int) {
+    val rx = r[ro]; val ry = r[ro + 1]; val rz = r[ro + 2]; val rw = r[ro + 3]
+    val xx = rx * rx; val yy = ry * ry; val zz = rz * rz
+    val xy = rx * ry; val xz = rx * rz; val yz = ry * rz
+    val wx = rw * rx; val wy = rw * ry; val wz = rw * rz
+    val sx = s[so]; val sy = s[so + 1]; val sz = s[so + 2]
+    out[o] = (1f - 2f * (yy + zz)) * sx; out[o + 1] = 2f * (xy + wz) * sx; out[o + 2] = 2f * (xz - wy) * sx; out[o + 3] = 0f
+    out[o + 4] = 2f * (xy - wz) * sy; out[o + 5] = (1f - 2f * (xx + zz)) * sy; out[o + 6] = 2f * (yz + wx) * sy; out[o + 7] = 0f
+    out[o + 8] = 2f * (xz + wy) * sz; out[o + 9] = 2f * (yz - wx) * sz; out[o + 10] = (1f - 2f * (xx + yy)) * sz; out[o + 11] = 0f
+    out[o + 12] = t[to]; out[o + 13] = t[to + 1]; out[o + 14] = t[to + 2]; out[o + 15] = 1f
 }
 
 /**
@@ -365,7 +436,15 @@ class Animator(val model: Model, private val parts: List<Part>) {
     private val n = model.nodes.size
     private val pt = FloatArray(3 * n); private val pr = FloatArray(4 * n); private val ps = FloatArray(3 * n)
     private val ft = FloatArray(3 * n); private val fr = FloatArray(4 * n); private val fs = FloatArray(3 * n)
-    private val world = arrayOfNulls<Mat4>(n)
+    // Each node's pose in the model's space, 16 coefficients column first (see copyMat4), worked out in place:
+    // posing a model makes no matrix. Then the local one, and a joint's matrix for a skin.
+    private val world = FloatArray(16 * n)
+    private val local = FloatArray(16)
+    private val joint = FloatArray(16)
+    /** The inverse bind matrices of each skin, 16 coefficients per joint. */
+    private val inverseBinds: Array<FloatArray> = Array(model.skins.size) { k ->
+        val s = model.skins[k]; FloatArray(16 * s.inverseBind.size).also { a -> for (j in s.inverseBind.indices) copyMat4(s.inverseBind[j], a, 16 * j) }
+    }
     private var clip: Clip? = null
     private var loop = true
     private var fade = 0f
@@ -381,7 +460,13 @@ class Animator(val model: Model, private val parts: List<Part>) {
     init { rest(); pose() }
 
     /** Current pose of the node named [name] in the model's space, or null when the model has no such node. */
-    fun nodePose(name: String): Mat4? = model.nodes.indexOfFirst { it.name == name }.takeIf { it >= 0 }?.let { world[it] }
+    fun nodePose(name: String): Mat4? = nodeIndex(name).takeIf { it >= 0 }?.let { mat4(world, 16 * it) }
+
+    /** The index of the node called [name] (−1: none). */
+    internal fun nodeIndex(name: String): Int = model.nodes.indexOfFirst { it.name == name }
+
+    /** Each node's pose (16 coefficients from 16 × its index, column first), up to date after each [advance]. */
+    internal val poses: FloatArray get() = world
 
     /** Starts [name] unless it is already playing; [fade] seconds of cross-fade from the current pose. */
     fun play(name: String, loop: Boolean = true, fade: Float = .15f, speed: Float = this.speed) {
@@ -448,15 +533,18 @@ class Animator(val model: Model, private val parts: List<Part>) {
     }
 
     private fun pose() {
+        // As Mat4.trs and Mat4.times would, operation for operation, without making a matrix.
         for (i in model.order) {
             val nd = model.nodes[i]
-            val local = nd.matrix ?: Mat4.trs(Vec3(pt[3 * i], pt[3 * i + 1], pt[3 * i + 2]),
-                Quat(pr[4 * i], pr[4 * i + 1], pr[4 * i + 2], pr[4 * i + 3]), Vec3(ps[3 * i], ps[3 * i + 1], ps[3 * i + 2]))
-            world[i] = if (nd.parent < 0) local else world[nd.parent]!! * local
+            val fixed = nd.matrix
+            if (fixed != null) copyMat4(fixed, local, 0) else trsInto(pt, 3 * i, pr, 4 * i, ps, 3 * i, local, 0)
+            if (nd.parent < 0) local.copyInto(world, 16 * i) else timesInto(world, 16 * nd.parent, local, 0, world, 16 * i)
         }
-        for (p in parts) {
+        for (k in parts.indices) {
+            val p = parts[k]
             val s = p.skin
-            if (s == null) p.pose = world[p.node]!! else { p.pose = Mat4.IDENTITY; deform(p, s) }
+            if (s == null) world.copyInto(p.m, 0, 16 * p.node, 16 * p.node + 16) else { copyMat4(Mat4.IDENTITY, p.m, 0); deform(p, s) }
+            p.version++
         }
     }
 
@@ -471,10 +559,11 @@ class Animator(val model: Model, private val parts: List<Part>) {
         val j = s.joints
         for (k in 0 until n) {
             // Mat4 names its coefficients column first: mCR. Rows of the affine part, in 12 floats.
-            val m = world[skin.joints[k]]!! * skin.inverseBind[k]; val o = 12 * k
-            j[o] = m.m00; j[o + 1] = m.m10; j[o + 2] = m.m20; j[o + 3] = m.m30
-            j[o + 4] = m.m01; j[o + 5] = m.m11; j[o + 6] = m.m21; j[o + 7] = m.m31
-            j[o + 8] = m.m02; j[o + 9] = m.m12; j[o + 10] = m.m22; j[o + 11] = m.m32
+            val m = joint; val o = 12 * k
+            timesInto(world, 16 * skin.joints[k], inverseBinds[s.skin], 16 * k, m, 0)
+            j[o] = m[0]; j[o + 1] = m[4]; j[o + 2] = m[8]; j[o + 3] = m[12]
+            j[o + 4] = m[1]; j[o + 5] = m[5]; j[o + 6] = m[9]; j[o + 7] = m[13]
+            j[o + 8] = m[2]; j[o + 9] = m[6]; j[o + 10] = m[10]; j[o + 11] = m[14]
         }
         val src = s.bind; val dst = p.mesh.vertices; val w = s.weights
         for (v in 0 until src.size / 9) {

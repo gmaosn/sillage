@@ -3,6 +3,7 @@ package sillage
 import sillage.math.Mat4
 import sillage.math.Vec3
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.round
 import kotlin.math.sqrt
 
@@ -113,8 +114,11 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         return focus + right * (round(u / texel) * texel - u) + up * (round(v / texel) * texel - v)
     }
 
-    /** Adds one copy of [mesh] with the model rows of [node] (times [pose] for a part of an animated model). */
-    private fun add(slot: Int, order: ArrayList<Batch>, mesh: Mesh, node: Node, pose: Mat4?): Batch? {
+    /**
+     * Adds one copy of [mesh] with the model rows of [node] (times [pose] for a part of an animated model: its
+     * 16 coefficients, column first, see [Part.m]).
+     */
+    private fun add(slot: Int, order: ArrayList<Batch>, mesh: Mesh, node: Node, pose: FloatArray?): Batch? {
         if (mesh.vertices.isEmpty()) return null
         var slots = mesh.batches
         if (mesh.batchOwner !== token || slots == null) { slots = arrayOfNulls(5 + CASCADES); mesh.batches = slots; mesh.batchOwner = token }
@@ -133,13 +137,13 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
             r[o + 4] = a10; r[o + 5] = a11; r[o + 6] = a12; r[o + 7] = p.y
             r[o + 8] = a20; r[o + 9] = a21; r[o + 10] = a22; r[o + 11] = p.z
         } else {
-            // Mat4 names its coefficients column first (m30 m31 m32: the translation).
-            r[o] = a00 * pose.m00 + a01 * pose.m01 + a02 * pose.m02; r[o + 1] = a00 * pose.m10 + a01 * pose.m11 + a02 * pose.m12
-            r[o + 2] = a00 * pose.m20 + a01 * pose.m21 + a02 * pose.m22; r[o + 3] = a00 * pose.m30 + a01 * pose.m31 + a02 * pose.m32 + p.x
-            r[o + 4] = a10 * pose.m00 + a11 * pose.m01 + a12 * pose.m02; r[o + 5] = a10 * pose.m10 + a11 * pose.m11 + a12 * pose.m12
-            r[o + 6] = a10 * pose.m20 + a11 * pose.m21 + a12 * pose.m22; r[o + 7] = a10 * pose.m30 + a11 * pose.m31 + a12 * pose.m32 + p.y
-            r[o + 8] = a20 * pose.m00 + a21 * pose.m01 + a22 * pose.m02; r[o + 9] = a20 * pose.m10 + a21 * pose.m11 + a22 * pose.m12
-            r[o + 10] = a20 * pose.m20 + a21 * pose.m21 + a22 * pose.m22; r[o + 11] = a20 * pose.m30 + a21 * pose.m31 + a22 * pose.m32 + p.z
+            // The pose is laid column first: pose[12], pose[13], pose[14] are its translation.
+            r[o] = a00 * pose[0] + a01 * pose[1] + a02 * pose[2]; r[o + 1] = a00 * pose[4] + a01 * pose[5] + a02 * pose[6]
+            r[o + 2] = a00 * pose[8] + a01 * pose[9] + a02 * pose[10]; r[o + 3] = a00 * pose[12] + a01 * pose[13] + a02 * pose[14] + p.x
+            r[o + 4] = a10 * pose[0] + a11 * pose[1] + a12 * pose[2]; r[o + 5] = a10 * pose[4] + a11 * pose[5] + a12 * pose[6]
+            r[o + 6] = a10 * pose[8] + a11 * pose[9] + a12 * pose[10]; r[o + 7] = a10 * pose[12] + a11 * pose[13] + a12 * pose[14] + p.y
+            r[o + 8] = a20 * pose[0] + a21 * pose[1] + a22 * pose[2]; r[o + 9] = a20 * pose[4] + a21 * pose[5] + a22 * pose[6]
+            r[o + 10] = a20 * pose[8] + a21 * pose[9] + a22 * pose[10]; r[o + 11] = a20 * pose[12] + a21 * pose[13] + a22 * pose[14] + p.z
         }
         b.count++
         return b
@@ -190,7 +194,7 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
     }
 
     /** Whether a copy of [mesh] placed by node [o] and [pose] is seen, then whether it casts into the maps. */
-    private fun test(mesh: Mesh, o: Node, pose: Mat4?) {
+    private fun test(mesh: Mesh, o: Node, pose: FloatArray?) {
         if (!culling) { seen = true; casting = (1 shl CASCADES) - 1; return }
         if (pose == null) {
             // A node that has not moved since the last frame keeps its world sphere (its place and mesh are immutable values).
@@ -210,11 +214,11 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         }
         val sp = mesh.sphere
         var r = sp[3] * (if (mesh.dynamic) 1.5f else 1f)
-        val cx = pose.m00 * sp[0] + pose.m10 * sp[1] + pose.m20 * sp[2] + pose.m30
-        val cy = pose.m01 * sp[0] + pose.m11 * sp[1] + pose.m21 * sp[2] + pose.m31
-        val cz = pose.m02 * sp[0] + pose.m12 * sp[1] + pose.m22 * sp[2] + pose.m32
-        val sx = pose.m00 * pose.m00 + pose.m01 * pose.m01 + pose.m02 * pose.m02; val sy = pose.m10 * pose.m10 + pose.m11 * pose.m11 + pose.m12 * pose.m12
-        val sz = pose.m20 * pose.m20 + pose.m21 * pose.m21 + pose.m22 * pose.m22
+        val cx = pose[0] * sp[0] + pose[4] * sp[1] + pose[8] * sp[2] + pose[12]
+        val cy = pose[1] * sp[0] + pose[5] * sp[1] + pose[9] * sp[2] + pose[13]
+        val cz = pose[2] * sp[0] + pose[6] * sp[1] + pose[10] * sp[2] + pose[14]
+        val sx = pose[0] * pose[0] + pose[1] * pose[1] + pose[2] * pose[2]; val sy = pose[4] * pose[4] + pose[5] * pose[5] + pose[6] * pose[6]
+        val sz = pose[8] * pose[8] + pose[9] * pose[9] + pose[10] * pose[10]
         r *= sqrt(maxOf(sx, sy, sz))
         // The centre turned by the node's rotation (q v q*, written out: nothing allocated), scaled, moved.
         val q = o.rotation; val qx = q.x; val qy = q.y; val qz = q.z; val qw = q.w
@@ -225,10 +229,16 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         place(o, wx, wy, wz, r)
     }
 
+    /** One bit per node of the draw list: the nodes this frame visits (when the scene keeps still cells). */
+    private var marks = LongArray(64)
+    private var eyeSize = 0f
+
     /**
      * The frame's copies, grouped by mesh. With [cull], what the camera cannot see (outside the frustum of
      * [viewProj], past [fogEnd] or past its node's draw distance) is left out, and only what stands in a
-     * cascade's square ([squares], seen along [light]) casts into that cascade's map.
+     * cascade's square ([squares], seen along [light]) casts into that cascade's map. When [nodes] is a scene's
+     * draw list, the cells of its still nodes ([StillCells]) are tested first: a cell left out leaves out all
+     * its nodes at once, and the nodes kept are visited in the list's order, so that the batches are the same.
      */
     fun gather(nodes: List<Node>, hidden: Node?, viewProj: Mat4, eye: Vec3, fogEnd: Float, light: Vec3) {
         for (list in casters) for (b in list) b.count = 0
@@ -247,31 +257,113 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         val ref = if (abs(light.y) > .99f) Vec3.Z else Vec3.Y
         val sRight = (ref cross light).normalized(); val sUp = light cross sRight
         rx = sRight.x; ry = sRight.y; rz = sRight.z; ux = sUp.x; uy = sUp.y; uz = sUp.z
-        for (k in nodes.indices) {
-            val o = nodes[k]
-            if (!o.visible || o === hidden) continue
-            val mesh = o.meshAt(eye)
-            if (o.isSky) { prepare(mesh); add(2, skies, mesh, o, null); continue }
-            if (mesh.vertices.isNotEmpty()) {
-                test(mesh, o, null)
-                if (seen || casting != 0) prepare(mesh)
-                if (o.isShadow) { if (seen) add(3, shadows, mesh, o, null) else culled++; continue }
-                val look = o.water
-                if (look != null) { if (seen) add(4, waters, mesh, o, null)?.water = look else culled++; continue }
-                val casts = o.castsShadow && !mesh.unlit
-                if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, mesh, o, null) } else culled++
-                if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], mesh, o, null)
+        val still = if (culling && nodes.isNotEmpty()) nodes[0].scene.stillCellsOf(nodes) else null
+        // When the cells left out whole hold few nodes, visiting every node costs less than choosing them.
+        if (still == null || 8 * cellsLeftOut(still) < nodes.size) visitAll(nodes, hidden, eye)
+        else visitKept(nodes, still, hidden, eye)
+    }
+
+    // Each loop in a method of its own, compiled on its own (see ARCHITECTURE: a loop inside a large method ran slower).
+
+    private fun visitAll(nodes: List<Node>, hidden: Node?, eye: Vec3) {
+        for (k in nodes.indices) visit(nodes[k], hidden, eye)
+    }
+
+    /** Marks the cells left out whole this frame ([StillCell.out]); how many nodes they hold. */
+    private fun cellsLeftOut(still: StillCells): Int {
+        val cells = still.cells
+        eyeSize = max(max(abs(ex), abs(ey)), abs(ez))
+        var left = 0
+        for (k in 0 until cells.size) {
+            val c = cells[k]
+            c.out = c.count > 0 && leftOut(c)
+            if (c.out) left += c.count
+        }
+        return left
+    }
+
+    /** Visits, in the list's order, every node outside the cells and those of the cells not left out whole. */
+    private fun visitKept(nodes: List<Node>, still: StillCells, hidden: Node?, eye: Vec3) {
+        val words = (nodes.size + 63) ushr 6
+        if (marks.size < words) marks = LongArray(2 * words)
+        val m = marks
+        m.fill(0L, 0, words)
+        val moving = still.moving
+        for (k in 0 until moving.size) { val r = moving[k].rank; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
+        val cells = still.cells
+        for (k in 0 until cells.size) {
+            val c = cells[k]
+            if (c.count == 0) continue
+            if (c.out) {
+                // As if each of its nodes had been visited and found unseen (the hidden node is never counted).
+                culled += c.count
+                if (hidden != null && hidden.cell === c) culled--
+                continue
             }
-            val parts = o.parts
-            val casts = o.castsShadow
-            for (j in parts.indices) {
-                val p = parts[j]
-                test(p.mesh, o, p.pose)
-                if (!seen && casting == 0) { culled++; continue }
-                prepare(p.mesh)
-                if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, p.mesh, o, p.pose) } else culled++
-                if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], p.mesh, o, p.pose)
+            val rs = c.ranks
+            for (j in 0 until c.count) { val r = rs[j]; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
+        }
+        for (w in 0 until words) {
+            var bits = m[w]
+            while (bits != 0L) {
+                visit(nodes[(w shl 6) + bits.countTrailingZeroBits()], hidden, eye)
+                bits = bits and (bits - 1)
             }
+        }
+    }
+
+    /**
+     * Whether no node of [c] can be seen nor cast into a map drawn this frame: its box (which holds every node's
+     * sphere) is past the haze and the nodes' draw distances, or outside the frustum and every shadow square due.
+     * The tests keep a margin, so that a cell is left out only when each of its nodes surely would be.
+     */
+    private fun leftOut(c: StillCell): Boolean {
+        val eps = 1e-3f + 2e-5f * (c.size + eyeSize)
+        val dx = ex - ex.coerceIn(c.minX, c.maxX); val dy = ey - ey.coerceIn(c.minY, c.maxY); val dz = ez - ez.coerceIn(c.minZ, c.maxZ)
+        if (sqrt(dx * dx + dy * dy + dz * dz) > minOf(haze, c.far) + eps) return true
+        var outside = false
+        for (i in 0 until 6) {
+            val o = 4 * i; val a = planes[o]; val b = planes[o + 1]; val cc = planes[o + 2]
+            // The box's corner farthest along the plane's normal.
+            val most = a * (if (a >= 0f) c.maxX else c.minX) + b * (if (b >= 0f) c.maxY else c.minY) + cc * (if (cc >= 0f) c.maxZ else c.minZ) + planes[o + 3]
+            if (most < -eps) { outside = true; break }
+        }
+        if (!outside) return false
+        val hx = (c.maxX - c.minX) * .5f; val hy = (c.maxY - c.minY) * .5f; val hz = (c.maxZ - c.minZ) * .5f
+        for (k in 0 until CASCADES) {
+            val half = squares[4 * k + 3]
+            if (half <= 0f || !cascadeNow[k]) continue
+            val px = (c.minX + c.maxX) * .5f - squares[4 * k]; val py = (c.minY + c.maxY) * .5f - squares[4 * k + 1]; val pz = (c.minZ + c.maxZ) * .5f - squares[4 * k + 2]
+            val alongR = hx * abs(rx) + hy * abs(ry) + hz * abs(rz); val alongU = hx * abs(ux) + hy * abs(uy) + hz * abs(uz)
+            if (abs(px * rx + py * ry + pz * rz) <= half + alongR + eps && abs(px * ux + py * uy + pz * uz) <= half + alongU + eps) return false
+        }
+        return true
+    }
+
+    /** One node of the frame: tested, then added to the batches it is seen in and to the maps it casts into. */
+    private fun visit(o: Node, hidden: Node?, eye: Vec3) {
+        if (!o.visible || o === hidden) return
+        val mesh = o.meshAt(eye)
+        if (o.isSky) { prepare(mesh); add(2, skies, mesh, o, null); return }
+        if (mesh.vertices.isNotEmpty()) {
+            test(mesh, o, null)
+            if (seen || casting != 0) prepare(mesh)
+            if (o.isShadow) { if (seen) add(3, shadows, mesh, o, null) else culled++; return }
+            val look = o.water
+            if (look != null) { if (seen) add(4, waters, mesh, o, null)?.water = look else culled++; return }
+            val casts = o.castsShadow && !mesh.unlit
+            if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, mesh, o, null) } else culled++
+            if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], mesh, o, null)
+        }
+        val parts = o.parts
+        val casts = o.castsShadow
+        for (j in parts.indices) {
+            val p = parts[j]
+            test(p.mesh, o, p.m)
+            if (!seen && casting == 0) { culled++; continue }
+            prepare(p.mesh)
+            if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, p.mesh, o, p.m) } else culled++
+            if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], p.mesh, o, p.m)
         }
     }
 

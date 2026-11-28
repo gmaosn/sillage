@@ -108,12 +108,23 @@ class Body internal constructor(internal val world: PhysicsWorld, val id: Int) {
     /** For a kinematic body: sets the velocities that reach [target] (and [targetRotation]) in [dt] seconds. */
     fun moveTo(target: Vec3, dt: Float, targetRotation: Quat? = null) {
         require(dt > 0f)
-        velocity = (target - position) / dt
+        // (target − position) / dt, then (targetRotation × rotation*) as an angular velocity: the very operations
+        // of the vector and quaternion functions, without making them.
+        val w = world; val s = w.st; val o = id * S
+        s[o + VX] = (target.x - w.px[id]) / dt; s[o + VY] = (target.y - w.py[id]) / dt; s[o + VZ] = (target.z - w.pz[id]) / dt
+        w.wake(id)
         if (targetRotation != null) {
-            var d = targetRotation * rotation.conjugate()
-            if (d.w < 0f) d = Quat(-d.x, -d.y, -d.z, -d.w)
-            val s = sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
-            angularVelocity = if (s < 1e-6f) Vec3.ZERO else Vec3(d.x, d.y, d.z) * (2f * acos(d.w.coerceIn(-1f, 1f)) / (s * dt))
+            val tx = targetRotation.x; val ty = targetRotation.y; val tz = targetRotation.z; val tw = targetRotation.w
+            val cx = -w.qx[id]; val cy = -w.qy[id]; val cz = -w.qz[id]; val cw = w.qw[id]
+            var dx = tw * cx + tx * cw + ty * cz - tz * cy
+            var dy = tw * cy - tx * cz + ty * cw + tz * cx
+            var dz = tw * cz + tx * cy - ty * cx + tz * cw
+            var dw = tw * cw - tx * cx - ty * cy - tz * cz
+            if (dw < 0f) { dx = -dx; dy = -dy; dz = -dz; dw = -dw }
+            val l = sqrt(dx * dx + dy * dy + dz * dz)
+            if (l < 1e-6f) { s[o + WX] = 0f; s[o + WY] = 0f; s[o + WZ] = 0f }
+            else { val k = 2f * acos(dw.coerceIn(-1f, 1f)) / (l * dt); s[o + WX] = dx * k; s[o + WY] = dy * k; s[o + WZ] = dz * k }
+            w.wake(id)
         }
     }
 
@@ -273,6 +284,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     }
 
     fun body(id: Int): Body { require(id in 0 until count); return Body(this, id) }
+
+    /**
+     * The handle of the body in slot [i], made the first time it is asked for and kept: the queries hand
+     * bodies to their filters and results without making one each time (handles are compared by slot).
+     */
+    internal fun handle(i: Int): Body {
+        if (i >= handles.size) handles = handles.copyOf(max(i + 1, 2 * handles.size))
+        return handles[i] ?: Body(this, i).also { handles[i] = it }
+    }
+    private var handles = arrayOfNulls<Body>(64)
 
     /**
      * Takes [body] out of the world: it no longer moves, collides or shows in queries, and its contacts
@@ -723,7 +744,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         if (triggers.isNotEmpty()) {
             events.clear()
             for (k in triggers.indices) triggers[k].check(events)
-            for (e in events) e()
+            for (k in 0 until events.size) events[k]()
         }
         if (entries.isNotEmpty() || exits.isNotEmpty()) {
             for (e in entries.toList()) e.water.onEnter?.invoke(e)
