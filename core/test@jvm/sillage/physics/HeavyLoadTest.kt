@@ -109,9 +109,10 @@ class HeavyLoadTest {
 
     /**
      * Une balançoire (deux chaînes de 7 maillons pendues à une poutre fixe, un siège) secouée, puis un marin qui
-     * marche dessous et saute dessus au hasard pendant une minute, douze fois : la boucle poutre – chaîne – siège –
-     * chaîne – poutre, tendue droite, rend la résolution exacte singulière ; le filet de sécurité la défait au
-     * lieu de projeter le siège (la graine 3 l'envoyait à 6 000 km/s).
+     * marche dessous et saute dessus au hasard pendant une minute, douze fois. Un coup du marin fait tourner un
+     * maillon mince sur sa longueur à des centaines de tours par seconde : les lignes prises au début de chaque
+     * sous-pas n'y valent plus rien, et la résolution exacte envoyait le siège à 6 000 km/s (graine 3). Un groupe
+     * dont un corps tourne si vite reste itératif ; un filet de sécurité défait de plus une résolution absurde.
      */
     @Test fun uneBalancoireOuLOnSauteNeSEnvoleJamais() {
         for (seed in 0 until 12) {

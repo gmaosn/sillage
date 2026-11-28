@@ -49,6 +49,16 @@ internal class JointTrees(private val world: PhysicsWorld) {
     private fun root(i: Int): Int { var r = i; while (parent[r] != r) { parent[r] = parent[parent[r]]; r = parent[r] }; return r }
 
     private fun dynamic(i: Int) = i >= 0 && world.st[i * S + IM] > 0f
+    /**
+     * Whether body [i] turns more than [TURN] radians within [dt]: the rows, taken where the bodies are at the start of
+     * each substep, would then be far from where they end (a thin link set spinning about its length by a kick).
+     */
+    private fun spins(i: Int, dt: Float): Boolean {
+        if (i < 0) return false
+        val o = i * S
+        val w2 = world.st[o + 3] * world.st[o + 3] + world.st[o + 4] * world.st[o + 4] + world.st[o + 5] * world.st[o + 5]
+        return !(w2 * dt * dt <= TURN * TURN)
+    }
     /** The group of joined bodies [j] is in (its root), −1 for a joint without a dynamic body. */
     private fun groupOf(j: Joint): Int {
         val a = if (dynamic(j.ia)) j.ia else -1
@@ -58,7 +68,8 @@ internal class JointTrees(private val world: PhysicsWorld) {
     private var heavy = BooleanArray(0); private var was = BooleanArray(0); private var busy = BooleanArray(0)
     private companion object {
         const val LOADED = 20f; const val QUIET = 10f; const val QUIET_STEPS = 60
-        const val FLING = 100f; const val SPIN = 1000f; const val BAN_STEPS = 120
+        const val FLING = 500.0; const val SPIN = 5000.0; const val BAN_STEPS = 120
+        const val TURN = 2f
     }
 
     /** Picks this step's tree joints among [joints] (prepared already), builds K at the step's start and factors it. */
@@ -74,15 +85,16 @@ internal class JointTrees(private val world: PhysicsWorld) {
         for (j in joints) { if (j.ia >= 0) { parent[j.ia] = j.ia; tainted[j.ia] = false }; parent[j.ib] = j.ib; tainted[j.ib] = false }
         // The groups of dynamic bodies joined together, and those with a joint that stays iterative: one with no
         // rigid rows (a cone, a spring, a rope), at or near one of its limits (its limit and its anchor are solved
-        // together), whose two bodies touch each other (their contacts and the joint have it out softly), or that
-        // closes a loop. Such a group stays iterative as a whole: an exact joint beside an iterative one pushes it
-        // past its limits.
+        // together), with a body turning fast (more than [TURN] radians in the step), whose two bodies touch each
+        // other (their contacts and the joint have it out softly), or that closes a loop. Such a group stays
+        // iterative as a whole: an exact joint beside an iterative one pushes it past its limits.
         for (j in joints) {
             val a = if (dynamic(j.ia)) j.ia else -1
             val b = if (dynamic(j.ib)) j.ib else -1
             if (a < 0 && b < 0) continue
             if (j.treeBan > 0) j.treeBan--
-            var iterative = j.treeBan > 0 || j.directRows == 0 || j.nearLimits(dt) || (j.collideConnected && j.ia >= 0 && world.touchingEachOther(j.ia, j.ib))
+            var iterative = j.treeBan > 0 || j.directRows == 0 || j.nearLimits(dt) || spins(a, dt) || spins(b, dt) ||
+                (j.collideConnected && j.ia >= 0 && world.touchingEachOther(j.ia, j.ib))
             var r = if (a >= 0) root(a) else root(b)
             if (a >= 0 && b >= 0) {
                 val rb = root(b)
@@ -478,7 +490,10 @@ internal class JointTrees(private val world: PhysicsWorld) {
         }
     }
 
-    /** Whether what the solve gave every body is finite and believable (at most [FLING] m/s, [SPIN] rad/s more). */
+    /**
+     * Whether what the solve gave every body is finite and believable: a change of velocity of at most [FLING] m/s
+     * and [SPIN] rad/s (a link struck at 200 m/s and brought back into its chain takes 250).
+     */
     private fun sane(): Boolean {
         val st = world.st
         for (k in 0 until n) for (end in 0..1) {
@@ -487,8 +502,8 @@ internal class JointTrees(private val world: PhysicsWorld) {
             val o = x * S; val p = 12 * k + 6 * end
             val dx = st[o] - saved[p]; val dy = st[o + 1] - saved[p + 1]; val dz = st[o + 2] - saved[p + 2]
             val ax = st[o + 3] - saved[p + 3]; val ay = st[o + 4] - saved[p + 4]; val az = st[o + 5] - saved[p + 5]
-            val v = dx * dx + dy * dy + dz * dz; val w = ax * ax + ay * ay + az * az
-            if (!(v <= FLING * FLING) || !(w <= SPIN * SPIN)) return false
+            val v = sqrt((dx * dx + dy * dy + dz * dz).toDouble()); val w = sqrt((ax * ax + ay * ay + az * az).toDouble())
+            if (!(v <= FLING) || !(w <= SPIN)) return false
         }
         return true
     }
