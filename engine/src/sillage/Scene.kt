@@ -901,6 +901,7 @@ class Scene {
             val a = extras.lights; val o = 8 * i
             a[o] = p.x; a[o + 1] = p.y; a[o + 2] = p.z; a[o + 3] = l.radius
             a[o + 4] = l.color.r * power; a[o + 5] = l.color.g * power; a[o + 6] = l.color.b * power; a[o + 7] = 0f
+            extras.lightIds[i] = l.id
         }
         extras.lightCount = n
         particles.write(extras, time, night, eye)
@@ -908,7 +909,7 @@ class Scene {
         return extras
     }
 
-    private fun copyLight(from: Int, to: Int) { extras.lights.copyInto(extras.lights, 8 * to, 8 * from, 8 * from + 8) }
+    private fun copyLight(from: Int, to: Int) { extras.lights.copyInto(extras.lights, 8 * to, 8 * from, 8 * from + 8); extras.lightIds[to] = extras.lightIds[from] }
 
     /** Leaves this scene for a new one built by [build] (at the end of the frame): a menu, the next level. */
     fun goTo(build: Scene.() -> Unit) { next = build }

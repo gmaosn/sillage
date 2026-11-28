@@ -32,6 +32,45 @@ class WaterSceneTest {
         assertTrue(maxVoices >= 1, "and were heard")
     }
 
+    @Test fun lÉcumeAuPiedDesFalaisesEtDesPoteaux() {
+        // Une falaise qui sort droit de l'eau (maillage solide), un poteau (corps statique), une plage en pente douce.
+        val s = Scene()
+        val beach = MeshBuilder(); beach.quad(vec(10, -1, -6), vec(10, -1, 6), vec(16, 1, 6), vec(16, 1, -6), Color.SAND)
+        s.mesh(beach.build(), at = Vec3.ZERO).solid()
+        s.mesh(Mesh.box(2f, 6f, 2f, Color.STONE), at = vec(0, 0, 0)).solid()
+        s.collider(sillage.physics.Box(.15f, 2f, .15f), at = vec(-5, 0, 0))
+        // Un bassin de 2 m entre quatre murs : à l'abri des vagues.
+        for ((x, z, w, d) in listOf(listOf(-10f, -12f, 3f, .2f), listOf(-10f, -9f, 3f, .2f), listOf(-11.5f, -10.5f, .2f, 3f), listOf(-8.5f, -10.5f, .2f, 3f)))
+            s.mesh(Mesh.box(w, 3f, d, Color.STONE), at = vec(x, 0, z)).solid()
+        val water = s.water(level = 0, size = 60)
+        s.drawList(Vec3.ZERO)
+        val v = water.mesh.vertices
+        fun at(x: Float, z: Float): Pair<Float, Float> {
+            var best = Float.MAX_VALUE; var r = 0f; var g = 0f
+            for (k in v.indices step 9) { val d = (v[k] - x) * (v[k] - x) + (v[k + 2] - z) * (v[k + 2] - z); if (d < best) { best = d; r = v[k + 6]; g = v[k + 7] } }
+            return r to g
+        }
+        fun open(x: Float, z: Float): Float {
+            var best = Float.MAX_VALUE; var b = 0f
+            for (k in v.indices step 9) { val d = (v[k] - x) * (v[k] - x) + (v[k + 2] - z) * (v[k + 2] - z); if (d < best) { best = d; b = v[k + 8] } }
+            return b
+        }
+        // Au pied de la falaise (son flanc en x = 1) : à moins d'un demi-mètre du mur (le vert : 1 au mur, 0 à 1,5 m), et pas de
+        // plage (pas de lagune).
+        val cliff = at(1.25f, 0f)
+        assertTrue(cliff.second in .66f..1f, "falaise : ${cliff.second}")
+        assertTrue(cliff.first > 3f, "pas de rivage au pied de la falaise : ${cliff.first}")
+        assertEquals(1f, open(1.25f, 0f), "la falaise est sur la mer ouverte")
+        assertTrue(at(-10f, -10.5f).second > 0f, "le bassin a ses murs")
+        assertEquals(0f, open(-10f, -10.5f), "le bassin est à l'abri")
+        assertTrue(at(-5.5f, 0f).second in .6f..1f, "poteau : ${at(-5.5f, 0f).second}")
+        assertEquals(0f, at(-20f, 20f).second, "loin de tout : rien")
+        // La plage garde son rivage, sans mur.
+        val shore = at(14.5f, 0f)
+        assertEquals(0f, shore.second, "plage : pas de mur (${shore.second})")
+        assertTrue(shore.first < .6f, "plage : son rivage (${shore.first})")
+    }
+
     @Test fun uneEauSansPousséeLaisseCouler() {
         val s = Scene().apply { ground(at = vec(0, -4, 0)); water(level = 0, buoyant = false) }
         val crate = s.box(1, at = vec(0, 2, 0)).dynamic(density = 500)

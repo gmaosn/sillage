@@ -71,6 +71,8 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     internal var cullRotation: Quat? = null
     internal var cullScale = Float.NaN
     internal var cullMesh: Mesh? = null
+    /** Frames since its place or mesh last changed (counted by the renderer): what stays still is drawn once into the lamps' shadows. */
+    internal var stillFrames = 0
 
     /** Lighter meshes for far away: from each distance on, its mesh (sorted, nearest first). */
     private var lods: List<Pair<Float, Mesh>> = emptyList()

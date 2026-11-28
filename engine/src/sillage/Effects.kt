@@ -3,9 +3,13 @@ package sillage
 import sillage.math.Vec3
 import kotlin.math.*
 
+/** The next lamp's [PointLight.id]. */
+private var lampsMade = 0
+
 /**
- * A lamp: a point of light that brightens what is around it, fading to nothing at [radius] metres (it
- * casts no shadow). Made by [Scene.light] or [Node.light]. The sixteen nearest the camera are drawn.
+ * A lamp: a point of light that brightens what is around it, fading to nothing at [radius] metres. Made by
+ * [Scene.light] or [Node.light]. The renderer draws up to 128 of those the camera may see (the nearest first);
+ * the few that matter most in the picture (near and bright) cast shadows.
  */
 class PointLight internal constructor(
     var color: Color,
@@ -24,6 +28,8 @@ class PointLight internal constructor(
     var enabled = true
     internal var removed = false
     internal var seed = 0f
+    /** Which lamp it is, for the renderer: a lamp keeps its shadow from frame to frame. */
+    internal val id = ++lampsMade
 
     /** Where it is in the world now. */
     val worldPosition: Vec3 get() = node?.let { it.position + it.rotation.rotate(position * it.scale) } ?: position
@@ -170,10 +176,11 @@ internal class ParticleSystem(private val capacity: Int = 4096) {
     /**
      * The particles from the farthest from [eye] to the nearest, in [order]: smoke and spray are laid over
      * what is behind them, so two plumes that cross must be drawn back to front (glowing ones add their
-     * light: any order suits them). A shell sort on the squared distances, nothing allocated.
+     * light: any order suits them, unless [always]: blended things are drawn among them). A shell sort on the
+     * squared distances, nothing allocated.
      */
-    private fun sort(eye: Vec3) {
-        var lit = false
+    private fun sort(eye: Vec3, always: Boolean) {
+        var lit = always
         for (i in 0 until count) {
             order[i] = i
             val dx = px[i] - eye.x; val dy = py[i] - eye.y; val dz = pz[i] - eye.z
@@ -195,7 +202,7 @@ internal class ParticleSystem(private val capacity: Int = 4096) {
     fun write(out: FrameExtras, time: Float, night: Float, eye: Vec3 = Vec3.ZERO) {
         if (out.particles.size < count * PARTICLE_FLOATS) out.particles = FloatArray(count.takeHighestOneBit() * 2 * PARTICLE_FLOATS)
         val o = out.particles
-        sort(eye)
+        sort(eye, out.sortParticles)
         for (n in 0 until count) {
             val i = order[n]
             val s = style[i]!!

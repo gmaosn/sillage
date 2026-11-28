@@ -156,6 +156,30 @@ void main() {
 }
 """
 
+    const val LAMP_SHADOW_VERT = """#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp sampler2DArray;
+precision highp sampler2DArrayShadow;
+layout(location=0) in vec3 inPosition;
+layout(location=3) in vec4 row0;
+layout(location=4) in vec4 row1;
+layout(location=5) in vec4 row2;
+layout(location=7) in vec4 inTexture;
+layout(location=8) in vec4 inImage;
+out vec2 v0;
+flat out vec2 v1;
+layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
+void main() {
+    vec4 p = vec4(inPosition, 1.0);
+    gl_Position = pc.viewProj * vec4(dot(row0, p), dot(row1, p), dot(row2, p), 1.0);
+    v0 = inImage.xy;
+    v1 = vec2(inTexture.x - 1.0, inTexture.x > 0.5 && inTexture.w > 1.5 ? inImage.z : 0.0);
+    gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;
+}
+"""
+
     const val LINES_FRAG = """#version 300 es
 precision highp float;
 precision highp int;
@@ -223,7 +247,7 @@ in vec3 v2;
 in float v3;
 layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 layout(location=0) out vec4 outColor;
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -240,6 +264,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -274,6 +300,10 @@ vec3 sunView(vec3 v2, vec4 shadow) {
     return vec3(dot(d, right) / shadow.w, dot(d, up) / shadow.w, 0.5 - dot(d, l) / (2.0 * depth));
 }
 uniform sampler2DArrayShadow shadowMap;
+uniform sampler2DArrayShadow lampShadows;
+#ifdef LIGHT_GRID
+uniform sampler2D lightGrid;
+#endif
 float cascadeLight(int c, vec3 v2, vec3 n) {
     vec4 sq = fr.cascade[c];
     vec3 s = sunView(v2 + n * (sq.w / 600.0), sq);
@@ -299,20 +329,48 @@ float sunlight(vec3 v2, vec3 n) {
     }
     return 1.0;
 }
-vec3 pointLights(vec3 n, vec3 p) {
+float lampLight(int slot, vec3 l, float r, vec3 n) {
+    float size = fr.lightSlices.w;
+    l += n * (length(l) * 3.0 / size);
+    vec3 a = abs(l);
+    float face; vec3 q;
+    if (a.x >= a.y && a.x >= a.z) { face = l.x > 0.0 ? 0.0 : 1.0; q = vec3(l.x > 0.0 ? -l.z : l.z, l.y, a.x); }
+    else if (a.y >= a.z) { face = l.y > 0.0 ? 2.0 : 3.0; q = vec3(l.x, l.y > 0.0 ? -l.z : l.z, a.y); }
+    else { face = l.z > 0.0 ? 4.0 : 5.0; q = vec3(l.z > 0.0 ? l.x : -l.x, l.y, a.z); }
+    float s = 1.0 - 6.0 / size;
+    float near = clamp(r * 0.1, 0.15, 0.8);
+    vec2 uv = q.xy / q.z * (0.5 * s) + 0.5;
+    float depth = r / (r - near) * (1.0 - near / q.z);
+    float texel = 1.6 / size;
+    float layer = float(slot * 6) + face;
+    return 0.25 * (texture(lampShadows, vec4(uv + vec2(-texel, -texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, -texel), layer, depth))
+                 + texture(lampShadows, vec4(uv + vec2(-texel, texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, texel), layer, depth)));
+}
+vec3 lampAt(int i, vec3 n, vec3 p, bool shadows) {
+    vec3 l = fr.lightPos[i].xyz - p;
+    float r = fr.lightPos[i].w;
+    float d2 = dot(l, l);
+    if (d2 >= r * r) return vec3(0.0);
+    float d = sqrt(d2);
+    float x2 = d2 / (r * r);
+    float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
+    float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
+    if (shadows && fr.lightColor[i].w > 0.5) fall *= 0.5 + 0.5 * lampLight(int(fr.lightColor[i].w) - 1, -l, r, n);
+    return fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
+}
+vec3 pointLights(vec3 n, vec3 p, bool shadows) {
     vec3 sum = vec3(0.0);
     int count = int(fr.skyAmb.w);
-    for (int i = 0; i < count; i++) {
-        vec3 l = fr.lightPos[i].xyz - p;
-        float r = fr.lightPos[i].w;
-        float d2 = dot(l, l);
-        if (d2 >= r * r) continue;
-        float d = sqrt(d2);
-        float x2 = d2 / (r * r);
-        float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
-        float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
-        sum += fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
-    }
+#ifndef LIGHT_GRID
+    for (int i = 0; i < count; i++) sum += lampAt(i, n, p, shadows);
+#else
+    ivec2 tile = min(ivec2(gl_FragCoord.xy * fr.lightGrid.zw), ivec2(fr.lightGrid.xy) - 1);
+    float dist = length(p - pc.eye.xyz);
+    int slice = dist < fr.lightSlices.x ? 0 : min(int(fr.lightSlices.z) - 1, 1 + int(log2(dist / fr.lightSlices.x) * fr.lightSlices.y));
+    ivec2 cell = ivec2(4 * (tile.y * int(fr.lightGrid.x) + tile.x), slice);
+    count = int(texelFetch(lightGrid, cell, 0).r * 255.0 + 0.5);
+    for (int k = 1; k <= count; k++) sum += lampAt(int(texelFetch(lightGrid, cell + ivec2(k / 4, 0), 0)[k % 4] * 255.0 + 0.5), n, p, shadows);
+#endif
     return sum;
 }
 vec3 hazed(vec3 c, vec3 v2) {
@@ -330,7 +388,7 @@ void main() {
         return;
     }
     float a = (1.0 - r * r) * (1.0 - r * r) * v1.a;
-    vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, 0.75) * 0.86 + fr.skyAmb.rgb * 0.3 + pointLights(vec3(0.0), v2);
+    vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, 0.75) * 0.86 + fr.skyAmb.rgb * 0.3 + pointLights(vec3(0.0), v2, false);
     outColor = vec4(hazed(v1.rgb * light, v2) * a, a);
 }
 """
@@ -348,7 +406,7 @@ out vec2 v0;
 out vec4 v1;
 out vec3 v2;
 out float v3;
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -365,6 +423,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -396,6 +456,165 @@ void main() {
     v1 = inColor;
     v3 = inPlace.w < 0.0 ? 1.0 : 0.0;
     gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;
+}
+"""
+
+    const val PARTICLE_GRID_FRAG = """#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp sampler2DArray;
+precision highp sampler2DArrayShadow;
+#define LIGHT_GRID
+in vec2 v0;
+in vec4 v1;
+in vec3 v2;
+in float v3;
+layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
+layout(location=0) out vec4 outColor;
+#define MAX_LIGHTS 128
+layout(std140) uniform Frame {
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 shade;
+    vec4 skyAmb;
+    vec4 groundAmb;
+    vec4 horizon;
+    vec4 middle;
+    vec4 zenith;
+    vec4 sun;
+    vec4 moon;
+    vec4 wind;
+    vec4 camRight;
+    vec4 camUp;
+    vec4 glow;
+    vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
+    vec4 lightPos[MAX_LIGHTS];
+    vec4 lightColor[MAX_LIGHTS];
+} fr;
+vec3 skyAt(vec3 d) {
+    float h = clamp(d.y, 0.0, 1.0);
+    vec3 c = h < 0.25 ? mix(fr.horizon.rgb, fr.middle.rgb, smoothstep(0.0, 0.25, h))
+                      : mix(fr.middle.rgb, fr.zenith.rgb, smoothstep(0.25, 1.0, h));
+    float s = max(dot(d, fr.sun.xyz), 0.0);
+    float low = 1.0 - smoothstep(0.0, 0.45, fr.sun.y);
+    float wide = pow(s, 5.0) * (0.06 + 0.5 * low) * (1.0 - 0.7 * h);
+    c += fr.glow.rgb * (wide + pow(s, 32.0) * 0.4) * fr.sun.w;
+    float m = max(dot(d, fr.moon.xyz), 0.0);
+    c += vec3(0.30, 0.36, 0.52) * pow(m, 24.0) * 0.25 * fr.moon.w;
+    return c;
+}
+vec3 swayed(vec3 v2, float sway, float t) {
+    if (sway <= 0.0) return v2;
+    float phase = dot(v2.xz, vec2(0.23, 0.17));
+    float gust = 0.6 + 0.4 * sin(t * 0.8 + phase * 0.5);
+    float flutter = 0.35 * sin(t * 2.7 + phase * 3.1) + 0.15 * sin(t * 5.9 + phase * 6.3);
+    vec2 push = fr.wind.xy * sway * (gust + flutter);
+    return v2 + vec3(push.x, -0.35 * dot(push, push) / max(sway, 1e-3), push.y);
+}
+const float SHADOW_DEPTH = 80.0;
+vec3 sunView(vec3 v2, vec4 shadow) {
+    vec3 l = fr.sunDir.xyz;
+    vec3 ref = abs(l.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(ref, l));
+    vec3 up = cross(l, right);
+    vec3 d = v2 - shadow.xyz;
+    float depth = max(SHADOW_DEPTH, shadow.w * 1.5);
+    return vec3(dot(d, right) / shadow.w, dot(d, up) / shadow.w, 0.5 - dot(d, l) / (2.0 * depth));
+}
+uniform sampler2DArrayShadow shadowMap;
+uniform sampler2DArrayShadow lampShadows;
+#ifdef LIGHT_GRID
+uniform sampler2D lightGrid;
+#endif
+float cascadeLight(int c, vec3 v2, vec3 n) {
+    vec4 sq = fr.cascade[c];
+    vec3 s = sunView(v2 + n * (sq.w / 600.0), sq);
+    vec2 uv = s.xy * 0.5 + 0.5;
+    float texel = 1.25 / fr.groundAmb.w;
+    float sum = 0.0;
+    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) sum += texture(shadowMap, vec4(uv + vec2(i, j) * texel, float(c), s.z));
+    return sum / 9.0;
+}
+float sunlight(vec3 v2, vec3 n) {
+    if (pc.shadow.w <= 0.0) return 1.0;
+    for (int c = 0; c < 3; c++) {
+        vec4 sq = fr.cascade[c];
+        if (sq.w <= 0.0) break;
+        vec3 s = sunView(v2, sq);
+        float edge = max(abs(s.x), abs(s.y));
+        if (edge >= 1.0) continue;
+        float here = cascadeLight(c, v2, n);
+        float blend = smoothstep(0.8, 1.0, edge);
+        if (blend <= 0.0) return here;
+        bool last = c == 2 || fr.cascade[c + 1].w <= 0.0;
+        return mix(here, last ? 1.0 : cascadeLight(c + 1, v2, n), blend);
+    }
+    return 1.0;
+}
+float lampLight(int slot, vec3 l, float r, vec3 n) {
+    float size = fr.lightSlices.w;
+    l += n * (length(l) * 3.0 / size);
+    vec3 a = abs(l);
+    float face; vec3 q;
+    if (a.x >= a.y && a.x >= a.z) { face = l.x > 0.0 ? 0.0 : 1.0; q = vec3(l.x > 0.0 ? -l.z : l.z, l.y, a.x); }
+    else if (a.y >= a.z) { face = l.y > 0.0 ? 2.0 : 3.0; q = vec3(l.x, l.y > 0.0 ? -l.z : l.z, a.y); }
+    else { face = l.z > 0.0 ? 4.0 : 5.0; q = vec3(l.z > 0.0 ? l.x : -l.x, l.y, a.z); }
+    float s = 1.0 - 6.0 / size;
+    float near = clamp(r * 0.1, 0.15, 0.8);
+    vec2 uv = q.xy / q.z * (0.5 * s) + 0.5;
+    float depth = r / (r - near) * (1.0 - near / q.z);
+    float texel = 1.6 / size;
+    float layer = float(slot * 6) + face;
+    return 0.25 * (texture(lampShadows, vec4(uv + vec2(-texel, -texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, -texel), layer, depth))
+                 + texture(lampShadows, vec4(uv + vec2(-texel, texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, texel), layer, depth)));
+}
+vec3 lampAt(int i, vec3 n, vec3 p, bool shadows) {
+    vec3 l = fr.lightPos[i].xyz - p;
+    float r = fr.lightPos[i].w;
+    float d2 = dot(l, l);
+    if (d2 >= r * r) return vec3(0.0);
+    float d = sqrt(d2);
+    float x2 = d2 / (r * r);
+    float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
+    float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
+    if (shadows && fr.lightColor[i].w > 0.5) fall *= 0.5 + 0.5 * lampLight(int(fr.lightColor[i].w) - 1, -l, r, n);
+    return fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
+}
+vec3 pointLights(vec3 n, vec3 p, bool shadows) {
+    vec3 sum = vec3(0.0);
+    int count = int(fr.skyAmb.w);
+#ifndef LIGHT_GRID
+    for (int i = 0; i < count; i++) sum += lampAt(i, n, p, shadows);
+#else
+    ivec2 tile = min(ivec2(gl_FragCoord.xy * fr.lightGrid.zw), ivec2(fr.lightGrid.xy) - 1);
+    float dist = length(p - pc.eye.xyz);
+    int slice = dist < fr.lightSlices.x ? 0 : min(int(fr.lightSlices.z) - 1, 1 + int(log2(dist / fr.lightSlices.x) * fr.lightSlices.y));
+    ivec2 cell = ivec2(4 * (tile.y * int(fr.lightGrid.x) + tile.x), slice);
+    count = int(texelFetch(lightGrid, cell, 0).r * 255.0 + 0.5);
+    for (int k = 1; k <= count; k++) sum += lampAt(int(texelFetch(lightGrid, cell + ivec2(k / 4, 0), 0)[k % 4] * 255.0 + 0.5), n, p, shadows);
+#endif
+    return sum;
+}
+vec3 hazed(vec3 c, vec3 v2) {
+    vec3 d = v2 - pc.eye.xyz;
+    float far = length(d);
+    vec3 dir = d / max(far, 1e-4);
+    return mix(c, skyAt(vec3(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), smoothstep(fr.sunColor.w, fr.shade.w, far));
+}
+void main() {
+    float r = length(v0);
+    if (r > 1.0) discard;
+    if (v3 > 0.5) {
+        float a = (1.0 - smoothstep(0.0, 1.0, r));
+        outColor = vec4(v1.rgb * a * a * v1.a * 2.0, 0.0);
+        return;
+    }
+    float a = (1.0 - r * r) * (1.0 - r * r) * v1.a;
+    vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, 0.75) * 0.86 + fr.skyAmb.rgb * 0.3 + pointLights(vec3(0.0), v2, false);
+    outColor = vec4(hazed(v1.rgb * light, v2) * a, a);
 }
 """
 
@@ -443,7 +662,7 @@ layout(location=8) in vec4 inImage;
 out vec2 v0;
 flat out vec2 v1;
 layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -460,6 +679,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -514,7 +735,7 @@ in vec3 v1;
 in vec3 v2;
 layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 layout(location=0) out vec4 outColor;
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -531,6 +752,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -599,10 +822,12 @@ in vec3 v5;
 in vec3 v6;
 flat in vec4 v7;
 in vec2 v8;
+in vec4 v9;
+flat in vec4 v10;
 layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 uniform sampler2DArrayShadow shadowMap;
 layout(location=0) out vec4 outColor;
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -619,6 +844,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -652,6 +879,10 @@ vec3 sunView(vec3 v2, vec4 shadow) {
     float depth = max(SHADOW_DEPTH, shadow.w * 1.5);
     return vec3(dot(d, right) / shadow.w, dot(d, up) / shadow.w, 0.5 - dot(d, l) / (2.0 * depth));
 }
+uniform sampler2DArrayShadow lampShadows;
+#ifdef LIGHT_GRID
+uniform sampler2D lightGrid;
+#endif
 float cascadeLight(int c, vec3 v2, vec3 n) {
     vec4 sq = fr.cascade[c];
     vec3 s = sunView(v2 + n * (sq.w / 600.0), sq);
@@ -677,20 +908,48 @@ float sunlight(vec3 v2, vec3 n) {
     }
     return 1.0;
 }
-vec3 pointLights(vec3 n, vec3 p) {
+float lampLight(int slot, vec3 l, float r, vec3 n) {
+    float size = fr.lightSlices.w;
+    l += n * (length(l) * 3.0 / size);
+    vec3 a = abs(l);
+    float face; vec3 q;
+    if (a.x >= a.y && a.x >= a.z) { face = l.x > 0.0 ? 0.0 : 1.0; q = vec3(l.x > 0.0 ? -l.z : l.z, l.y, a.x); }
+    else if (a.y >= a.z) { face = l.y > 0.0 ? 2.0 : 3.0; q = vec3(l.x, l.y > 0.0 ? -l.z : l.z, a.y); }
+    else { face = l.z > 0.0 ? 4.0 : 5.0; q = vec3(l.z > 0.0 ? l.x : -l.x, l.y, a.z); }
+    float s = 1.0 - 6.0 / size;
+    float near = clamp(r * 0.1, 0.15, 0.8);
+    vec2 v8 = q.xy / q.z * (0.5 * s) + 0.5;
+    float depth = r / (r - near) * (1.0 - near / q.z);
+    float texel = 1.6 / size;
+    float layer = float(slot * 6) + face;
+    return 0.25 * (texture(lampShadows, vec4(v8 + vec2(-texel, -texel), layer, depth)) + texture(lampShadows, vec4(v8 + vec2(texel, -texel), layer, depth))
+                 + texture(lampShadows, vec4(v8 + vec2(-texel, texel), layer, depth)) + texture(lampShadows, vec4(v8 + vec2(texel, texel), layer, depth)));
+}
+vec3 lampAt(int i, vec3 n, vec3 p, bool shadows) {
+    vec3 l = fr.lightPos[i].xyz - p;
+    float r = fr.lightPos[i].w;
+    float d2 = dot(l, l);
+    if (d2 >= r * r) return vec3(0.0);
+    float d = sqrt(d2);
+    float x2 = d2 / (r * r);
+    float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
+    float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
+    if (shadows && fr.lightColor[i].w > 0.5) fall *= 0.5 + 0.5 * lampLight(int(fr.lightColor[i].w) - 1, -l, r, n);
+    return fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
+}
+vec3 pointLights(vec3 n, vec3 p, bool shadows) {
     vec3 sum = vec3(0.0);
     int count = int(fr.skyAmb.w);
-    for (int i = 0; i < count; i++) {
-        vec3 l = fr.lightPos[i].xyz - p;
-        float r = fr.lightPos[i].w;
-        float d2 = dot(l, l);
-        if (d2 >= r * r) continue;
-        float d = sqrt(d2);
-        float x2 = d2 / (r * r);
-        float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
-        float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
-        sum += fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
-    }
+#ifndef LIGHT_GRID
+    for (int i = 0; i < count; i++) sum += lampAt(i, n, p, shadows);
+#else
+    ivec2 tile = min(ivec2(gl_FragCoord.xy * fr.lightGrid.zw), ivec2(fr.lightGrid.xy) - 1);
+    float dist = length(p - pc.eye.xyz);
+    int slice = dist < fr.lightSlices.x ? 0 : min(int(fr.lightSlices.z) - 1, 1 + int(log2(dist / fr.lightSlices.x) * fr.lightSlices.y));
+    ivec2 cell = ivec2(4 * (tile.y * int(fr.lightGrid.x) + tile.x), slice);
+    count = int(texelFetch(lightGrid, cell, 0).r * 255.0 + 0.5);
+    for (int k = 1; k <= count; k++) sum += lampAt(int(texelFetch(lightGrid, cell + ivec2(k / 4, 0), 0)[k % 4] * 255.0 + 0.5), n, p, shadows);
+#endif
     return sum;
 }
 vec3 hazed(vec3 c, vec3 v2) {
@@ -728,13 +987,25 @@ vec4 detailShade(vec3 p, vec3 n, vec4 d, vec2 v8) {
     }
     return vec4(mix(vec3(1.0), t * 2.0, d.y), 1.0);
 }
+vec3 mapped(vec3 n) {
+    vec3 m = texture(detailMaps, vec3(v8, v10.x - 1.0)).xyz * 2.0 - 1.0;
+    m.xy *= v10.y;
+    vec3 t = v9.xyz - n * dot(n, v9.xyz);
+    if (dot(t, t) < 1e-12) return n;
+    t = normalize(t);
+    vec3 b = cross(n, t) * (v9.w < 0.0 ? -1.0 : 1.0);
+    return normalize(t * m.x + b * m.y + n * max(m.z, 1e-3));
+}
 void main() {
     float far = length(v2 - pc.eye.xyz);
     vec4 surface = detailShade(v5, v6, v7, v8);
-    if (surface.a < v7.w) discard;
-    if (dot(v0, v0) < 1e-4) { outColor = vec4(v1 * surface.rgb + v4, far); return; }
+    if (surface.a < v7.w && v10.w <= 0.0) discard;
+    vec3 own = v4;
+    if (v10.z > 0.5) own *= linearFromSrgb(texture(detailMaps, vec3(v8, v10.z - 1.0)).rgb);
+    if (dot(v0, v0) < 1e-4) { outColor = vec4(v1 * surface.rgb + own, far); return; }
     vec3 albedo = v1 * surface.rgb;
     vec3 n = normalize(v0);
+    if (v10.x > 0.5) n = mapped(n);
     vec3 v = normalize(pc.eye.xyz - v2);
     float ndl = dot(n, fr.sunDir.xyz);
     float shade = sunlight(v2, dot(v0, v0) > 1e-8 ? normalize(v0) : vec3(0.0));
@@ -743,12 +1014,13 @@ void main() {
     float high = smoothstep(0.62, 0.78, ndl) * shade * (1.0 - soft);
     vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, lit) + fr.sunColor.rgb * high * 0.10;
     vec3 ambient = mix(fr.groundAmb.rgb, fr.skyAmb.rgb, n.y * 0.5 + 0.5) * (0.22 + 0.55 * soft);
-    vec3 c = albedo * (light * 0.86 + ambient + pointLights(n, v2));
+    vec3 c = albedo * (light * 0.86 + ambient + pointLights(n, v2, true));
     float rim = pow(1.0 - max(dot(n, v), 0.0), 4.0) * (1.0 - smoothstep(0.35, 0.8, n.y));
     c += rim * (1.0 - 0.75 * soft) * (0.03 + 0.09 * lit) * fr.sunColor.rgb * vec3(1.0, 0.96, 0.88);
     float sheen = pow(max(dot(n, normalize(fr.sunDir.xyz + v)), 0.0), 26.0);
     c += albedo * fr.sunColor.rgb * (sheen * 0.35 * soft * lit);
-    outColor = vec4(hazed(c + v4, v2), far);
+    if (v10.w > 0.0) { float a = clamp(v10.w * surface.a, 0.0, 1.0); outColor = vec4(hazed(c + own, v2) * a, a); return; }
+    outColor = vec4(hazed(c + own, v2), far);
 }
 """
 
@@ -767,6 +1039,8 @@ layout(location=5) in vec4 row2;
 layout(location=6) in vec4 inEffect;
 layout(location=7) in vec4 inTexture;
 layout(location=8) in vec4 inImage;
+layout(location=9) in vec4 inTangent;
+layout(location=10) in vec4 inMaps;
 layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 out vec3 v0;
 out vec3 v1;
@@ -776,7 +1050,9 @@ out vec3 v5;
 out vec3 v6;
 flat out vec4 v7;
 out vec2 v8;
-#define MAX_LIGHTS 16
+out vec4 v9;
+flat out vec4 v10;
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -793,6 +1069,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -837,8 +1115,227 @@ void main() {
     v6 = inNormal;
     v7 = vec4(inTexture.x - 1.0, inTexture.x > 0.5 ? inTexture.z : 0.0, inTexture.w, inImage.z);
     v8 = inImage.xy;
-    v4 = any(lessThan(inEffect.rgb, vec3(0.0))) ? -inEffect.rgb * fr.sunDir.w : inEffect.rgb;
+    v9 = vec4(dot(row0.xyz, inTangent.xyz), dot(row1.xyz, inTangent.xyz), dot(row2.xyz, inTangent.xyz), inTangent.w);
+    v10 = inMaps;
+    v4 =any(lessThan(inEffect.rgb, vec3(0.0))) ? -inEffect.rgb * fr.sunDir.w : inEffect.rgb;
     gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;
+}
+"""
+
+    const val TOON_GRID_FRAG = """#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp sampler2DArray;
+precision highp sampler2DArrayShadow;
+#define LIGHT_GRID
+in vec3 v0;
+in vec3 v1;
+in vec3 v2;
+in vec3 v4;
+in vec3 v5;
+in vec3 v6;
+flat in vec4 v7;
+in vec2 v8;
+in vec4 v9;
+flat in vec4 v10;
+layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
+uniform sampler2DArrayShadow shadowMap;
+layout(location=0) out vec4 outColor;
+#define MAX_LIGHTS 128
+layout(std140) uniform Frame {
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 shade;
+    vec4 skyAmb;
+    vec4 groundAmb;
+    vec4 horizon;
+    vec4 middle;
+    vec4 zenith;
+    vec4 sun;
+    vec4 moon;
+    vec4 wind;
+    vec4 camRight;
+    vec4 camUp;
+    vec4 glow;
+    vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
+    vec4 lightPos[MAX_LIGHTS];
+    vec4 lightColor[MAX_LIGHTS];
+} fr;
+vec3 skyAt(vec3 d) {
+    float h = clamp(d.y, 0.0, 1.0);
+    vec3 c = h < 0.25 ? mix(fr.horizon.rgb, fr.middle.rgb, smoothstep(0.0, 0.25, h))
+                      : mix(fr.middle.rgb, fr.zenith.rgb, smoothstep(0.25, 1.0, h));
+    float s = max(dot(d, fr.sun.xyz), 0.0);
+    float low = 1.0 - smoothstep(0.0, 0.45, fr.sun.y);
+    float wide = pow(s, 5.0) * (0.06 + 0.5 * low) * (1.0 - 0.7 * h);
+    c += fr.glow.rgb * (wide + pow(s, 32.0) * 0.4) * fr.sun.w;
+    float m = max(dot(d, fr.moon.xyz), 0.0);
+    c += vec3(0.30, 0.36, 0.52) * pow(m, 24.0) * 0.25 * fr.moon.w;
+    return c;
+}
+vec3 swayed(vec3 v2, float sway, float t) {
+    if (sway <= 0.0) return v2;
+    float phase = dot(v2.xz, vec2(0.23, 0.17));
+    float gust = 0.6 + 0.4 * sin(t * 0.8 + phase * 0.5);
+    float flutter = 0.35 * sin(t * 2.7 + phase * 3.1) + 0.15 * sin(t * 5.9 + phase * 6.3);
+    vec2 push = fr.wind.xy * sway * (gust + flutter);
+    return v2 + vec3(push.x, -0.35 * dot(push, push) / max(sway, 1e-3), push.y);
+}
+const float SHADOW_DEPTH = 80.0;
+vec3 sunView(vec3 v2, vec4 shadow) {
+    vec3 l = fr.sunDir.xyz;
+    vec3 ref = abs(l.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(ref, l));
+    vec3 up = cross(l, right);
+    vec3 d = v2 - shadow.xyz;
+    float depth = max(SHADOW_DEPTH, shadow.w * 1.5);
+    return vec3(dot(d, right) / shadow.w, dot(d, up) / shadow.w, 0.5 - dot(d, l) / (2.0 * depth));
+}
+uniform sampler2DArrayShadow lampShadows;
+#ifdef LIGHT_GRID
+uniform sampler2D lightGrid;
+#endif
+float cascadeLight(int c, vec3 v2, vec3 n) {
+    vec4 sq = fr.cascade[c];
+    vec3 s = sunView(v2 + n * (sq.w / 600.0), sq);
+    vec2 v8 = s.xy * 0.5 + 0.5;
+    float texel = 1.25 / fr.groundAmb.w;
+    float sum = 0.0;
+    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) sum += texture(shadowMap, vec4(v8 + vec2(i, j) * texel, float(c), s.z));
+    return sum / 9.0;
+}
+float sunlight(vec3 v2, vec3 n) {
+    if (pc.shadow.w <= 0.0) return 1.0;
+    for (int c = 0; c < 3; c++) {
+        vec4 sq = fr.cascade[c];
+        if (sq.w <= 0.0) break;
+        vec3 s = sunView(v2, sq);
+        float edge = max(abs(s.x), abs(s.y));
+        if (edge >= 1.0) continue;
+        float here = cascadeLight(c, v2, n);
+        float blend = smoothstep(0.8, 1.0, edge);
+        if (blend <= 0.0) return here;
+        bool last = c == 2 || fr.cascade[c + 1].w <= 0.0;
+        return mix(here, last ? 1.0 : cascadeLight(c + 1, v2, n), blend);
+    }
+    return 1.0;
+}
+float lampLight(int slot, vec3 l, float r, vec3 n) {
+    float size = fr.lightSlices.w;
+    l += n * (length(l) * 3.0 / size);
+    vec3 a = abs(l);
+    float face; vec3 q;
+    if (a.x >= a.y && a.x >= a.z) { face = l.x > 0.0 ? 0.0 : 1.0; q = vec3(l.x > 0.0 ? -l.z : l.z, l.y, a.x); }
+    else if (a.y >= a.z) { face = l.y > 0.0 ? 2.0 : 3.0; q = vec3(l.x, l.y > 0.0 ? -l.z : l.z, a.y); }
+    else { face = l.z > 0.0 ? 4.0 : 5.0; q = vec3(l.z > 0.0 ? l.x : -l.x, l.y, a.z); }
+    float s = 1.0 - 6.0 / size;
+    float near = clamp(r * 0.1, 0.15, 0.8);
+    vec2 v8 = q.xy / q.z * (0.5 * s) + 0.5;
+    float depth = r / (r - near) * (1.0 - near / q.z);
+    float texel = 1.6 / size;
+    float layer = float(slot * 6) + face;
+    return 0.25 * (texture(lampShadows, vec4(v8 + vec2(-texel, -texel), layer, depth)) + texture(lampShadows, vec4(v8 + vec2(texel, -texel), layer, depth))
+                 + texture(lampShadows, vec4(v8 + vec2(-texel, texel), layer, depth)) + texture(lampShadows, vec4(v8 + vec2(texel, texel), layer, depth)));
+}
+vec3 lampAt(int i, vec3 n, vec3 p, bool shadows) {
+    vec3 l = fr.lightPos[i].xyz - p;
+    float r = fr.lightPos[i].w;
+    float d2 = dot(l, l);
+    if (d2 >= r * r) return vec3(0.0);
+    float d = sqrt(d2);
+    float x2 = d2 / (r * r);
+    float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
+    float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
+    if (shadows && fr.lightColor[i].w > 0.5) fall *= 0.5 + 0.5 * lampLight(int(fr.lightColor[i].w) - 1, -l, r, n);
+    return fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
+}
+vec3 pointLights(vec3 n, vec3 p, bool shadows) {
+    vec3 sum = vec3(0.0);
+    int count = int(fr.skyAmb.w);
+#ifndef LIGHT_GRID
+    for (int i = 0; i < count; i++) sum += lampAt(i, n, p, shadows);
+#else
+    ivec2 tile = min(ivec2(gl_FragCoord.xy * fr.lightGrid.zw), ivec2(fr.lightGrid.xy) - 1);
+    float dist = length(p - pc.eye.xyz);
+    int slice = dist < fr.lightSlices.x ? 0 : min(int(fr.lightSlices.z) - 1, 1 + int(log2(dist / fr.lightSlices.x) * fr.lightSlices.y));
+    ivec2 cell = ivec2(4 * (tile.y * int(fr.lightGrid.x) + tile.x), slice);
+    count = int(texelFetch(lightGrid, cell, 0).r * 255.0 + 0.5);
+    for (int k = 1; k <= count; k++) sum += lampAt(int(texelFetch(lightGrid, cell + ivec2(k / 4, 0), 0)[k % 4] * 255.0 + 0.5), n, p, shadows);
+#endif
+    return sum;
+}
+vec3 hazed(vec3 c, vec3 v2) {
+    vec3 d = v2 - pc.eye.xyz;
+    float far = length(d);
+    vec3 dir = d / max(far, 1e-4);
+    return mix(c, skyAt(vec3(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), smoothstep(fr.sunColor.w, fr.shade.w, far));
+}
+uniform sampler2DArray detailMaps;
+vec3 linearFromSrgb(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+vec4 detailShade(vec3 p, vec3 n, vec4 d, vec2 v8) {
+    if (d.y <= 0.0) return vec4(1.0);
+    if (d.z > 1.5) { vec4 t = texture(detailMaps, vec3(v8, d.x)); return vec4(linearFromSrgb(t.rgb), t.a); }
+    vec3 t;
+    if (d.z > 0.5) {
+        vec3 f = cross(dFdx(p), dFdy(p));
+        f = dot(f, f) > 1e-20 ? normalize(f) : vec3(0.0, 1.0, 0.0);
+        vec2 v8;
+        if (abs(f.y) > 0.97) v8 = p.xz;
+        else {
+            vec3 u = normalize(cross(vec3(0.0, 1.0, 0.0), f));
+            vec3 v = cross(f, u);
+            v8 = vec2(dot(p, u), dot(p, v));
+        }
+        t = texture(detailMaps, vec3(v8, d.x)).rgb;
+    } else {
+        vec3 dx = dFdx(p), dy = dFdy(p);
+        vec3 w = pow(abs(n), vec3(4.0));
+        w /= max(w.x + w.y + w.z, 1e-5);
+        t = vec3(0.0);
+        if (w.x > 0.02) t += textureGrad(detailMaps, vec3(p.zy, d.x), dx.zy, dy.zy).rgb * w.x;
+        if (w.y > 0.02) t += textureGrad(detailMaps, vec3(p.xz, d.x), dx.xz, dy.xz).rgb * w.y;
+        if (w.z > 0.02) t += textureGrad(detailMaps, vec3(p.xy, d.x), dx.xy, dy.xy).rgb * w.z;
+        t /= max((w.x > 0.02 ? w.x : 0.0) + (w.y > 0.02 ? w.y : 0.0) + (w.z > 0.02 ? w.z : 0.0), 1e-5);
+    }
+    return vec4(mix(vec3(1.0), t * 2.0, d.y), 1.0);
+}
+vec3 mapped(vec3 n) {
+    vec3 m = texture(detailMaps, vec3(v8, v10.x - 1.0)).xyz * 2.0 - 1.0;
+    m.xy *= v10.y;
+    vec3 t = v9.xyz - n * dot(n, v9.xyz);
+    if (dot(t, t) < 1e-12) return n;
+    t = normalize(t);
+    vec3 b = cross(n, t) * (v9.w < 0.0 ? -1.0 : 1.0);
+    return normalize(t * m.x + b * m.y + n * max(m.z, 1e-3));
+}
+void main() {
+    float far = length(v2 - pc.eye.xyz);
+    vec4 surface = detailShade(v5, v6, v7, v8);
+    if (surface.a < v7.w && v10.w <= 0.0) discard;
+    vec3 own = v4;
+    if (v10.z > 0.5) own *= linearFromSrgb(texture(detailMaps, vec3(v8, v10.z - 1.0)).rgb);
+    if (dot(v0, v0) < 1e-4) { outColor = vec4(v1 * surface.rgb + own, far); return; }
+    vec3 albedo = v1 * surface.rgb;
+    vec3 n = normalize(v0);
+    if (v10.x > 0.5) n = mapped(n);
+    vec3 v = normalize(pc.eye.xyz - v2);
+    float ndl = dot(n, fr.sunDir.xyz);
+    float shade = sunlight(v2, dot(v0, v0) > 1e-8 ? normalize(v0) : vec3(0.0));
+    float soft = fr.zenith.w;
+    float lit = mix(smoothstep(-0.06, 0.12, ndl), clamp(ndl * 0.9 + 0.1, 0.0, 1.0), soft) * shade;
+    float high = smoothstep(0.62, 0.78, ndl) * shade * (1.0 - soft);
+    vec3 light = mix(fr.shade.rgb * 0.72, fr.sunColor.rgb, lit) + fr.sunColor.rgb * high * 0.10;
+    vec3 ambient = mix(fr.groundAmb.rgb, fr.skyAmb.rgb, n.y * 0.5 + 0.5) * (0.22 + 0.55 * soft);
+    vec3 c = albedo * (light * 0.86 + ambient + pointLights(n, v2, true));
+    float rim = pow(1.0 - max(dot(n, v), 0.0), 4.0) * (1.0 - smoothstep(0.35, 0.8, n.y));
+    c += rim * (1.0 - 0.75 * soft) * (0.03 + 0.09 * lit) * fr.sunColor.rgb * vec3(1.0, 0.96, 0.88);
+    float sheen = pow(max(dot(n, normalize(fr.sunDir.xyz + v)), 0.0), 26.0);
+    c += albedo * fr.sunColor.rgb * (sheen * 0.35 * soft * lit);
+    if (v10.w > 0.0) { float a = clamp(v10.w * surface.a, 0.0, 1.0); outColor = vec4(hazed(c + own, v2) * a, a); return; }
+    outColor = vec4(hazed(c + own, v2), far);
 }
 """
 
@@ -875,7 +1372,7 @@ in vec3 v2;
 layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 uniform sampler2DArrayShadow shadowMap;
 layout(location=0) out vec4 outColor;
-#define MAX_LIGHTS 16
+#define MAX_LIGHTS 128
 layout(std140) uniform Frame {
     vec4 sunDir;
     vec4 sunColor;
@@ -892,6 +1389,8 @@ layout(std140) uniform Frame {
     vec4 camUp;
     vec4 glow;
     vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];
     vec4 lightColor[MAX_LIGHTS];
 } fr;
@@ -925,6 +1424,10 @@ vec3 sunView(vec3 v2, vec4 shadow) {
     float depth = max(SHADOW_DEPTH, shadow.w * 1.5);
     return vec3(dot(d, right) / shadow.w, dot(d, up) / shadow.w, 0.5 - dot(d, l) / (2.0 * depth));
 }
+uniform sampler2DArrayShadow lampShadows;
+#ifdef LIGHT_GRID
+uniform sampler2D lightGrid;
+#endif
 float cascadeLight(int c, vec3 v2, vec3 n) {
     vec4 sq = fr.cascade[c];
     vec3 s = sunView(v2 + n * (sq.w / 600.0), sq);
@@ -950,20 +1453,48 @@ float sunlight(vec3 v2, vec3 n) {
     }
     return 1.0;
 }
-vec3 pointLights(vec3 n, vec3 p) {
+float lampLight(int slot, vec3 l, float r, vec3 n) {
+    float size = fr.lightSlices.w;
+    l += n * (length(l) * 3.0 / size);
+    vec3 a = abs(l);
+    float face; vec3 q;
+    if (a.x >= a.y && a.x >= a.z) { face = l.x > 0.0 ? 0.0 : 1.0; q = vec3(l.x > 0.0 ? -l.z : l.z, l.y, a.x); }
+    else if (a.y >= a.z) { face = l.y > 0.0 ? 2.0 : 3.0; q = vec3(l.x, l.y > 0.0 ? -l.z : l.z, a.y); }
+    else { face = l.z > 0.0 ? 4.0 : 5.0; q = vec3(l.z > 0.0 ? l.x : -l.x, l.y, a.z); }
+    float s = 1.0 - 6.0 / size;
+    float near = clamp(r * 0.1, 0.15, 0.8);
+    vec2 uv = q.xy / q.z * (0.5 * s) + 0.5;
+    float depth = r / (r - near) * (1.0 - near / q.z);
+    float texel = 1.6 / size;
+    float layer = float(slot * 6) + face;
+    return 0.25 * (texture(lampShadows, vec4(uv + vec2(-texel, -texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, -texel), layer, depth))
+                 + texture(lampShadows, vec4(uv + vec2(-texel, texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, texel), layer, depth)));
+}
+vec3 lampAt(int i, vec3 n, vec3 p, bool shadows) {
+    vec3 l = fr.lightPos[i].xyz - p;
+    float r = fr.lightPos[i].w;
+    float d2 = dot(l, l);
+    if (d2 >= r * r) return vec3(0.0);
+    float d = sqrt(d2);
+    float x2 = d2 / (r * r);
+    float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
+    float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
+    if (shadows && fr.lightColor[i].w > 0.5) fall *= 0.5 + 0.5 * lampLight(int(fr.lightColor[i].w) - 1, -l, r, n);
+    return fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
+}
+vec3 pointLights(vec3 n, vec3 p, bool shadows) {
     vec3 sum = vec3(0.0);
     int count = int(fr.skyAmb.w);
-    for (int i = 0; i < count; i++) {
-        vec3 l = fr.lightPos[i].xyz - p;
-        float r = fr.lightPos[i].w;
-        float d2 = dot(l, l);
-        if (d2 >= r * r) continue;
-        float d = sqrt(d2);
-        float x2 = d2 / (r * r);
-        float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
-        float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
-        sum += fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
-    }
+#ifndef LIGHT_GRID
+    for (int i = 0; i < count; i++) sum += lampAt(i, n, p, shadows);
+#else
+    ivec2 tile = min(ivec2(gl_FragCoord.xy * fr.lightGrid.zw), ivec2(fr.lightGrid.xy) - 1);
+    float dist = length(p - pc.eye.xyz);
+    int slice = dist < fr.lightSlices.x ? 0 : min(int(fr.lightSlices.z) - 1, 1 + int(log2(dist / fr.lightSlices.x) * fr.lightSlices.y));
+    ivec2 cell = ivec2(4 * (tile.y * int(fr.lightGrid.x) + tile.x), slice);
+    count = int(texelFetch(lightGrid, cell, 0).r * 255.0 + 0.5);
+    for (int k = 1; k <= count; k++) sum += lampAt(int(texelFetch(lightGrid, cell + ivec2(k / 4, 0), 0)[k % 4] * 255.0 + 0.5), n, p, shadows);
+#endif
     return sum;
 }
 vec3 hazed(vec3 c, vec3 v2) {
@@ -981,6 +1512,8 @@ float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2))
 void main() {
     float t = pc.eye.w;
     float d = v1.r;
+    float wall = v1.g > 0.0 ? (1.0 - v1.g) * 1.5 : 1e4;
+    float open = v1.b;
     vec2 p = v2.xz;
     float far = length(v2 - pc.eye.xyz);
     float reach = max(pc.shallows.w, 0.01);
@@ -990,6 +1523,9 @@ void main() {
     float swell = 0.5 + 0.5 * sin(t * 1.3 + noise(p * 0.5) * 4.0);
     float lace = noise(p * 2.2 + vec2(t * 0.3, -t * 0.2));
     float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, d + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float ring = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, wall + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float crash = (1.0 - smoothstep(0.2, 0.7 + 0.3 * swell, wall + (lace - 0.5) * 0.4)) * smoothstep(0.38, 0.62, noise(p * 3.1 + vec2(-t * 0.4, t * 0.3)));
+    shore = max(shore, max(ring, crash * 0.75) * open);
     float roll = fract(t * 0.16);
     float at = (1.0 - roll) * reach * 0.55 + 0.35;
     float surf = (1.0 - smoothstep(0.04, 0.1, abs(d - at - wobble * 0.3))) * step(0.35, noise(p * 0.8 + 3.0)) * smoothstep(0.0, 0.3, roll) * (1.0 - roll);
@@ -1002,7 +1538,7 @@ void main() {
     float shade = sunlight(v2, dot(v0, v0) > 1e-8 ? normalize(v0) : vec3(0.0));
     vec3 tint = fr.sunColor.rgb / vec3(1.0, 0.95, 0.84);
     vec3 light = mix(fr.shade.rgb * 0.62 + fr.skyAmb.rgb * 0.25, tint, shade) * mix(0.92, 1.0, max(fr.sunDir.y, 0.0));
-    c = mix(c, vec3(0.93, 0.98, 0.97), foam) * (light + pointLights(vec3(0.0, 1.0, 0.0), v2));
+    c = mix(c, vec3(0.93, 0.98, 0.97), foam) * (light + pointLights(vec3(0.0, 1.0, 0.0), v2, true));
     vec3 v = (pc.eye.xyz - v2) / max(far, 1e-4);
     float e = 0.15;
     float h0 = ripples(p, t);
@@ -1016,7 +1552,213 @@ void main() {
     float sunGlint = pow(max(dot(r, fr.sun.xyz), 0.0), 300.0) * fr.sun.w * shade;
     float moonGlint = pow(max(dot(r, fr.moon.xyz), 0.0), 160.0) * fr.moon.w;
     c += (fr.glow.rgb * sunGlint * 6.0 + vec3(0.75, 0.82, 1.0) * moonGlint * 1.6) * sparkle * calm;
+    int count = min(int(fr.skyAmb.w), 16);
+    for (int i = 0; i < count; i++) {
+        vec3 l = fr.lightPos[i].xyz - v2;
+        float dl = length(l);
+        float reachL = fr.lightPos[i].w * 2.5;
+        if (dl > reachL) continue;
+        float fall = 1.0 - dl / reachL;
+        c += fr.lightColor[i].rgb * pow(max(dot(r, l / dl), 0.0), 60.0) * fall * fall * sparkle * 0.8 * calm;
+    }
+    outColor = vec4(hazed(c, v2), far);
+}
+"""
+
+    const val WATER_GRID_FRAG = """#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp sampler2DArray;
+precision highp sampler2DArrayShadow;
+#define LIGHT_GRID
+in vec3 v0;
+in vec3 v1;
+in vec3 v2;
+layout(std140) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
+uniform sampler2DArrayShadow shadowMap;
+layout(location=0) out vec4 outColor;
+#define MAX_LIGHTS 128
+layout(std140) uniform Frame {
+    vec4 sunDir;
+    vec4 sunColor;
+    vec4 shade;
+    vec4 skyAmb;
+    vec4 groundAmb;
+    vec4 horizon;
+    vec4 middle;
+    vec4 zenith;
+    vec4 sun;
+    vec4 moon;
+    vec4 wind;
+    vec4 camRight;
+    vec4 camUp;
+    vec4 glow;
+    vec4 cascade[3];
+    vec4 lightGrid;
+    vec4 lightSlices;
+    vec4 lightPos[MAX_LIGHTS];
+    vec4 lightColor[MAX_LIGHTS];
+} fr;
+vec3 skyAt(vec3 d) {
+    float h = clamp(d.y, 0.0, 1.0);
+    vec3 c = h < 0.25 ? mix(fr.horizon.rgb, fr.middle.rgb, smoothstep(0.0, 0.25, h))
+                      : mix(fr.middle.rgb, fr.zenith.rgb, smoothstep(0.25, 1.0, h));
+    float s = max(dot(d, fr.sun.xyz), 0.0);
+    float low = 1.0 - smoothstep(0.0, 0.45, fr.sun.y);
+    float wide = pow(s, 5.0) * (0.06 + 0.5 * low) * (1.0 - 0.7 * h);
+    c += fr.glow.rgb * (wide + pow(s, 32.0) * 0.4) * fr.sun.w;
+    float m = max(dot(d, fr.moon.xyz), 0.0);
+    c += vec3(0.30, 0.36, 0.52) * pow(m, 24.0) * 0.25 * fr.moon.w;
+    return c;
+}
+vec3 swayed(vec3 v2, float sway, float t) {
+    if (sway <= 0.0) return v2;
+    float phase = dot(v2.xz, vec2(0.23, 0.17));
+    float gust = 0.6 + 0.4 * sin(t * 0.8 + phase * 0.5);
+    float flutter = 0.35 * sin(t * 2.7 + phase * 3.1) + 0.15 * sin(t * 5.9 + phase * 6.3);
+    vec2 push = fr.wind.xy * sway * (gust + flutter);
+    return v2 + vec3(push.x, -0.35 * dot(push, push) / max(sway, 1e-3), push.y);
+}
+const float SHADOW_DEPTH = 80.0;
+vec3 sunView(vec3 v2, vec4 shadow) {
+    vec3 l = fr.sunDir.xyz;
+    vec3 ref = abs(l.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(ref, l));
+    vec3 up = cross(l, right);
+    vec3 d = v2 - shadow.xyz;
+    float depth = max(SHADOW_DEPTH, shadow.w * 1.5);
+    return vec3(dot(d, right) / shadow.w, dot(d, up) / shadow.w, 0.5 - dot(d, l) / (2.0 * depth));
+}
+uniform sampler2DArrayShadow lampShadows;
+#ifdef LIGHT_GRID
+uniform sampler2D lightGrid;
+#endif
+float cascadeLight(int c, vec3 v2, vec3 n) {
+    vec4 sq = fr.cascade[c];
+    vec3 s = sunView(v2 + n * (sq.w / 600.0), sq);
+    vec2 uv = s.xy * 0.5 + 0.5;
+    float texel = 1.25 / fr.groundAmb.w;
+    float sum = 0.0;
+    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) sum += texture(shadowMap, vec4(uv + vec2(i, j) * texel, float(c), s.z));
+    return sum / 9.0;
+}
+float sunlight(vec3 v2, vec3 n) {
+    if (pc.shadow.w <= 0.0) return 1.0;
+    for (int c = 0; c < 3; c++) {
+        vec4 sq = fr.cascade[c];
+        if (sq.w <= 0.0) break;
+        vec3 s = sunView(v2, sq);
+        float edge = max(abs(s.x), abs(s.y));
+        if (edge >= 1.0) continue;
+        float here = cascadeLight(c, v2, n);
+        float blend = smoothstep(0.8, 1.0, edge);
+        if (blend <= 0.0) return here;
+        bool last = c == 2 || fr.cascade[c + 1].w <= 0.0;
+        return mix(here, last ? 1.0 : cascadeLight(c + 1, v2, n), blend);
+    }
+    return 1.0;
+}
+float lampLight(int slot, vec3 l, float r, vec3 n) {
+    float size = fr.lightSlices.w;
+    l += n * (length(l) * 3.0 / size);
+    vec3 a = abs(l);
+    float face; vec3 q;
+    if (a.x >= a.y && a.x >= a.z) { face = l.x > 0.0 ? 0.0 : 1.0; q = vec3(l.x > 0.0 ? -l.z : l.z, l.y, a.x); }
+    else if (a.y >= a.z) { face = l.y > 0.0 ? 2.0 : 3.0; q = vec3(l.x, l.y > 0.0 ? -l.z : l.z, a.y); }
+    else { face = l.z > 0.0 ? 4.0 : 5.0; q = vec3(l.z > 0.0 ? l.x : -l.x, l.y, a.z); }
+    float s = 1.0 - 6.0 / size;
+    float near = clamp(r * 0.1, 0.15, 0.8);
+    vec2 uv = q.xy / q.z * (0.5 * s) + 0.5;
+    float depth = r / (r - near) * (1.0 - near / q.z);
+    float texel = 1.6 / size;
+    float layer = float(slot * 6) + face;
+    return 0.25 * (texture(lampShadows, vec4(uv + vec2(-texel, -texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, -texel), layer, depth))
+                 + texture(lampShadows, vec4(uv + vec2(-texel, texel), layer, depth)) + texture(lampShadows, vec4(uv + vec2(texel, texel), layer, depth)));
+}
+vec3 lampAt(int i, vec3 n, vec3 p, bool shadows) {
+    vec3 l = fr.lightPos[i].xyz - p;
+    float r = fr.lightPos[i].w;
+    float d2 = dot(l, l);
+    if (d2 >= r * r) return vec3(0.0);
+    float d = sqrt(d2);
+    float x2 = d2 / (r * r);
+    float fall = (1.0 - x2) * (1.0 - x2) / (1.0 + 12.0 * x2);
+    float ndl = n == vec3(0.0) ? 1.0 : dot(n, l / max(d, 1e-4));
+    if (shadows && fr.lightColor[i].w > 0.5) fall *= 0.5 + 0.5 * lampLight(int(fr.lightColor[i].w) - 1, -l, r, n);
+    return fr.lightColor[i].rgb * fall * (0.25 + 0.75 * smoothstep(-0.1, 0.3, ndl));
+}
+vec3 pointLights(vec3 n, vec3 p, bool shadows) {
+    vec3 sum = vec3(0.0);
     int count = int(fr.skyAmb.w);
+#ifndef LIGHT_GRID
+    for (int i = 0; i < count; i++) sum += lampAt(i, n, p, shadows);
+#else
+    ivec2 tile = min(ivec2(gl_FragCoord.xy * fr.lightGrid.zw), ivec2(fr.lightGrid.xy) - 1);
+    float dist = length(p - pc.eye.xyz);
+    int slice = dist < fr.lightSlices.x ? 0 : min(int(fr.lightSlices.z) - 1, 1 + int(log2(dist / fr.lightSlices.x) * fr.lightSlices.y));
+    ivec2 cell = ivec2(4 * (tile.y * int(fr.lightGrid.x) + tile.x), slice);
+    count = int(texelFetch(lightGrid, cell, 0).r * 255.0 + 0.5);
+    for (int k = 1; k <= count; k++) sum += lampAt(int(texelFetch(lightGrid, cell + ivec2(k / 4, 0), 0)[k % 4] * 255.0 + 0.5), n, p, shadows);
+#endif
+    return sum;
+}
+vec3 hazed(vec3 c, vec3 v2) {
+    vec3 d = v2 - pc.eye.xyz;
+    float far = length(d);
+    vec3 dir = d / max(far, 1e-4);
+    return mix(c, skyAt(vec3(dir.x, max(dir.y, 0.0) * 0.3, dir.z)), smoothstep(fr.sunColor.w, fr.shade.w, far));
+}
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2)) * 0.6 + noise(p * 2.3 - vec2(t * 0.25, t * 0.45)) * 0.4; }
+void main() {
+    float t = pc.eye.w;
+    float d = v1.r;
+    float wall = v1.g > 0.0 ? (1.0 - v1.g) * 1.5 : 1e4;
+    float open = v1.b;
+    vec2 p = v2.xz;
+    float far = length(v2 - pc.eye.xyz);
+    float reach = max(pc.shallows.w, 0.01);
+    float wobble = noise(p * 0.35 + t * 0.05) - 0.5;
+    float lagoon = 1.0 - smoothstep(reach * 0.68, reach * 0.74, d + wobble * 0.9);
+    vec3 c = mix(pc.water.rgb, pc.shallows.rgb, lagoon * (1.0 - 0.25 * smoothstep(0.0, reach * 0.6, d)));
+    float swell = 0.5 + 0.5 * sin(t * 1.3 + noise(p * 0.5) * 4.0);
+    float lace = noise(p * 2.2 + vec2(t * 0.3, -t * 0.2));
+    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, d + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float ring = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, wall + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float crash = (1.0 - smoothstep(0.2, 0.7 + 0.3 * swell, wall + (lace - 0.5) * 0.4)) * smoothstep(0.38, 0.62, noise(p * 3.1 + vec2(-t * 0.4, t * 0.3)));
+    shore = max(shore, max(ring, crash * 0.75) * open);
+    float roll = fract(t * 0.16);
+    float at = (1.0 - roll) * reach * 0.55 + 0.35;
+    float surf = (1.0 - smoothstep(0.04, 0.1, abs(d - at - wobble * 0.3))) * step(0.35, noise(p * 0.8 + 3.0)) * smoothstep(0.0, 0.3, roll) * (1.0 - roll);
+    vec2 q = p * vec2(0.28, 0.55) + vec2(t * 0.12, 0.0);
+    vec2 cell = floor(q); vec2 f = fract(q);
+    float h = hash(cell);
+    float crest = step(0.55, h) * (1.0 - smoothstep(0.03, 0.07, abs(f.y - 0.5))) * step(abs(f.x - 0.5), 0.18 + 0.12 * h)
+        * (0.6 + 0.4 * sin(t * 1.7 + h * 6.28)) * smoothstep(reach * 0.5, reach, d);
+    float foam = clamp(max(shore, max(surf * 0.85, crest * 0.7)), 0.0, 1.0);
+    float shade = sunlight(v2, dot(v0, v0) > 1e-8 ? normalize(v0) : vec3(0.0));
+    vec3 tint = fr.sunColor.rgb / vec3(1.0, 0.95, 0.84);
+    vec3 light = mix(fr.shade.rgb * 0.62 + fr.skyAmb.rgb * 0.25, tint, shade) * mix(0.92, 1.0, max(fr.sunDir.y, 0.0));
+    c = mix(c, vec3(0.93, 0.98, 0.97), foam) * (light + pointLights(vec3(0.0, 1.0, 0.0), v2, true));
+    vec3 v = (pc.eye.xyz - v2) / max(far, 1e-4);
+    float e = 0.15;
+    float h0 = ripples(p, t);
+    vec3 n = normalize(vec3((h0 - ripples(p + vec2(e, 0.0), t)) * 2.2, 1.0, (h0 - ripples(p + vec2(0.0, e), t)) * 2.2));
+    n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(20.0, 120.0, far) * 0.7));
+    vec3 r = reflect(-v, n);
+    float calm = 1.0 - foam;
+    float fresnel = pow(1.0 - max(dot(v, n), 0.0), 4.0);
+    c = mix(c, skyAt(vec3(r.x, abs(r.y), r.z)) * (0.55 + 0.45 * shade), fresnel * 0.6 * calm);
+    float sparkle = 0.4 + 1.6 * smoothstep(0.45, 0.9, noise(p * 5.0 + vec2(t * 1.1, -t * 0.8)));
+    float sunGlint = pow(max(dot(r, fr.sun.xyz), 0.0), 300.0) * fr.sun.w * shade;
+    float moonGlint = pow(max(dot(r, fr.moon.xyz), 0.0), 160.0) * fr.moon.w;
+    c += (fr.glow.rgb * sunGlint * 6.0 + vec3(0.75, 0.82, 1.0) * moonGlint * 1.6) * sparkle * calm;
+    int count = min(int(fr.skyAmb.w), 16);
     for (int i = 0; i < count; i++) {
         vec3 l = fr.lightPos[i].xyz - v2;
         float dl = length(l);
@@ -1036,20 +1778,24 @@ void main() {
         "down.frag" -> DOWN_FRAG
         "hud.frag" -> HUD_FRAG
         "hud.vert" -> HUD_VERT
+        "lamp_shadow.vert" -> LAMP_SHADOW_VERT
         "lines.frag" -> LINES_FRAG
         "lines.vert" -> LINES_VERT
         "lines_xray.frag" -> LINES_XRAY_FRAG
         "ombre.frag" -> OMBRE_FRAG
         "particle.frag" -> PARTICLE_FRAG
         "particle.vert" -> PARTICLE_VERT
+        "particle_grid.frag" -> PARTICLE_GRID_FRAG
         "post.vert" -> POST_VERT
         "shadow.frag" -> SHADOW_FRAG
         "shadow.vert" -> SHADOW_VERT
         "sky.frag" -> SKY_FRAG
         "toon.frag" -> TOON_FRAG
         "toon.vert" -> TOON_VERT
+        "toon_grid.frag" -> TOON_GRID_FRAG
         "up.frag" -> UP_FRAG
         "water.frag" -> WATER_FRAG
+        "water_grid.frag" -> WATER_GRID_FRAG
         else -> throw IllegalArgumentException("No shader named " + name)
     }
 }

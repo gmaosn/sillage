@@ -1,6 +1,6 @@
-// Sillage — what every scene shader knows of the frame (VulkanRenderer.writeFrame): the light of the hour,
-// the sky, the haze, the wind and the point lights near the camera. Set 0, binding 1.
-#define MAX_LIGHTS 16
+// Sillage — what every scene shader knows of the frame (RenderBatches.writeFrame): the light of the hour,
+// the sky, the haze, the wind and the point lights the camera may see, the most important first. Set 0, binding 1.
+#define MAX_LIGHTS 128
 layout(set = 0, binding = 1) uniform Frame {
     vec4 sunDir;      // towards the main light (the sun by day, the moon by night); w: night, 0 by day … 1 at night
     vec4 sunColor;    // its colour; w: where the haze starts (m)
@@ -17,8 +17,14 @@ layout(set = 0, binding = 1) uniform Frame {
     vec4 camUp;
     vec4 glow;        // colour of the glow around a low sun
     vec4 cascade[3];  // the shadow squares, finest first: centre (xyz), half side (w; 0: none)
+    // The light grid (RenderBatches.lights), when there are more lamps than a point can look at one by one: x, y its
+    // tiles across and down the picture (x 0: no grid, every point looks at every lamp), z, w: 1 / a tile's size in pixels.
+    vec4 lightGrid;
+    // x: the distance where the grid's first slice ends (m), y: slices per doubling of the distance, z: slices;
+    // w: side of a lamp's shadow face in texels.
+    vec4 lightSlices;
     vec4 lightPos[MAX_LIGHTS];    // xyz, w: radius (m)
-    vec4 lightColor[MAX_LIGHTS];  // colour × intensity
+    vec4 lightColor[MAX_LIGHTS];  // colour × intensity; w: its shadow cube (0: none, else 1 + its place in lampShadows)
 } fr;
 
 // The sky's colour in direction d (normalised): a gradient from the horizon to the zenith and the glow

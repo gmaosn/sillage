@@ -23,6 +23,8 @@ class ModelNode internal constructor(
     internal val normals: FloatArray = FloatArray(0),
     /** Per triangle, the colours of a, b, c (9 floats) when the file gives a colour per vertex (COLOR_0); empty otherwise. */
     internal val tints: FloatArray = FloatArray(0),
+    /** Per triangle, the tangents of a, b, c (12 floats: x, y, z, handedness) for a normal map; empty when no material has one. */
+    internal val tangents: FloatArray = FloatArray(0),
     /** The skin that deforms its mesh ([Model.skins]), −1: none. */
     val skin: Int = -1,
     /** Per triangle, per vertex 4 joints (indices in the skin) then 4 weights (24 floats); empty without a skin. */
@@ -127,7 +129,9 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                                  /** The skeletons of the model's skinned meshes. */
                                  val skins: List<Skin> = emptyList(),
                                  /** Whose normals its meshes use: the engine's soft ones, or the file's. */
-                                 val normals: Normals = Normals.SMOOTH) {
+                                 val normals: Normals = Normals.SMOOTH,
+                                 /** What its materials give beyond their base colours: normal maps, emission, blending. */
+                                 internal val looks: MaterialLooks? = null) {
     /**
      * The normals of [mesh]: the engine's soft ones ([Normals.SMOOTH]), or the file's ([Normals.FROM_FILE]):
      * triangle t of the mesh came from triangle [keptTri] of node [keptNode], placed by [place] (null: as
@@ -224,22 +228,66 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
      * as [Mesh.effects]; null when none of them is textured.
      */
     private fun imageEffects(kept: IntArray, mats: IntArray, uvs: (Int) -> FloatArray?, uvAt: (Int) -> Int): FloatArray? {
-        if (textures.all { it == null }) return null
+        val looks = looks
+        if (textures.all { it == null } && (looks == null || mats.none { looks.any(it) })) return null
         var any = false
         val e = FloatArray(kept.size * 3 * EFFECT_FLOATS)
         for (t in kept.indices) {
             val m = mats[t]
             val tex = if (m in textures.indices) textures[m] else null
-            if (tex == null) continue
+            // A material's own light (emission), and the texture coordinates its maps need even without a colour image.
+            val glow = looks?.emission?.getOrNull(m)
+            val maps = looks?.maps(m) == true
+            if (tex == null && glow == null && !maps) continue
             any = true
+            if (glow != null) for (k in 0..2) { val o = (3 * t + k) * EFFECT_FLOATS; e[o] = glow.r; e[o + 1] = glow.g; e[o + 2] = glow.b }
             val uv = uvs(t) ?: continue; val at = uvAt(t)
             for (k in 0..2) {
                 val o = (3 * t + k) * EFFECT_FLOATS
-                e[o + 4] = tex.id.toFloat(); e[o + 5] = 1f; e[o + 6] = 1f; e[o + 7] = 2f
+                if (tex != null) { e[o + 4] = tex.id.toFloat(); e[o + 5] = 1f; e[o + 6] = 1f; e[o + 7] = 2f }
                 e[o + 8] = uv[at + 2 * k]; e[o + 9] = uv[at + 2 * k + 1]; e[o + 10] = cutoffs.getOrElse(m) { 0f }
             }
         }
         return if (any) e else null
+    }
+
+    /**
+     * The material maps of the triangles of a mesh ([Mesh.surface]): tangents ([tangent]: triangle, corner → x, y, z,
+     * handedness, null: none), normal and emission maps, the opacity of blended materials (when [blendable]: not
+     * for a skinned part, whose mesh changes every frame and is not split); null when no material has any.
+     */
+    private fun surfaceOf(mats: IntArray, blendable: Boolean, tangent: (Int, Int) -> FloatArray?): FloatArray? {
+        val looks = looks ?: return null
+        fun used(m: Int) = looks.maps(m) || (blendable && m in looks.blended.indices && looks.blended[m])
+        if (mats.none { used(it) }) return null
+        val s = FloatArray(mats.size * 3 * SURFACE_FLOATS)
+        for (t in mats.indices) {
+            val m = mats[t]
+            if (!used(m)) continue
+            val normal = looks.normalMap[m]; val glow = if (looks.emission[m] != null) looks.emissionMap[m] else null
+            for (k in 0..2) {
+                val o = (3 * t + k) * SURFACE_FLOATS
+                if (normal != null) {
+                    tangent(t, k)?.let { g -> s[o] = g[0]; s[o + 1] = g[1]; s[o + 2] = g[2]; s[o + 3] = g[3] }
+                    s[o + 4] = normal.id.toFloat(); s[o + 5] = looks.normalScale[m]
+                }
+                if (glow != null) s[o + 6] = glow.id.toFloat()
+                if (blendable && looks.blended[m]) s[o + 7] = looks.opacity[m].coerceIn(1e-3f, 1f)
+            }
+        }
+        return s
+    }
+
+    /** Tangent [k] of triangle [tri] of node [i] turned by [place] (null: as it is), written a, c, b when [mirrored]. */
+    private fun tangentOf(i: Int, tri: Int, k: Int, place: Mat4?, mirrored: Boolean): FloatArray? {
+        val src = nodes[i].tangents
+        if (src.isEmpty()) return null
+        val o = 12 * tri + 4 * (if (!mirrored) k else intArrayOf(0, 2, 1)[k])
+        var x = src[o]; var y = src[o + 1]; var z = src[o + 2]
+        if (place != null) {
+            val d = place.transformDirection(Vec3(x, y, z)).normalized(); x = d.x; y = d.y; z = d.z
+        }
+        return floatArrayOf(x, y, z, if (mirrored) -src[o + 3] else src[o + 3])
     }
     /** Node indices with every parent before its children, in scene order. */
     val order: IntArray = ArrayList<Int>().also { out ->
@@ -266,7 +314,8 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
             }
             val mesh = normalsOf(g.build(), List(kept.size) { i }, kept, null) { null }.withMaterials(mats.toIntArray())
             val uvs = nodes[i].uvs
-            val textured = imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
+            val imaged = imageEffects(kept.toIntArray(), mats.toIntArray(), { if (uvs.isEmpty()) null else uvs }, { 6 * kept[it] })?.let { mesh.withEffects(it) } ?: mesh
+            val textured = surfaceOf(mats.toIntArray(), nodes[i].skin < 0) { t, k -> tangentOf(i, kept[t], k, null, false) }?.let { imaged.withSurface(it) } ?: imaged
             val sw = nodes[i].skinWeights
             LocalMesh(textured, if (nodes[i].skin < 0) null else FloatArray(kept.size * 24) { j -> sw[24 * kept[j / 24] + j % 24] })
         }
@@ -300,7 +349,7 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
         val mesh = normalsOf(g.build(), keptNode, keptTri, keptMirrored) { restWorld[it] }.withMaterials(mats.toIntArray())
         // A mirrored triangle was written a, c, b: its texture coordinates too.
         val uv = FloatArray(6)
-        imageEffects(IntArray(mats.size) { it }, mats.toIntArray(), { t ->
+        val imaged = imageEffects(IntArray(mats.size) { it }, mats.toIntArray(), { t ->
             val src = nodes[keptNode[t]].uvs; val o = 6 * keptTri[t]
             if (src.isEmpty()) null else {
                 if (keptMirrored[t]) { uv[0] = src[o]; uv[1] = src[o + 1]; uv[2] = src[o + 4]; uv[3] = src[o + 5]; uv[4] = src[o + 2]; uv[5] = src[o + 3] }
@@ -308,6 +357,11 @@ class Model internal constructor(val nodes: List<ModelNode>, val roots: IntArray
                 uv
             }
         }, { 0 })?.let { mesh.withEffects(it) } ?: mesh
+        // Tangents turned with their triangles (a skinned node's as they are: the shader squares them to the normal).
+        surfaceOf(mats.toIntArray(), true) { t, k ->
+            val i = keptNode[t]
+            tangentOf(i, keptTri[t], k, if (nodes[i].skin >= 0) null else restWorld[i], keptMirrored[t])
+        }?.let { imaged.withSurface(it) } ?: imaged
     }
 
     /**
@@ -367,6 +421,12 @@ class Part internal constructor(val node: Int, mesh: Mesh) {
             return made
         }
         internal set(v) { copyMat4(v, m, 0); version++ }
+    // What the renderer last saw of it (its pose's version, its node's place) and for how many frames it has not changed.
+    internal var seenVersion = -1
+    internal var seenPosition: Vec3? = null
+    internal var seenRotation: Quat? = null
+    internal var seenScale = Float.NaN
+    internal var stillFrames = 0
 }
 
 /** The matrix of the 16 coefficients of [a] from [o], column first (as [copyMat4] lays them). */

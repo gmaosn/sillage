@@ -24,4 +24,9 @@ class StructsTest {
         check(VkPhysicalDevicePresentWaitFeaturesKHR, 24, "presentWait" to 16)
         check(VkWriteDescriptorSet, 64, "pBufferInfo" to 48, "dstSet" to 16, "descriptorType" to 36, "pImageInfo" to 40, "pTexelBufferView" to 56)
     }
+
+    @Test fun laCopieDImageEstCelleDuC() {
+        // The lamps' shadow faces are copied from their caches (vkCmdCopyImage).
+        check(VkImageCopy, 68, "srcOffset" to 16, "dstSubresource" to 28, "dstOffset" to 44, "extent" to 56)
+    }
 }

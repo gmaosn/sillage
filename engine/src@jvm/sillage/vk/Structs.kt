@@ -227,6 +227,9 @@ internal val VkBufferImageCopy = s("VkBufferImageCopy",
 internal val VkImageBlit = s("VkImageBlit",
     "srcSubresource" to n(VkImageSubresourceLayers), "srcOffsets" to Field.Array(n(VkOffset3D), 2),
     "dstSubresource" to n(VkImageSubresourceLayers), "dstOffsets" to Field.Array(n(VkOffset3D), 2))
+internal val VkImageCopy = s("VkImageCopy",
+    "srcSubresource" to n(VkImageSubresourceLayers), "srcOffset" to n(VkOffset3D),
+    "dstSubresource" to n(VkImageSubresourceLayers), "dstOffset" to n(VkOffset3D), "extent" to n(VkExtent3D))
 internal val VkSubmitInfo = t("VkSubmitInfo", VK_STRUCTURE_TYPE_SUBMIT_INFO,
     "waitSemaphoreCount" to U32, "pWaitSemaphores" to Ptr, "pWaitDstStageMask" to Ptr, "commandBufferCount" to U32,
     "pCommandBuffers" to Ptr, "signalSemaphoreCount" to U32, "pSignalSemaphores" to Ptr)
@@ -267,7 +270,7 @@ internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D
     VkPipelineColorBlendStateCreateInfo, VkPushConstantRange, VkPipelineLayoutCreateInfo, VkGraphicsPipelineCreateInfo,
     VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkSwapchainCreateInfoKHR, VkPresentInfoKHR, VkCommandBufferBeginInfo,
     VkClearValue, VkClearDepthStencilValue, VkRenderPassBeginInfo, VkImageMemoryBarrier, VkMemoryBarrier,
-    VkBufferImageCopy, VkImageBlit, VkSubmitInfo, VkSamplerCreateInfo, VkDescriptorSetLayoutBinding,
+    VkBufferImageCopy, VkImageBlit, VkImageCopy, VkSubmitInfo, VkSamplerCreateInfo, VkDescriptorSetLayoutBinding,
     VkDescriptorSetLayoutCreateInfo, VkDescriptorPoolSize, VkDescriptorPoolCreateInfo, VkDescriptorSetAllocateInfo,
     VkDescriptorImageInfo, VkDescriptorBufferInfo, VkWriteDescriptorSet, VkPresentIdKHR, VkPhysicalDevicePresentIdFeaturesKHR,
     VkPhysicalDevicePresentWaitFeaturesKHR)

@@ -238,3 +238,54 @@ class Asset:
 def single(mesh, filename):
     a = Asset(); a.node(filename.removesuffix('.glb'), mesh); a.save(filename)
 
+
+# ---------------------------------------------------------------- images et matières complètes
+
+def png(width, height, pixel):
+    """Une image PNG RGBA 8 bits : pixel(x, y) rend (r, v, b, a), de 0 à 255 (sRGB pour les couleurs)."""
+    import zlib
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width): rows.extend(bytes(pixel(x, y)))
+    def chunk(kind, data): return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(bytes(rows), 9)) + chunk(b'IEND', b''))
+
+
+def textured(filename, primitives, materials, images, extensions_used=()):
+    """Un GLB d'un seul nœud fait de primitives données sommet par sommet, pour les matières que glTF décrit en entier :
+    images (PNG, une texture chacune, dans l'ordre), cartes de relief et tangentes, émission, transparence.
+
+    primitives : [{'POSITION': [(x, y, z)…], 'NORMAL': […], 'TEXCOORD_0': [(u, v)…], 'TANGENT': [(x, y, z, w)…] (facultatif),
+                   'material': n}] (triangles non indexés) ; materials : les matières glTF telles quelles (dictionnaires)."""
+    binary = bytearray(); views = []; accessors = []
+
+    def view(data):
+        binary.extend(b'\0' * ((-len(binary)) % 4))
+        views.append({'buffer': 0, 'byteOffset': len(binary), 'byteLength': len(data)}); binary.extend(data)
+        return len(views) - 1
+
+    def accessor(rows, kind):
+        flat = [c for row in rows for c in row]
+        a = {'bufferView': view(struct.pack(f'<{len(flat)}f', *flat)), 'componentType': 5126, 'count': len(rows), 'type': kind}
+        if kind == 'VEC3': a['min'] = [min(r[i] for r in rows) for i in range(3)]; a['max'] = [max(r[i] for r in rows) for i in range(3)]
+        accessors.append(a); return len(accessors) - 1
+
+    kinds = {'POSITION': 'VEC3', 'NORMAL': 'VEC3', 'TEXCOORD_0': 'VEC2', 'TANGENT': 'VEC4'}
+    prims = [{'attributes': {k: accessor(p[k], kinds[k]) for k in kinds if k in p}, 'material': p['material'], 'mode': 4} for p in primitives]
+    doc = {'asset': {'version': '2.0', 'generator': 'Sillage / glbkit.py'}, 'scene': 0, 'scenes': [{'nodes': [0]}],
+           'nodes': [{'name': filename.removesuffix('.glb'), 'mesh': 0}], 'meshes': [{'name': filename.removesuffix('.glb'), 'primitives': prims}],
+           'materials': materials, 'buffers': [{'byteLength': 0}], 'bufferViews': views, 'accessors': accessors}
+    if images:
+        doc['images'] = [{'bufferView': view(b), 'mimeType': 'image/png'} for b in images]
+        doc['textures'] = [{'source': i} for i in range(len(images))]
+    if extensions_used: doc['extensionsUsed'] = list(extensions_used)
+    binary.extend(b'\0' * ((-len(binary)) % 4))
+    doc['buffers'][0]['byteLength'] = len(binary)
+    text = json.dumps(doc, separators=(',', ':')).encode(); text += b' ' * ((-len(text)) % 4)
+    size = 12 + 8 + len(text) + 8 + len(binary)
+    glb = struct.pack('<III', 0x46546C67, 2, size) + struct.pack('<II', len(text), 0x4E4F534A) + text + struct.pack('<II', len(binary), 0x004E4942) + binary
+    (OUT / filename).write_bytes(glb)
+    print(f'{filename}: {len(glb)} octets, {sum(len(p["POSITION"]) for p in primitives) // 3} triangles, {len(images)} images')
+
