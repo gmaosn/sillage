@@ -56,7 +56,10 @@ internal class JointTrees(private val world: PhysicsWorld) {
         return if (a >= 0) root(a) else if (b >= 0) root(b) else -1
     }
     private var heavy = BooleanArray(0); private var was = BooleanArray(0); private var busy = BooleanArray(0)
-    private companion object { const val LOADED = 20f; const val QUIET = 10f; const val QUIET_STEPS = 60 }
+    private companion object {
+        const val LOADED = 20f; const val QUIET = 10f; const val QUIET_STEPS = 60
+        const val FLING = 100f; const val SPIN = 1000f; const val BAN_STEPS = 120
+    }
 
     /** Picks this step's tree joints among [joints] (prepared already), builds K at the step's start and factors it. */
     fun prepare(joints: List<Joint>, dt: Float) {
@@ -78,7 +81,8 @@ internal class JointTrees(private val world: PhysicsWorld) {
             val a = if (dynamic(j.ia)) j.ia else -1
             val b = if (dynamic(j.ib)) j.ib else -1
             if (a < 0 && b < 0) continue
-            var iterative = j.directRows == 0 || j.nearLimits(dt) || (j.collideConnected && j.ia >= 0 && world.touchingEachOther(j.ia, j.ib))
+            if (j.treeBan > 0) j.treeBan--
+            var iterative = j.treeBan > 0 || j.directRows == 0 || j.nearLimits(dt) || (j.collideConnected && j.ia >= 0 && world.touchingEachOther(j.ia, j.ib))
             var r = if (a >= 0) root(a) else root(b)
             if (a >= 0 && b >= 0) {
                 val rb = root(b)
@@ -454,8 +458,53 @@ internal class JointTrees(private val world: PhysicsWorld) {
         solveK(rhs)
         val scale = if (bias) -massScale.toDouble() else -1.0
         for (r in 0 until total) rhs[r] *= scale
+        save()
         apply(rhs)
+        if (!sane()) { giveUp(); return }
         for (k in 0 until n) list[k].directAccumulate(rhs, start[k])
+    }
+
+    // ---- the safety net: a solve that would fling a body (a loop through the world pulled straight is singular) is undone
+
+    private var saved = FloatArray(0)
+
+    /** The tree bodies' velocities before a solve. */
+    private fun save() {
+        if (saved.size < 6 * 2 * n) saved = FloatArray(12 * n + 24)
+        val st = world.st
+        for (k in 0 until n) for (end in 0..1) {
+            val x = if (end == 0) nodeA[k] else nodeB[k]
+            if (x >= 0) for (c in 0..5) saved[12 * k + 6 * end + c] = st[x * S + c]
+        }
+    }
+
+    /** Whether what the solve gave every body is finite and believable (at most [FLING] m/s, [SPIN] rad/s more). */
+    private fun sane(): Boolean {
+        val st = world.st
+        for (k in 0 until n) for (end in 0..1) {
+            val x = if (end == 0) nodeA[k] else nodeB[k]
+            if (x < 0) continue
+            val o = x * S; val p = 12 * k + 6 * end
+            val dx = st[o] - saved[p]; val dy = st[o + 1] - saved[p + 1]; val dz = st[o + 2] - saved[p + 2]
+            val ax = st[o + 3] - saved[p + 3]; val ay = st[o + 4] - saved[p + 4]; val az = st[o + 5] - saved[p + 5]
+            val v = dx * dx + dy * dy + dz * dz; val w = ax * ax + ay * ay + az * az
+            if (!(v <= FLING * FLING) || !(w <= SPIN * SPIN)) return false
+        }
+        return true
+    }
+
+    /**
+     * Puts the velocities back and hands every joint of the trees to the iterative passes for the rest of the
+     * step; their groups stay iterative for [BAN_STEPS] steps.
+     */
+    private fun giveUp() {
+        val st = world.st
+        for (k in 0 until n) for (end in 0..1) {
+            val x = if (end == 0) nodeA[k] else nodeB[k]
+            if (x >= 0) for (c in 0..5) st[x * S + c] = saved[12 * k + 6 * end + c]
+        }
+        for (k in 0 until n) { list[k].direct = false; list[k].treeBan = BAN_STEPS }
+        list.clear(); n = 0; total = 0
     }
 
 

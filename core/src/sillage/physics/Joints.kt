@@ -86,6 +86,8 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
     internal var direct = false
     /** Steps in a row in which it carried little (see [JointTrees.prepare]). */
     internal var treeQuiet = 0
+    /** Steps left before the trees may solve it again, after a solve of them was undone (see [JointTrees]). */
+    internal var treeBan = 0
     /** Its rigid rows (anchors together, axes aligned, rotations locked, a rod's length), 0 for none. */
     internal open val directRows: Int get() = 0
     /** What its rigid rows carry as a force: the size of their accumulated impulse (N·s per substep), the anchors' or the sides'. */

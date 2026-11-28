@@ -107,6 +107,40 @@ class HeavyLoadTest {
         }
     }
 
+    /**
+     * Une balançoire (deux chaînes de 7 maillons pendues à une poutre fixe, un siège) secouée, puis un marin qui
+     * marche dessous et saute dessus au hasard pendant une minute, douze fois : la boucle poutre – chaîne – siège –
+     * chaîne – poutre, tendue droite, rend la résolution exacte singulière ; le filet de sécurité la défait au
+     * lieu de projeter le siège (la graine 3 l'envoyait à 6 000 km/s).
+     */
+    @Test fun uneBalancoireOuLOnSauteNeSEnvoleJamais() {
+        for (seed in 0 until 12) {
+            val w = PhysicsWorld()
+            w.addMesh(TriangleMesh(floatArrayOf(-30f, 0f, -30f, -30f, 0f, 30f, 30f, 0f, 30f, -30f, 0f, -30f, 30f, 0f, 30f, 30f, 0f, -30f)))
+            val beam = w.add(Box(.975f, .07f, .07f), Vec3(0f, 2.42f, 0f), type = BodyType.STATIC)
+            val seat = w.add(Box(.35f, .03f, .15f), Vec3(0f, .55f, 0f), density = 500f, friction = .8f)
+            seat.angularDamping = .3f
+            val links = ArrayList<Body>()
+            for (side in floatArrayOf(-1f, 1f)) links += w.addChain(Vec3(side * .3f, 2.35f, 0f), Vec3(side * .3f, .58f, 0f), 7, radius = .022f, start = beam, end = seat)
+            val rnd = java.util.Random(seed.toLong())
+            repeat(60) { w.step(dt) }
+            seat.applyImpulse(Vec3(0f, -60f, 0f))
+            val hero = Character(w, feet = Vec3(rnd.nextFloat() * 2f - 1f, .02f, -1.5f))
+            var target = Vec3.ZERO; var left = 0f; var fastest = 0f
+            repeat(60 * 60) {
+                w.step(dt)
+                left -= dt
+                if (left <= 0f) { target = Vec3(rnd.nextFloat() * 2f - 1f, 0f, rnd.nextFloat() * 2f - 1f); left = 1f + 2f * rnd.nextFloat() }
+                val d = Vec3(target.x - hero.position.x, 0f, target.z - hero.position.z)
+                val walk = if (d.length() < .1f) Vec3.ZERO else d.normalized() * (if (rnd.nextFloat() < .5f) 2f else 4.5f)
+                hero.update(walk, if (hero.onGround && rnd.nextFloat() < .02f) 5f else 0f, dt)
+                fastest = max(fastest, (links + seat).maxOf { it.velocity.length() })
+                assertTrue(hero.position.isFinite() && seat.position.isFinite(), "graine $seed : valeurs non finies")
+            }
+            assertTrue(fastest < 30f, "graine $seed : un maillon ou le siège lancé à $fastest m/s")
+        }
+    }
+
     @Test fun lesArbresDArticulationsSontDeterministesAvecEtSansFils() {
         fun run(parallel: Boolean): List<Int> {
             val w = PhysicsWorld(); w.parallel = parallel
