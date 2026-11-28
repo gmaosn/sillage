@@ -8,7 +8,7 @@ Choix du propriétaire (18 novembre 2026) : API publique en anglais ; Linux d'ab
 
 Dépôt public GitHub `gmaosn/sillage` (licence Apache 2.0, NOTICE), publié le 21 novembre à la demande du propriétaire ; pousser `main` seulement (`git push`), jamais la branche locale `avant-publication` (l'historique d'avant le nettoyage des détails personnels).
 
-Construire uniquement avec `./kotlin` (Kotlin Toolchain 0.14.0), jamais Gradle. Depuis le 22 novembre le moteur vise aussi le web et Android : lire « Portage » plus bas avant de toucher à `core/` ou `engine/` (le code de `src/` doit rester du Kotlin commun). Le JDK 25 du système n'a pas de javac : la toolchain fournit le sien.
+Construire uniquement avec `./kotlin` (Kotlin Toolchain 0.14.1), jamais Gradle. Depuis le 22 novembre le moteur vise aussi le web et Android : lire « Portage » plus bas avant de toucher à `core/` ou `engine/` (le code de `src/` doit rester du Kotlin commun). Le JDK 25 du système n'a pas de javac : la toolchain fournit le sien.
 
 ```sh
 ./sillage run demo                     # construit ce qui a changé (rien : moins d'une seconde), puis joue
