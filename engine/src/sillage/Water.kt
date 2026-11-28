@@ -17,8 +17,10 @@ private const val SHORE_HEIGHT = .9f
 private const val WALL_SLOPE = .7f
 /** How far from such a wall the distance is kept (m): the foam needs less than half a metre. */
 private const val WALL_REACH = 1.5f
-/** Open water this long in front of a wall (m) brings the waves in full; under 3 m none (a basin, a well). */
-private const val FETCH = 14f
+/** Open water this long in front of a wall (m) brings the waves in full. */
+private const val FETCH = 20f
+/** Under this much open water (m) in front of it, a wall takes no waves: a basin, a well, a pool between ruins. */
+private const val SHELTER = 6f
 private val DI = intArrayOf(1, 1, 0, -1, -1, -1, 0, 1)
 private val DJ = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
 
@@ -29,9 +31,9 @@ internal class WaterLook(val deep: Color, val shallow: Color, val reach: Float)
  * The mesh of a water surface at [level], [size] metres across, centred on (0, 0): a grid of [cell]-metre
  * squares over every shore (wherever solid things rise above the water) and wide quads beyond. Each
  * vertex carries in its red channel its distance to the nearest shore in metres, from which the water
- * shader draws the lagoon, the foam and the surf; in its green channel 1 + its distance to the nearest place
- * where a steep solid thing cuts the water (a cliff, a rock, a post: [walls]), 0 when none is near, for the
- * foam at their feet. Built once, when the scene's solid things are in place.
+ * shader draws the lagoon, the foam and the surf; in its green channel how near it is to where a steep solid
+ * thing cuts the water (a cliff, a rock, a post: [walls]): 1 at it, 0 at 1.5 m or farther (so that the field fades
+ * towards "none" between vertices); in its blue how open the water is there. Built once, when the scene's solid things are in place.
  */
 internal fun waterMesh(physics: PhysicsWorld, level: Float, size: Float, reach: Float, cell: Float = .5f): Mesh {
     val half = size / 2
@@ -123,13 +125,13 @@ internal fun waterMesh(physics: PhysicsWorld, level: Float, size: Float, reach: 
             }
             longest = max(longest, n)
         }
-        exposed[o] = ((longest * step - 3f) / (FETCH - 3f)).coerceIn(0f, 1f)
+        exposed[o] = ((longest * step - SHELTER) / (FETCH - SHELTER)).coerceIn(0f, 1f)
     }
     val v = FloatArray(nx * nz * 54)
     var k = 0
     fun vertex(i: Int, j: Int) {
         v[k] = x0 + i * step; v[k + 1] = level; v[k + 2] = z0 + j * step
-        v[k + 4] = 1f; v[k + 6] = dist[j * w + i]; v[k + 7] = wall[j * w + i].let { if (it < WALL_REACH) 1f + it else 0f }
+        v[k + 4] = 1f; v[k + 6] = dist[j * w + i]; v[k + 7] = wall[j * w + i].let { if (it < WALL_REACH) 1f - it / WALL_REACH else 0f }
         v[k + 8] = exposed[j * w + i]
         k += 9
     }

@@ -137,11 +137,31 @@ fun Qa.lumieres() {
             (vert >= 40 && derriere <= .85 * avant && avant > 10)
     }
 
+    // L'écume au pied d'une falaise qui sort droit de la mer (un pavé solide de 6 m, sans plage) : le long de son pied l'eau
+    // blanchit, au large non.
+    val haut2 = vec(0, 4.5, 7); val pied = vec(0, 0, 1.6)
+    fun falaise(moteur: String?) = rendre("falaise", moteur, haut2, pied) {
+        autoTextures = false; lighting.outlines = 0f; lighting.vignette = 0f
+        box(3, 6, 3, Color.STONE, at = vec(0, 0, 0)).solid()
+        water(level = 0, size = 80)
+    }
+    val mer = falaise(null)
+    controle("eau : écume au pied d'une falaise", "le long du pied ≥ le large + 25 (sur 255)") {
+        var pres = 0.0; var loin = 0.0
+        for (k in 0 until 9) {
+            val x = -1.2f + k * .3f
+            val (ax, ay) = pixel(vec(x, 0, 1.58), haut2, pied, 480, 300); pres += lum(mer, ax, ay)
+            val (bx, by) = pixel(vec(x, 0, 4.5), haut2, pied, 480, 300); loin += lum(mer, bx, by)
+        }
+        pres /= 9; loin /= 9
+        "au pied ${f2(pres)}, au large ${f2(loin)}" to (pres >= loin + 25)
+    }
+
     // Les deux moteurs de rendu : les mêmes images.
     for ((nom, deux) in listOf("relief" to { relief("relief.glb", "gl") }, "émission" to { emission("gl") }, "vitre et particules" to { verre("gl") },
-            "48 lampes" to { damier("gl") })) controle("OpenGL ES : $nom comme Vulkan", "≤ 0,5 % de pixels, écart moyen ≤ 0,3") {
+            "48 lampes" to { damier("gl") }, "falaise" to { falaise("gl") })) controle("OpenGL ES : $nom comme Vulkan", "≤ 0,5 % de pixels, écart moyen ≤ 0,3") {
         val gl = deux()
-        val ref = when (nom) { "relief" -> calcule; "émission" -> luit; "vitre et particules" -> vu; else -> vk }
+        val ref = when (nom) { "relief" -> calcule; "émission" -> luit; "vitre et particules" -> vu; "falaise" -> mer; else -> vk }
         val (part, moyen) = comparer(gl, ref)
         "${pct(part)} de pixels différents, écart moyen ${f3(moyen)}" to (part <= .005 && moyen <= .3)
     }

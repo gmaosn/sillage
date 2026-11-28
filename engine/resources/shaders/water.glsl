@@ -24,9 +24,9 @@ float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2))
 void main() {
     float t = pc.eye.w;
     float d = color.r;                                   // distance to the shore (m)
-    // Where a steep solid thing cuts the water (a cliff, a rock, a post): the green is 1 + the distance to it, 0 when none is near;
+    // Where a steep solid thing cuts the water (a cliff, a rock, a post): the green says how near (1 at it, 0 at 1.5 m and beyond);
     // the blue, how open the water is in front of it (0: a basin between walls, calm; 1: the open sea).
-    float wall = color.g > 0.5 ? color.g - 1.0 : 1e4;
+    float wall = color.g > 0.0 ? (1.0 - color.g) * 1.5 : 1e4;
     float open = color.b;
     vec2 p = world.xz;
     float far = length(world - pc.eye.xyz);

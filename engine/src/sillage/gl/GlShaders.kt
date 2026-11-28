@@ -1512,7 +1512,7 @@ float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2))
 void main() {
     float t = pc.eye.w;
     float d = v1.r;
-    float wall = v1.g > 0.5 ? v1.g - 1.0 : 1e4;
+    float wall = v1.g > 0.0 ? (1.0 - v1.g) * 1.5 : 1e4;
     float open = v1.b;
     vec2 p = v2.xz;
     float far = length(v2 - pc.eye.xyz);
@@ -1718,7 +1718,7 @@ float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2))
 void main() {
     float t = pc.eye.w;
     float d = v1.r;
-    float wall = v1.g > 0.5 ? v1.g - 1.0 : 1e4;
+    float wall = v1.g > 0.0 ? (1.0 - v1.g) * 1.5 : 1e4;
     float open = v1.b;
     vec2 p = v2.xz;
     float far = length(v2 - pc.eye.xyz);

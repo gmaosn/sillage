@@ -55,14 +55,15 @@ class WaterSceneTest {
             for (k in v.indices step 9) { val d = (v[k] - x) * (v[k] - x) + (v[k + 2] - z) * (v[k + 2] - z); if (d < best) { best = d; b = v[k + 8] } }
             return b
         }
-        // Au pied de la falaise (son flanc en x = 1) : à moins d'un demi-mètre du mur, et pas de plage (pas de lagune).
+        // Au pied de la falaise (son flanc en x = 1) : à moins d'un demi-mètre du mur (le vert : 1 au mur, 0 à 1,5 m), et pas de
+        // plage (pas de lagune).
         val cliff = at(1.25f, 0f)
-        assertTrue(cliff.second in 1f..1.5f, "falaise : ${cliff.second}")
+        assertTrue(cliff.second in .66f..1f, "falaise : ${cliff.second}")
         assertTrue(cliff.first > 3f, "pas de rivage au pied de la falaise : ${cliff.first}")
         assertEquals(1f, open(1.25f, 0f), "la falaise est sur la mer ouverte")
-        assertTrue(at(-10f, -10.5f).second > 1f, "le bassin a ses murs")
+        assertTrue(at(-10f, -10.5f).second > 0f, "le bassin a ses murs")
         assertEquals(0f, open(-10f, -10.5f), "le bassin est à l'abri")
-        assertTrue(at(-5.5f, 0f).second in 1f..1.6f, "poteau : ${at(-5.5f, 0f).second}")
+        assertTrue(at(-5.5f, 0f).second in .6f..1f, "poteau : ${at(-5.5f, 0f).second}")
         assertEquals(0f, at(-20f, 20f).second, "loin de tout : rien")
         // La plage garde son rivage, sans mur.
         val shore = at(14.5f, 0f)
