@@ -551,6 +551,7 @@ class Scene {
     fun remove(node: Node) {
         if (node.removed) return
         node.removed = true
+        removals++; stillCells.forget(node)
         all.remove(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node); behaving.remove(node); animated.remove(node)
         shadows.filter { it.of === node }.forEach { all.remove(it.disc) }
         shadows.removeAll { it.of === node }
@@ -918,6 +919,17 @@ class Scene {
             s.disc.position = Vec3(p.x, ground + .03f, p.z)
             s.disc.scale = s.radius * (1f + high * .12f) / (1f + high * .35f)
         }
+    }
+
+    /** The still nodes in cells, for the renderers' culling (see [StillCells]); how many nodes left the draw list so far. */
+    internal val stillCells = StillCells()
+    private var removals = 0
+
+    /** The cells of [nodes] if it is this scene's draw list ([drawList]), brought up to date for this frame; null otherwise. */
+    internal fun stillCellsOf(nodes: List<Node>): StillCells? {
+        if (nodes !== all) return null
+        stillCells.sync(all, removals)
+        return stillCells
     }
 
     /** What the renderer draws this frame (the sky follows the eye; a first-person player is not drawn). */

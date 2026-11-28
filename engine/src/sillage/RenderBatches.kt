@@ -3,6 +3,7 @@ package sillage
 import sillage.math.Mat4
 import sillage.math.Vec3
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.round
 import kotlin.math.sqrt
 
@@ -225,10 +226,16 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         place(o, wx, wy, wz, r)
     }
 
+    /** One bit per node of the draw list: the nodes this frame visits (when the scene keeps still cells). */
+    private var marks = LongArray(64)
+    private var eyeSize = 0f
+
     /**
      * The frame's copies, grouped by mesh. With [cull], what the camera cannot see (outside the frustum of
      * [viewProj], past [fogEnd] or past its node's draw distance) is left out, and only what stands in a
-     * cascade's square ([squares], seen along [light]) casts into that cascade's map.
+     * cascade's square ([squares], seen along [light]) casts into that cascade's map. When [nodes] is a scene's
+     * draw list, the cells of its still nodes ([StillCells]) are tested first: a cell left out leaves out all
+     * its nodes at once, and the nodes kept are visited in the list's order, so that the batches are the same.
      */
     fun gather(nodes: List<Node>, hidden: Node?, viewProj: Mat4, eye: Vec3, fogEnd: Float, light: Vec3) {
         for (list in casters) for (b in list) b.count = 0
@@ -247,31 +254,93 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         val ref = if (abs(light.y) > .99f) Vec3.Z else Vec3.Y
         val sRight = (ref cross light).normalized(); val sUp = light cross sRight
         rx = sRight.x; ry = sRight.y; rz = sRight.z; ux = sUp.x; uy = sUp.y; uz = sUp.z
-        for (k in nodes.indices) {
-            val o = nodes[k]
-            if (!o.visible || o === hidden) continue
-            val mesh = o.meshAt(eye)
-            if (o.isSky) { prepare(mesh); add(2, skies, mesh, o, null); continue }
-            if (mesh.vertices.isNotEmpty()) {
-                test(mesh, o, null)
-                if (seen || casting != 0) prepare(mesh)
-                if (o.isShadow) { if (seen) add(3, shadows, mesh, o, null) else culled++; continue }
-                val look = o.water
-                if (look != null) { if (seen) add(4, waters, mesh, o, null)?.water = look else culled++; continue }
-                val casts = o.castsShadow && !mesh.unlit
-                if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, mesh, o, null) } else culled++
-                if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], mesh, o, null)
+        val still = if (culling && nodes.isNotEmpty()) nodes[0].scene.stillCellsOf(nodes) else null
+        if (still == null || still.cells.isEmpty()) {
+            for (k in nodes.indices) visit(nodes[k], hidden, eye)
+            return
+        }
+        // The nodes to visit: every one outside the cells, and those of the cells not left out whole.
+        val words = (nodes.size + 63) ushr 6
+        if (marks.size < words) marks = LongArray(2 * words)
+        val m = marks
+        m.fill(0L, 0, words)
+        val moving = still.moving
+        for (k in 0 until moving.size) { val r = moving[k].rank; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
+        val cells = still.cells
+        eyeSize = max(max(abs(ex), abs(ey)), abs(ez))
+        for (k in 0 until cells.size) {
+            val c = cells[k]
+            if (c.count == 0) continue
+            if (leftOut(c)) {
+                // As if each of its nodes had been visited and found unseen (the hidden node is never counted).
+                culled += c.count
+                if (hidden != null && hidden.cell === c) culled--
+                continue
             }
-            val parts = o.parts
-            val casts = o.castsShadow
-            for (j in parts.indices) {
-                val p = parts[j]
-                test(p.mesh, o, p.pose)
-                if (!seen && casting == 0) { culled++; continue }
-                prepare(p.mesh)
-                if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, p.mesh, o, p.pose) } else culled++
-                if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], p.mesh, o, p.pose)
+            val ns = c.nodes
+            for (j in 0 until c.count) { val r = ns[j]!!.rank; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
+        }
+        for (w in 0 until words) {
+            var bits = m[w]
+            while (bits != 0L) {
+                visit(nodes[(w shl 6) + bits.countTrailingZeroBits()], hidden, eye)
+                bits = bits and (bits - 1)
             }
+        }
+    }
+
+    /**
+     * Whether no node of [c] can be seen nor cast into a map drawn this frame: its box (which holds every node's
+     * sphere) is past the haze and the nodes' draw distances, or outside the frustum and every shadow square due.
+     * The tests keep a margin, so that a cell is left out only when each of its nodes surely would be.
+     */
+    private fun leftOut(c: StillCell): Boolean {
+        val eps = 1e-3f + 2e-5f * (c.size + eyeSize)
+        val dx = ex - ex.coerceIn(c.minX, c.maxX); val dy = ey - ey.coerceIn(c.minY, c.maxY); val dz = ez - ez.coerceIn(c.minZ, c.maxZ)
+        if (sqrt(dx * dx + dy * dy + dz * dz) > minOf(haze, c.far) + eps) return true
+        var outside = false
+        for (i in 0 until 6) {
+            val o = 4 * i; val a = planes[o]; val b = planes[o + 1]; val cc = planes[o + 2]
+            // The box's corner farthest along the plane's normal.
+            val most = a * (if (a >= 0f) c.maxX else c.minX) + b * (if (b >= 0f) c.maxY else c.minY) + cc * (if (cc >= 0f) c.maxZ else c.minZ) + planes[o + 3]
+            if (most < -eps) { outside = true; break }
+        }
+        if (!outside) return false
+        val hx = (c.maxX - c.minX) * .5f; val hy = (c.maxY - c.minY) * .5f; val hz = (c.maxZ - c.minZ) * .5f
+        for (k in 0 until CASCADES) {
+            val half = squares[4 * k + 3]
+            if (half <= 0f || !cascadeNow[k]) continue
+            val px = (c.minX + c.maxX) * .5f - squares[4 * k]; val py = (c.minY + c.maxY) * .5f - squares[4 * k + 1]; val pz = (c.minZ + c.maxZ) * .5f - squares[4 * k + 2]
+            val alongR = hx * abs(rx) + hy * abs(ry) + hz * abs(rz); val alongU = hx * abs(ux) + hy * abs(uy) + hz * abs(uz)
+            if (abs(px * rx + py * ry + pz * rz) <= half + alongR + eps && abs(px * ux + py * uy + pz * uz) <= half + alongU + eps) return false
+        }
+        return true
+    }
+
+    /** One node of the frame: tested, then added to the batches it is seen in and to the maps it casts into. */
+    private fun visit(o: Node, hidden: Node?, eye: Vec3) {
+        if (!o.visible || o === hidden) return
+        val mesh = o.meshAt(eye)
+        if (o.isSky) { prepare(mesh); add(2, skies, mesh, o, null); return }
+        if (mesh.vertices.isNotEmpty()) {
+            test(mesh, o, null)
+            if (seen || casting != 0) prepare(mesh)
+            if (o.isShadow) { if (seen) add(3, shadows, mesh, o, null) else culled++; return }
+            val look = o.water
+            if (look != null) { if (seen) add(4, waters, mesh, o, null)?.water = look else culled++; return }
+            val casts = o.castsShadow && !mesh.unlit
+            if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, mesh, o, null) } else culled++
+            if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], mesh, o, null)
+        }
+        val parts = o.parts
+        val casts = o.castsShadow
+        for (j in parts.indices) {
+            val p = parts[j]
+            test(p.mesh, o, p.pose)
+            if (!seen && casting == 0) { culled++; continue }
+            prepare(p.mesh)
+            if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, p.mesh, o, p.pose) } else culled++
+            if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], p.mesh, o, p.pose)
         }
     }
 
