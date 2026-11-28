@@ -140,7 +140,12 @@ object Glb {
             val texture = doc.arr("textures").at(t.int("index"), "texture")
             image(requireNotNull(texture.int("source")) { "GLB: texture without an image (source)" })
         }
-        // Alpha: MASK cuts out what is below alphaCutoff; BLEND is drawn as MASK at 0.5 (no sorting of transparent things).
+        // Normal maps, emission and blending (MaterialMaps.kt): their textures from the same images.
+        val looks = materialLooks(materialsJson) { t ->
+            require((t.int("texCoord") ?: 0) == 0) { "GLB: only the first set of texture coordinates (TEXCOORD_0) is read" }
+            image(requireNotNull(doc.arr("textures").at(t.int("index"), "texture").int("source")) { "GLB: texture without an image (source)" })
+        }
+        // Alpha: MASK cuts out what is below alphaCutoff; BLEND is blended (Model), its shadow cut out at 0.5.
         val cutoffs = FloatArray(materialsJson.size) { m ->
             val mat = materialsJson.obj(m)
             when (mat.string("alphaMode") ?: "OPAQUE") { "MASK" -> mat.float("alphaCutoff") ?: .5f; "BLEND" -> .5f; else -> 0f }
@@ -150,10 +155,11 @@ object Glb {
          * Triangles of one glTF mesh in node space: 9 position floats, r, g, b, then the material index; their
          * texture coordinates (6 floats each); their skin weights (24 floats each: per vertex 4 joints, 4 weights).
          */
-        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray, val tints: FloatArray)
+        class Read(val triangles: FloatArray, val uvs: FloatArray, val skin: FloatArray, val normals: FloatArray, val tints: FloatArray, val tangents: FloatArray)
         fun triangles(meshIndex: Int): Read {
             val out = ArrayList<Float>(); val uvOut = ArrayList<Float>(); val skinOut = ArrayList<Float>(); val nOut = ArrayList<Float>()
             val tintOut = ArrayList<Float>(); var tinted = false; var triangleCount = 0
+            val tanOut = ArrayList<Float>(); var tangented = false
             var everyNormal = true
             val mesh = doc.arr("meshes").at(meshIndex, "maillage")
             for (primitive in requireNotNull(mesh.arr("primitives"))) {
@@ -182,6 +188,9 @@ object Glb {
                 }
                 val ids = p.int("indices")?.let { indices(it) } ?: IntArray(positions.size) { it }
                 require(ids.size % 3 == 0)
+                // Tangents for a normal map: the file's (TANGENT), else made from the positions and texture coordinates.
+                val tangents = if (uvs == null || p.int("material")?.let { looks.normalMap.getOrNull(it) } == null) null
+                    else attributes.int("TANGENT")?.let { values(it, "VEC4") }?.takeIf { it.size >= positions.size } ?: tangentsOf(positions, fileNormals, uvs, ids).toList()
                 for(i in ids.indices step 3) {
                     val a=ids[i]; val b=ids[i+1]; val c=ids[i+2]
                     require(a in positions.indices && b in positions.indices && c in positions.indices) { "GLB index out of range" }
@@ -197,6 +206,10 @@ object Glb {
                         if (!tinted) { tinted = true; repeat(triangleCount) { for (q in 0..2) { tintOut.add(out[13 * it + 9]); tintOut.add(out[13 * it + 10]); tintOut.add(out[13 * it + 11]) } } }
                         for (v in intArrayOf(a, b, c)) { tintOut.add(color.r * colors[v][0]); tintOut.add(color.g * colors[v][1]); tintOut.add(color.b * colors[v][2]) }
                     } else if (tinted) repeat(3) { tintOut.add(vc.r); tintOut.add(vc.g); tintOut.add(vc.b) }
+                    if (tangents != null) {
+                        if (!tangented) { tangented = true; repeat(12 * (triangleCount)) { tanOut.add(0f) } }
+                        for (v in intArrayOf(a, b, c)) for (j in 0..3) tanOut.add(tangents[v][j])
+                    } else if (tangented) repeat(12) { tanOut.add(0f) }
                     triangleCount++
                     for (v in intArrayOf(a, b, c)) { uvOut.add(uvs?.get(v)?.get(0) ?: 0f); uvOut.add(uvs?.get(v)?.get(1) ?: 0f) }
                     if (fileNormals != null) for (v in intArrayOf(a, b, c)) for (j in 0..2) nOut.add(fileNormals[v][j])
@@ -209,7 +222,8 @@ object Glb {
                 }
             }
             // Normals from the file only when every primitive of the mesh has them.
-            return Read(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray(), if (everyNormal) nOut.toFloatArray() else FloatArray(0), tintOut.toFloatArray())
+            return Read(out.toFloatArray(), uvOut.toFloatArray(), skinOut.toFloatArray(), if (everyNormal) nOut.toFloatArray() else FloatArray(0), tintOut.toFloatArray(),
+                tanOut.toFloatArray())
         }
 
         val nodesJson = doc.arr("nodes") ?: Json.Arr(emptyList())
@@ -248,6 +262,7 @@ object Glb {
                 uvs = node.int("mesh")?.let { m -> meshCache.getValue(m).uvs } ?: FloatArray(0),
                 normals = node.int("mesh")?.let { m -> meshCache.getValue(m).normals } ?: FloatArray(0),
                 tints = node.int("mesh")?.let { m -> meshCache.getValue(m).tints } ?: FloatArray(0),
+                tangents = node.int("mesh")?.let { m -> meshCache.getValue(m).tangents } ?: FloatArray(0),
                 skin = node.int("skin")?.also { require(it in 0 until (doc.arr("skins")?.size ?: 0)) { "GLB: node $i uses a missing skin" } } ?: -1,
                 skinWeights = node.int("mesh")?.let { m -> meshCache.getValue(m).skin } ?: FloatArray(0),
                 properties = node.obj("extras")?.fields?.mapValues { plain(it.value) } ?: emptyMap(),
@@ -300,6 +315,6 @@ object Glb {
             for (t in 0 until n.skinWeights.size / 24) for (v in 0..2) for (k in 0..3)
                 require(n.skinWeights[24 * t + 8 * v + k].toInt() in 0 until count) { "GLB: a vertex names joint ${n.skinWeights[24 * t + 8 * v + k].toInt()} of a skin of $count" }
         }
-        return Model(nodes, racines, clips, materialNames, textures, cutoffs, skins, normals)
+        return Model(nodes, racines, clips, materialNames, textures, cutoffs, skins, normals, looks)
     }
 }
