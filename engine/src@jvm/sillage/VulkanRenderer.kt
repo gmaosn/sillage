@@ -31,7 +31,8 @@ internal interface SurfaceSource {
 
 /**
  * Vulkan renderer called through FFM. Two frames in flight: the CPU records the next frame while the GPU
- * draws the last one (each frame has its command buffer, fence, uniform block and host buffers). Every copy
+ * draws the last one (each frame has its fence, uniform block and host buffers; its commands go into command
+ * buffers of the threads that record them, see [RecordPool]). Every copy
  * of a mesh is drawn in one call, its model matrices in an instance buffer. A frame is drawn in passes: the
  * shadow map; the scene in linear light (HDR), with the distance to the eye in alpha; the glow, down and up
  * a chain of smaller images; and the finished picture (ink, glow, tone, vignette) with the interface over it.
@@ -44,6 +45,31 @@ private const val PUSH_BYTES = 128
 private const val FRAME_BYTES = FRAME_FLOATS * 4
 /** Levels of the glow: half the picture's size, then each half the last. */
 private const val BLOOM_LEVELS = 5
+// The parts of a frame's commands, each recorded into a command buffer of its own (on any thread) and submitted in
+// this order: the start (timestamps, glyphs, light grid), the sun's cascades, the lamps' cubes, the scene, the picture.
+private const val SEG_START = 0
+private const val SEG_CASCADE = 1
+private const val SEG_LAMPS = SEG_CASCADE + CASCADES
+private const val SEG_SCENE = SEG_LAMPS + 1
+private const val SEG_PICTURE = SEG_SCENE + 1
+private const val SEGMENTS = SEG_PICTURE + 1
+/** What a render pass costs to record, counted in draws (its begin and end, pipeline, sets, area, push constants). */
+private const val PASS_COST = 12
+/** Below this many draws in all, the shadow maps and the scene are recorded on the render thread alone. */
+private const val SMALL_WORK = 24
+/** Above this many, the parts are long enough for the threads that sleep to wake and help. */
+private const val BIG_WORK = 400
+/**
+ * The workers help only when choosing the copies takes at least this long (ns): a thread asleep for a frame takes
+ * about 100 µs to wake on a laptop (17 µs between frames 1 ms apart, 110 µs 16 ms apart, the median), and would
+ * come too late to take anything while the render thread records alone.
+ */
+private const val HIDES_WAKING = 120_000L
+/** A pass with at least twice this many draws is cut into secondary command buffers of about this many, recorded on several threads. */
+private const val SPLIT_DRAWS = 20
+/** Items from this one on are such pieces of a pass (chunks), the others whole parts. */
+private const val CHUNK = 16
+private const val MAX_CHUNKS = 16
 // Blending: colour source and destination factors, then alpha's. The alpha of the scene image holds the
 // distance to the eye, which blended things leave as it was.
 private val BLEND_KEEP_ALPHA = intArrayOf(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE)
@@ -144,7 +170,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var postSetLayout=0L
     private var descriptorPool=0L
     private val postSets=LongArray(2*BLOOM_LEVELS)
-    private class Frame(val command: MemorySegment, val fence: Long, val acquired: Long) {
+    private class Frame(val fence: Long, val acquired: Long) {
         var hud: Buffer?=null; var hudSent: HudMesh?=null
         var instances: Buffer?=null; var mapped: MemorySegment=MemorySegment.NULL
         var uniform: Buffer?=null; var uniformMapped: MemorySegment=MemorySegment.NULL; var set=0L
@@ -212,14 +238,16 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.createCommandPool(s.struct(VkCommandPoolCreateInfo,
                     "flags" to VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, "queueFamilyIndex" to family),out)
                 pool=out.get(JAVA_LONG,0)
-                val cmd=s.allocate(ADDRESS,FRAMES+1L)
+                val cmd=s.allocate(ADDRESS)
                 dev.allocateCommandBuffers(s.struct(VkCommandBufferAllocateInfo,
-                    "commandPool" to pool, "level" to VK_COMMAND_BUFFER_LEVEL_PRIMARY, "commandBufferCount" to FRAMES+1),cmd)
-                uploads=cmd.getAtIndex(ADDRESS,FRAMES.toLong())
+                    "commandPool" to pool, "level" to VK_COMMAND_BUFFER_LEVEL_PRIMARY, "commandBufferCount" to 1),cmd)
+                uploads=cmd.get(ADDRESS,0)
+                // The frames' commands are recorded by threads, each with its command pools (Recorder).
+                repeat(threads?.size ?: 1) { recorders.add(Recorder()) }
                 for(f in 0 until FRAMES) {
                     dev.createFence(s.struct(VkFenceCreateInfo, "flags" to VK_FENCE_CREATE_SIGNALED_BIT),out); val fence=out.get(JAVA_LONG,0)
                     dev.createSemaphore(s.struct(VkSemaphoreCreateInfo),out); val acquired=out.get(JAVA_LONG,0)
-                    frames.add(Frame(cmd.getAtIndex(ADDRESS,f.toLong()),fence,acquired).also {
+                    frames.add(Frame(fence,acquired).also {
                         it.hud=buffer(4L*1024*1024,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); growInstances(it,16*1024)
                         val u=buffer(FRAME_BYTES.toLong(),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT); it.uniform=u; it.uniformMapped=map(u)
                         val g=buffer(GRID_BYTES.toLong(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT); it.grid=g; it.gridMapped=map(g) })
@@ -1116,35 +1144,115 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         pret=false
         val f=frames[frameIndex]
         val fenceRef=s.longs(f.fence)
-        if(f.timed) {
-            val t=s.allocate(JAVA_LONG,3)
-            if(dev.getQueryPoolResults(queries,3*frameIndex,3,24,t,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS) {
-                fun ms(a: Int, b: Int): Double {
-                    var ticks=t.getAtIndex(JAVA_LONG,b.toLong())-t.getAtIndex(JAVA_LONG,a.toLong())
-                    if(timestampBits<64) ticks=ticks and ((1L shl timestampBits)-1)
-                    return ticks*timestampPeriod/1e6
-                }
-                gpuMs=ms(0,2); shadowMs=ms(0,1)
-                if(traceLamps && timedFrames++%30==0L) println("SILLAGE_LAMPES gpu %.2f ms, of which the shadow maps (sun and lamps) %.2f ms".format(gpuMs,shadowMs))
-            }
-        }
+        if(f.timed) readTimes(s)
         val index=image
         syncTextures(surface==0L || capture!=null)
-        // The main light's squares, finest first (the farther ones drawn again less often), then what is seen and what casts.
+        // The main light's squares, finest first (the farther ones drawn again less often); the lamps the shaders get
+        // (their grid when there are many) and those that cast shadows.
         val main=lighting.mainLight()
         lots.schedule(shadowSize>1 && lighting.shadows && focus!=null,lighting,focus,main,shadowSize)
-        val squares=lots.squares; val cascadeNow=lots.cascadeNow
-        val range=squares[3]
-        val centre=Vec3(squares[0],squares[1],squares[2])
-        // The lamps the shaders get (their grid when there are many), those that cast shadows, then the copies.
         lots.lights(extras,camera,oeil,lighting.fogEnd,largeur,hauteur,shadowSize>1 && lighting.shadows)
-        lots.gather(objets,hidden,camera,oeil,lighting.fogEnd,main)
-        val casters=lots.casters; val opaque=lots.opaque; val quiet=lots.quiet; val skies=lots.skies; val shadows=lots.shadows; val waters=lots.waters
-        val blended=lots.blended; val lampCasters=lots.lampCasters
-        extras?.sortParticles=lots.blendedCount>0
         if(hud!==f.hudSent) { hudGpu.send(f,hud); f.hudSent=hud }
         hudGpu.prepare(hud.atlas)
-        // Instance rows of every batch, side by side, then the particles.
+        if(lots.gridOn) MemorySegment.copy(lots.grid,0,f.gridMapped,JAVA_BYTE,0L,GRID_BYTES)
+        val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
+        try {
+            val w=work
+            w.f=f; w.fi=frameIndex; w.number++; w.index=index; w.camera=camera; w.oeil=oeil; w.temps=temps; w.lighting=lighting
+            w.extras=extras; w.hud=hud; w.readback=readback
+            record(objets,hidden,main)
+            f.timed=queries!=0L
+            // The parts in their order, whichever thread recorded each: the GPU runs the same commands as from one buffer.
+            val t0=if(traceRecording) System.nanoTime() else 0L
+            val list=s.allocate(ADDRESS,SEGMENTS.toLong()); var count=0
+            for(i in 0 until SEGMENTS) w.buffers[i]?.let { list.setAtIndex(ADDRESS,(count++).toLong(),it) }
+            val submit=s.struct(VkSubmitInfo, "commandBufferCount" to count, "pCommandBuffers" to list)
+            if(index>=0) submit.put(VkSubmitInfo, "waitSemaphoreCount" to 1, "pWaitSemaphores" to s.longs(f.acquired),
+                "pWaitDstStageMask" to s.ints(VK_PIPELINE_STAGE_TRANSFER_BIT), "signalSemaphoreCount" to 1, "pSignalSemaphores" to s.longs(finished[index]))
+            dev.resetFences(1,fenceRef)
+            dev.queueSubmit(queue,1,submit,f.fence)
+            if(traceRecording) traceFrame(System.nanoTime()-t0)
+            frameIndex=(frameIndex+1)%FRAMES
+            if(index>=0) present(s,f,index)
+            if(capture!=null && readback!=null) { dev.waitForFences(1,fenceRef,Long.MAX_VALUE); save(readback,capture) }
+        } finally { if(readback!=null) { dev.waitForFences(1,fenceRef,Long.MAX_VALUE); destroy(readback) } }
+    }
+
+    /**
+     * Chooses the copies drawn and records the frame's parts, on several threads when that pays: two workers wake
+     * at once when choosing the copies has taken long enough in the last frames for them to wake meanwhile (else
+     * they would come when this thread is nearly done), record the parts that do not depend on the copies (the
+     * frame's start: timestamps, glyphs, light grid; the picture's passes) while this thread chooses them, then
+     * take some of the others: the shadow maps and the scene, long passes cut into chunks.
+     */
+    private fun record(objets: List<Node>, hidden: Node?, main: Vec3) {
+        val w=work; val f=w.f; val extras=w.extras; val lighting=w.lighting
+        for(i in 0 until SEGMENTS) w.buffers[i]=null
+        val pool=threads
+        val parallel=pool!=null && (alwaysParallel || choosing>=HIDES_WAKING) && pool.open(recordWork,2)
+        var chosen=0L; var recording=0L
+        try {
+            if(parallel) { pool!!.add(SEG_START); pool.add(SEG_PICTURE) }
+            chosen=System.nanoTime()
+            lots.gather(objets,hidden,w.camera,w.oeil,lighting.fogEnd,main)
+            extras?.sortParticles=lots.blendedCount>0
+            instances(f,extras)
+            lots.writeFrame(frameData,lighting,main,w.camera,extras,shadowSize)
+            MemorySegment.copy(frameData,0,f.uniformMapped,JAVA_FLOAT,0L,FRAME_FLOATS)
+            recording=System.nanoTime()
+            choosing+=(recording-chosen-choosing)/8          // a running mean over about eight frames
+            var n=0; var cost=0
+            for(c in 0 until CASCADES) if(lots.cascadeNow[c]) { phase[n++]=SEG_CASCADE+c; cost+=costOf(SEG_CASCADE+c) }
+            if(lampsDrawn()) { phase[n++]=SEG_LAMPS; cost+=costOf(SEG_LAMPS) }
+            phase[n++]=SEG_SCENE; cost+=costOf(SEG_SCENE)
+            w.chunks=0
+            if(parallel && cost>=SMALL_WORK) n=split(n,if(cost>=BIG_WORK) pool!!.size else 3)
+            if(parallel && n>1 && cost>=SMALL_WORK) {
+                // The longest last: this thread takes the parts from the last one, the workers from the first.
+                for(i in 1 until n) { val x=phase[i]; var j=i; while(j>0 && costOf(phase[j-1])>costOf(x)) { phase[j]=phase[j-1]; j-- }; phase[j]=x }
+                // More threads only for long parts: a sleeping one wakes too late for short ones.
+                for(i in 0 until n) pool!!.add(phase[i],if(i==n-1 && cost>=BIG_WORK) n-3 else 0)
+            } else {
+                // Few draws: the shadow maps and the scene on this thread alone.
+                if(!parallel) { recorders[0].run(SEG_START); recorders[0].run(SEG_PICTURE) }
+                for(i in 0 until n) recorders[0].run(phase[i])
+            }
+        } finally { if(parallel) pool!!.finish() }
+        if(traceRecording) { traceChoosing+=recording-chosen; traceRecorded+=System.nanoTime()-recording; if(parallel) traceParallel++ }
+    }
+
+    // SILLAGE_ENREGISTREMENT=1: once a second, per frame on the render thread, how long choosing the copies took, then
+    // recording what was left once they were chosen (waiting for the workers included), submitting; and how many
+    // frames had workers.
+    private val traceRecording=System.getenv("SILLAGE_ENREGISTREMENT")!=null
+    private var traceChoosing=0L; private var traceRecorded=0L; private var traceSubmit=0L; private var traceFrames=0; private var traceParallel=0
+    private var traceSince=System.nanoTime()
+    private fun traceFrame(submit: Long) {
+        traceSubmit+=submit; traceFrames++
+        val now=System.nanoTime()
+        if(now-traceSince<1_000_000_000L) return
+        println("SILLAGE_ENREGISTREMENT %d frames: choosing the copies %.3f ms, recording after them %.3f ms, submitting %.3f ms; %d frames with workers"
+            .format(traceFrames,traceChoosing/1e6/traceFrames,traceRecorded/1e6/traceFrames,traceSubmit/1e6/traceFrames,traceParallel))
+        traceChoosing=0; traceRecorded=0; traceSubmit=0; traceFrames=0; traceParallel=0; traceSince=now
+    }
+
+    /** The GPU times of the frame that used these resources last (two frames ago). */
+    private fun readTimes(s: NativeStack) {
+        val t=s.allocate(JAVA_LONG,3)
+        if(dev.getQueryPoolResults(queries,3*frameIndex,3,24,t,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS) {
+            fun ms(a: Int, b: Int): Double {
+                var ticks=t.getAtIndex(JAVA_LONG,b.toLong())-t.getAtIndex(JAVA_LONG,a.toLong())
+                if(timestampBits<64) ticks=ticks and ((1L shl timestampBits)-1)
+                return ticks*timestampPeriod/1e6
+            }
+            gpuMs=ms(0,2); shadowMs=ms(0,1)
+            if(traceLamps && timedFrames++%30==0L) println("SILLAGE_LAMPES gpu %.2f ms, of which the shadow maps (sun and lamps) %.2f ms".format(gpuMs,shadowMs))
+        }
+    }
+
+    /** The instance rows of every batch, side by side in the frame's buffer, then the particles and the debug lines. */
+    private fun instances(f: Frame, extras: FrameExtras?) {
+        val casters=lots.casters; val lampCasters=lots.lampCasters
         val particleCount=extras?.particleCount ?: 0
         val lineVertices=extras?.lineVertexCount ?: 0
         var total=PARTICLE_FLOATS*particleCount+LINE_FLOATS*lineVertices
@@ -1153,12 +1261,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             if(lots.lampStatic[k] || lots.lampDirect[k]) for(b in lampCasters[k]) total+=12*b.count
             if(lots.lampLive[k] || lots.lampDirect[k]) for(b in lots.lampMovers[k]) total+=12*b.count
         }
-        for(b in opaque) total+=12*b.count
-        for(b in quiet) total+=12*b.count
-        for(b in skies) total+=12*b.count
-        for(b in shadows) total+=12*b.count
-        for(b in waters) total+=12*b.count
-        for(b in blended) total+=12*b.count
+        for(b in lots.opaque) total+=12*b.count
+        for(b in lots.quiet) total+=12*b.count
+        for(b in lots.skies) total+=12*b.count
+        for(b in lots.shadows) total+=12*b.count
+        for(b in lots.waters) total+=12*b.count
+        for(b in lots.blended) total+=12*b.count
         if(total*4L>f.instances!!.size) growInstances(f,Integer.highestOneBit(total)*2)
         val mapped=f.mapped
         var at=0L
@@ -1168,300 +1276,569 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             if(lots.lampStatic[k] || lots.lampDirect[k]) for(b in lampCasters[k]) put(b)
             if(lots.lampLive[k] || lots.lampDirect[k]) for(b in lots.lampMovers[k]) put(b)
         }
-        for(b in opaque) put(b)
-        for(b in quiet) put(b)
-        for(b in skies) put(b)
-        for(b in shadows) put(b)
-        for(b in waters) put(b)
-        for(b in blended) put(b)
-        if(lots.gridOn) MemorySegment.copy(lots.grid,0,f.gridMapped,JAVA_BYTE,0L,GRID_BYTES)
-        val particleStart=at
+        for(b in lots.opaque) put(b)
+        for(b in lots.quiet) put(b)
+        for(b in lots.skies) put(b)
+        for(b in lots.shadows) put(b)
+        for(b in lots.waters) put(b)
+        for(b in lots.blended) put(b)
+        val w=work
+        w.particleCount=particleCount; w.lineVertices=lineVertices
+        w.particleStart=at
         if(particleCount>0) MemorySegment.copy(extras!!.particles,0,mapped,JAVA_FLOAT,at,PARTICLE_FLOATS*particleCount)
-        val lineStart=particleStart+4L*PARTICLE_FLOATS*particleCount
-        if(lineVertices>0) MemorySegment.copy(extras!!.lines,0,mapped,JAVA_FLOAT,lineStart,LINE_FLOATS*lineVertices)
-        lots.writeFrame(frameData,lighting,main,camera,extras,shadowSize)
-        MemorySegment.copy(frameData,0,f.uniformMapped,JAVA_FLOAT,0L,FRAME_FLOATS)
-        val readback=if(capture!=null) buffer(largeur.toLong()*hauteur*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT) else null
-        val command=f.command
-        try {
-            dev.resetCommandBuffer(command,0)
-            dev.beginCommandBuffer(command,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-            if(queries!=0L) {
-                dev.cmdResetQueryPool(command,queries,3*frameIndex,3)
-                dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,3*frameIndex)
+        w.lineStart=w.particleStart+4L*PARTICLE_FLOATS*particleCount
+        if(lineVertices>0) MemorySegment.copy(extras!!.lines,0,mapped,JAVA_FLOAT,w.lineStart,LINE_FLOATS*lineVertices)
+    }
+
+    private fun present(s: NativeStack, f: Frame, index: Int) {
+        val pi=s.struct(VkPresentInfoKHR, "waitSemaphoreCount" to 1, "pWaitSemaphores" to s.longs(finished[index]),
+            "swapchainCount" to 1, "pSwapchains" to s.longs(swapchain), "pImageIndices" to s.ints(index))
+        // Numbered, so that the next frame can wait until this one is on screen.
+        if(attenteAffichage) pi.put(VkPresentInfoKHR, "pNext" to s.struct(VkPresentIdKHR, "swapchainCount" to 1, "pPresentIds" to s.longs(++presents)))
+        val l2=System.nanoTime()
+        val result=dev.queuePresentKHR(queue,pi)
+        latPresent+=System.nanoTime()-l2; latFrames++
+        if(diagnostic && System.nanoTime()-latSince>1_000_000_000L) {
+            val shown=if(latShownCount>0) "%.1f ms".format(latShown/1e6/latShownCount) else "?"
+            println("SILLAGE_LATENCE keys read → on screen $shown; per frame: waiting for the screen %.2f ms, fence %.2f ms, image %.2f ms, present %.2f ms; %d frames/s"
+                .format(latPresentWait/1e6/latFrames,latFence/1e6/latFrames,latAcquire/1e6/latFrames,latPresent/1e6/latFrames,latFrames))
+            latShown=0; latShownCount=0; latPresentWait=0; latFence=0; latAcquire=0; latPresent=0; latFrames=0; latSince=System.nanoTime()
+        }
+        if(result==VK_ERROR_OUT_OF_DATE_KHR || result==VK_SUBOPTIMAL_KHR) recreateSwapchain() else result.vkCheck("Present")
+    }
+
+    // ------------------------------------------------------------------ recording a frame on several threads
+
+    /**
+     * A frame's values that the parts read while they are recorded, set by the render thread before it hands
+     * them out (the pool's hand-over makes them visible to the other threads), and each part's command buffer.
+     */
+    private class FrameWork {
+        lateinit var f: Frame
+        var fi=0; var number=0L; var index=-1
+        lateinit var camera: Mat4; lateinit var oeil: Vec3; var temps=0f
+        lateinit var lighting: Lighting; var extras: FrameExtras?=null; lateinit var hud: HudMesh
+        var readback: Buffer?=null
+        var particleStart=0L; var lineStart=0L; var particleCount=0; var lineVertices=0
+        val buffers=arrayOfNulls<MemorySegment>(SEGMENTS)
+        // A long pass cut into chunks (secondary command buffers): each chunk's part and its draws [from, to); the
+        // pass's own command buffer is recorded, around its chunks, by the thread that finishes the last of them.
+        var chunks=0
+        val chunkSegment=IntArray(MAX_CHUNKS); val chunkFrom=IntArray(MAX_CHUNKS); val chunkTo=IntArray(MAX_CHUNKS)
+        val chunkBuffers=arrayOfNulls<MemorySegment>(MAX_CHUNKS)
+        val firstChunk=IntArray(SEGMENTS); val chunkCount=IntArray(SEGMENTS)
+        val left=java.util.concurrent.atomic.AtomicIntegerArray(SEGMENTS)
+        /** Each cascade's casters in the order they are drawn (those cut out by an image's alpha last), and where those begin. */
+        val ordered=Array(CASCADES) { ArrayList<Batch>() }; val cutFrom=IntArray(CASCADES)
+    }
+    private val work=FrameWork()
+    private val phase=IntArray(SEGMENTS+MAX_CHUNKS)
+    /** The threads that record besides this one (none with a single core, or with `sillage.recordThreads=1`). */
+    private val recordSetting=(System.getProperty("sillage.recordThreads") ?: System.getenv("SILLAGE_RECORD_THREADS"))?.toIntOrNull()
+    private val threads: RecordPool?=if(recordSetting==1) null else RecordPool.shared
+    /** `sillage.recordThreads` of 2 or more: every frame on several threads, however short (for comparisons). */
+    private val alwaysParallel=recordSetting!=null && recordSetting>=2
+    /** How long choosing the copies and laying out their rows took, in the last frames (ns, a running mean). */
+    private var choosing=0L
+    private val recorders=ArrayList<Recorder>()
+    private val recordWork=RecordPool.Work { slot, item -> recorders[slot].run(item) }
+
+    /**
+     * Cuts the long passes among the [n] parts of [phase] into chunks of about [SPLIT_DRAWS] draws, at most [threads]
+     * each (as many as the threads that record): the scene's opaque copies, a cascade's casters. Returns the new count.
+     */
+    private fun split(n: Int, threads: Int): Int {
+        val w=work
+        var count=n
+        for(p in 0 until n) {
+            val seg=phase[p]
+            val draws=when(seg) {
+                SEG_SCENE -> lots.opaque.size+lots.quiet.size
+                SEG_LAMPS -> 0
+                else -> { val k=seg-SEG_CASCADE; if(lots.squares[4*k+3]>0f) lots.casters[k].size else 0 }
             }
-            hudGpu.record(command)
+            val m=minOf(threads,draws/SPLIT_DRAWS,MAX_CHUNKS-w.chunks)
+            if(m<2) continue
+            if(seg!=SEG_SCENE) {
+                val k=seg-SEG_CASCADE; val list=w.ordered[k]
+                list.clear()
+                for(b in lots.casters[k]) if(!b.mesh.cutOut) list.add(b)
+                w.cutFrom[k]=list.size
+                for(b in lots.casters[k]) if(b.mesh.cutOut) list.add(b)
+            }
+            w.firstChunk[seg]=w.chunks; w.chunkCount[seg]=m; w.left.set(seg,m)
+            for(j in 0 until m) {
+                val i=w.chunks++
+                w.chunkSegment[i]=seg; w.chunkFrom[i]=draws*j/m; w.chunkTo[i]=draws*(j+1)/m
+                if(j==0) phase[p]=CHUNK+i else phase[count++]=CHUNK+i
+            }
+        }
+        return count
+    }
+
+    private fun lampsDrawn(): Boolean {
+        for(k in lots.lampDirect.indices) if(lots.lampDirect[k] || lots.lampStatic[k] || lots.lampLive[k]) return true
+        return false
+    }
+
+    /** About how long a part takes to record, in draws (a render pass costs about [PASS_COST] of them). */
+    private fun costOf(segment: Int): Int = when {
+        segment>=CHUNK -> { val i=segment-CHUNK; PASS_COST/2+work.chunkTo[i]-work.chunkFrom[i] }
+        else -> partCost(segment)
+    }
+
+    private fun partCost(segment: Int): Int = when(segment) {
+        SEG_SCENE -> PASS_COST+lots.opaque.size+lots.quiet.size+lots.waters.size+lots.skies.size+lots.shadows.size+2*lots.blendedCount+2
+        SEG_LAMPS -> {
+            var c=0
+            for(k in lots.lampDirect.indices) {
+                if(lots.lampDirect[k]) c+=PASS_COST+lots.lampCasters[k].size+lots.lampMovers[k].size
+                if(lots.lampStatic[k]) c+=PASS_COST+lots.lampCasters[k].size
+                if(lots.lampLive[k]) c+=PASS_COST/2+lots.lampMovers[k].size
+            }
+            c
+        }
+        else -> PASS_COST+lots.casters[segment-SEG_CASCADE].size
+    }
+
+    /**
+     * What one thread records with: native scratch of its own, and for each frame in flight a command pool whose
+     * buffers it records again (each reset as it begins: the frame's fence was waited first, so the GPU is done with it).
+     */
+    private inner class Recorder : AutoCloseable {
+        private val arena=Arena.ofShared()
+        private val st=NativeStack(256L*1024,arena)
+        private val pools=LongArray(FRAMES)
+        private val buffers=Array(FRAMES) { ArrayList<MemorySegment>() }
+        private val secondaries=Array(FRAMES) { ArrayList<MemorySegment>() }
+        private val used=IntArray(FRAMES); private val usedSecondaries=IntArray(FRAMES)
+        private val usedFor=LongArray(FRAMES) { -1L }
+        // The part being recorded: its command buffer, scratch, and the shadow square in its push constants.
+        private var c: MemorySegment=MemorySegment.NULL
+        private var constants: MemorySegment=MemorySegment.NULL
+        private var handles: MemorySegment=MemorySegment.NULL
+        private var offsets: MemorySegment=MemorySegment.NULL
+        private var sets: MemorySegment=MemorySegment.NULL
+        private var sqX=0f; private var sqY=0f; private var sqZ=0f; private var sqHalf=0f
+
+        init {
+            stack.frame { s ->
+                val out=s.allocate(JAVA_LONG)
+                for(i in 0 until FRAMES) {
+                    dev.createCommandPool(s.struct(VkCommandPoolCreateInfo, "flags" to (VK_COMMAND_POOL_CREATE_TRANSIENT_BIT or VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT),
+                        "queueFamilyIndex" to family),out)
+                    pools[i]=out.get(JAVA_LONG,0)
+                }
+            }
+        }
+
+        /** Records [segment] of the frame (or a chunk of a pass, from [CHUNK] on) into a command buffer of this thread, left in the frame's lists. */
+        fun run(segment: Int) = st.frame { s ->
+            if(segment>=CHUNK) { chunk(s,segment-CHUNK); return@frame }
+            val w=work
+            val command=begin(s,0L,0L)
+            when(segment) {
+                SEG_START -> start(s,w)
+                SEG_LAMPS -> lamps(s,w)
+                SEG_SCENE -> scene(s,w)
+                SEG_PICTURE -> picture(s,w)
+                else -> cascade(s,w,segment-SEG_CASCADE)
+            }
+            dev.endCommandBuffer(command)
+            w.buffers[segment]=command
+        }
+
+        /**
+         * A command buffer of this thread for this frame, begun, with fresh scratch for the part: a primary one, or
+         * with [pass] a secondary one that continues that render pass in [framebuffer].
+         */
+        private fun begin(s: NativeStack, pass: Long, framebuffer: Long): MemorySegment {
+            val w=work; val fi=w.fi
+            if(usedFor[fi]!=w.number) { used[fi]=0; usedSecondaries[fi]=0; usedFor[fi]=w.number }
+            val secondary=pass!=0L
+            val list=if(secondary) secondaries[fi] else buffers[fi]
+            val u=if(secondary) usedSecondaries[fi]++ else used[fi]++
+            if(u==list.size) {
+                val out=s.allocate(ADDRESS)
+                dev.allocateCommandBuffers(s.struct(VkCommandBufferAllocateInfo, "commandPool" to pools[fi],
+                    "level" to (if(secondary) VK_COMMAND_BUFFER_LEVEL_SECONDARY else VK_COMMAND_BUFFER_LEVEL_PRIMARY), "commandBufferCount" to 1),out)
+                list.add(out.get(ADDRESS,0))
+            }
+            val command=list[u]
+            c=command
+            if(secondary) dev.beginCommandBuffer(command,s.struct(VkCommandBufferBeginInfo,
+                "flags" to (VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT or VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT),
+                "pInheritanceInfo" to s.struct(VkCommandBufferInheritanceInfo, "renderPass" to pass, "subpass" to 0, "framebuffer" to framebuffer)))
+            else dev.beginCommandBuffer(command,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+            constants=s.allocate(JAVA_FLOAT,32)
+            handles=s.allocate(JAVA_LONG,4); offsets=s.allocate(JAVA_LONG,4)
+            handles.setAtIndex(JAVA_LONG,1,w.f.instances!!.buffer)
+            sets=s.longs(w.f.set)
+            return command
+        }
+
+        /**
+         * A chunk of a long pass, in a secondary command buffer: the state its draws are made in (as the pass recorded
+         * whole has it at that point), then its draws; the scene's last chunk also draws what follows the opaque copies.
+         * The thread that finishes the pass's last chunk records the pass around them.
+         */
+        private fun chunk(s: NativeStack, i: Int) {
+            val w=work; val seg=w.chunkSegment[i]; val from=w.chunkFrom[i]; val to=w.chunkTo[i]
+            if(seg==SEG_SCENE) {
+                val command=begin(s,renderPass,framebuffer)
+                sceneState(s,w)
+                val opaque=lots.opaque; val quiet=lots.quiet
+                for(d in from until to) draw(if(d<opaque.size) opaque[d] else quiet[d-opaque.size])
+                if(to==opaque.size+quiet.size) sceneTail(w)
+                dev.endCommandBuffer(command)
+                w.chunkBuffers[i]=command
+            } else {
+                val k=seg-SEG_CASCADE; val list=w.ordered[k]; val cutFrom=w.cutFrom[k]; val squares=lots.squares
+                val command=begin(s,shadowPass,shadowFramebuffers[k])
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,if(from>=cutFrom) shadowPipelineCut else shadowPipeline)
+                dev.cmdBindDescriptorSets(c,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
+                area(s,shadowSize,shadowSize)
+                sqX=squares[4*k]; sqY=squares[4*k+1]; sqZ=squares[4*k+2]; sqHalf=squares[4*k+3]
+                pushConstants(w.camera)
+                for(d in from until to) {
+                    if(d==cutFrom && d>from) dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipelineCut)
+                    draw(list[d])
+                }
+                dev.endCommandBuffer(command)
+                w.chunkBuffers[i]=command
+            }
+            if(w.left.decrementAndGet(seg)==0) passOfChunks(s,seg)
+        }
+
+        /** A pass cut into chunks: begun for secondary command buffers, its chunks in their order, ended. */
+        private fun passOfChunks(s: NativeStack, seg: Int) {
+            val w=work
+            val command=begin(s,0L,0L)
+            if(seg==SEG_SCENE) beginScene(s,w,VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS)
+            else {
+                val k=seg-SEG_CASCADE
+                dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to shadowFramebuffers[k],
+                    "renderArea.extent.width" to shadowSize, "renderArea.extent.height" to shadowSize, "clearValueCount" to 1, "pClearValues" to clearDepth(s)),
+                    VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS)
+            }
+            val n=w.chunkCount[seg]; val first=w.firstChunk[seg]
+            val list=s.allocate(ADDRESS,n.toLong())
+            for(j in 0 until n) list.setAtIndex(ADDRESS,j.toLong(),w.chunkBuffers[first+j]!!)
+            dev.cmdExecuteCommands(c,n,list)
+            dev.cmdEndRenderPass(c)
+            dev.endCommandBuffer(command)
+            w.buffers[seg]=command
+        }
+
+        private fun pushConstants(vp: Mat4, water: WaterLook?=null) {
+            val o=work.oeil
+            // Column by column, as GLSL reads a mat4 (Mat4 names its coefficients column first).
+            constants.setAtIndex(JAVA_FLOAT,0,vp.m00); constants.setAtIndex(JAVA_FLOAT,1,vp.m01); constants.setAtIndex(JAVA_FLOAT,2,vp.m02); constants.setAtIndex(JAVA_FLOAT,3,vp.m03)
+            constants.setAtIndex(JAVA_FLOAT,4,vp.m10); constants.setAtIndex(JAVA_FLOAT,5,vp.m11); constants.setAtIndex(JAVA_FLOAT,6,vp.m12); constants.setAtIndex(JAVA_FLOAT,7,vp.m13)
+            constants.setAtIndex(JAVA_FLOAT,8,vp.m20); constants.setAtIndex(JAVA_FLOAT,9,vp.m21); constants.setAtIndex(JAVA_FLOAT,10,vp.m22); constants.setAtIndex(JAVA_FLOAT,11,vp.m23)
+            constants.setAtIndex(JAVA_FLOAT,12,vp.m30); constants.setAtIndex(JAVA_FLOAT,13,vp.m31); constants.setAtIndex(JAVA_FLOAT,14,vp.m32); constants.setAtIndex(JAVA_FLOAT,15,vp.m33)
+            constants.setAtIndex(JAVA_FLOAT,16,o.x); constants.setAtIndex(JAVA_FLOAT,17,o.y); constants.setAtIndex(JAVA_FLOAT,18,o.z); constants.setAtIndex(JAVA_FLOAT,19,work.temps)
+            constants.setAtIndex(JAVA_FLOAT,20,sqX); constants.setAtIndex(JAVA_FLOAT,21,sqY); constants.setAtIndex(JAVA_FLOAT,22,sqZ); constants.setAtIndex(JAVA_FLOAT,23,sqHalf)
+            if(water!=null) {
+                constants.setAtIndex(JAVA_FLOAT,24,water.deep.r); constants.setAtIndex(JAVA_FLOAT,25,water.deep.g); constants.setAtIndex(JAVA_FLOAT,26,water.deep.b)
+                constants.setAtIndex(JAVA_FLOAT,28,water.shallow.r); constants.setAtIndex(JAVA_FLOAT,29,water.shallow.g); constants.setAtIndex(JAVA_FLOAT,30,water.shallow.b)
+                constants.setAtIndex(JAVA_FLOAT,31,water.reach)
+            }
+            dev.cmdPushConstants(c,layout,VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT,0,PUSH_BYTES,constants)
+        }
+
+        /** The shadow square of the frame's block (the finest one) in the push constants. */
+        private fun squareOfScene() { val q=lots.squares; sqX=q[0]; sqY=q[1]; sqZ=q[2]; sqHalf=q[3] }
+
+        /** Every copy of a batch, or only its copy [one] (blended copies are drawn one by one, in order). */
+        private fun draw(b: Batch, one: Int = -1) {
+            val m=b.mesh
+            handles.setAtIndex(JAVA_LONG,0,(if(m.dynamic) dynamicMeshes[m]!!.buffers[work.fi] else meshes[m]!!).buffer)
+            handles.setAtIndex(JAVA_LONG,2,(effectBuffers[m] ?: zero!!).buffer)
+            handles.setAtIndex(JAVA_LONG,3,(surfaceBuffers[m] ?: zero!!).buffer)
+            offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start.toLong()); offsets.setAtIndex(JAVA_LONG,2,0L); offsets.setAtIndex(JAVA_LONG,3,0L)
+            dev.cmdBindVertexBuffers(c,0,4,handles,offsets)
+            if(one<0) dev.cmdDraw(c,m.vertices.size/9,b.count,0,0) else dev.cmdDraw(c,m.vertices.size/9,1,0,one)
+        }
+
+        private fun area(s: NativeStack, w: Int, h: Int) {
+            dev.cmdSetViewport(c,s.struct(VkViewport, "width" to w.toFloat(), "height" to h.toFloat(), "maxDepth" to 1f))
+            dev.cmdSetScissor(c,s.struct(VkRect2D, "extent.width" to w, "extent.height" to h))
+        }
+
+        private fun clearDepth(s: NativeStack)=s.struct(VkClearValue).also { it.put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0) }
+
+        /** The frame's start: its timestamps reset, the glyphs that changed and the light grid, from their staging buffers. */
+        private fun start(s: NativeStack, w: FrameWork) {
+            if(queries!=0L) {
+                dev.cmdResetQueryPool(c,queries,3*w.fi,3)
+                dev.cmdWriteTimestamp(c,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,3*w.fi)
+            }
+            hudGpu.record(c,s,w.fi)
             // The light grid of this frame, from its staging buffer (after the last frame's reads of it).
             if(lots.gridOn) {
                 val img=gridImage!!.image
-                barrier(command,img,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                barrier(c,img,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,s)
                 val region=s.struct(VkBufferImageCopy, "bufferOffset" to 0L,
                     "imageExtent.width" to GRID_WIDTH, "imageExtent.height" to GRID_Z, "imageExtent.depth" to 1).subresource("imageSubresource",VkBufferImageCopy)
-                dev.cmdCopyBufferToImage(command,f.grid!!.buffer,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
-                barrier(command,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,
+                dev.cmdCopyBufferToImage(c,w.f.grid!!.buffer,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
+                barrier(c,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,s)
             }
-            val constants=s.allocate(JAVA_FLOAT,32)
-            var pushSquare=centre; var pushHalf=range
-            fun pushConstants(vp: Mat4, water: WaterLook?=null) {
-                // Column by column, as GLSL reads a mat4 (Mat4 names its coefficients column first).
-                constants.setAtIndex(JAVA_FLOAT,0,vp.m00); constants.setAtIndex(JAVA_FLOAT,1,vp.m01); constants.setAtIndex(JAVA_FLOAT,2,vp.m02); constants.setAtIndex(JAVA_FLOAT,3,vp.m03)
-                constants.setAtIndex(JAVA_FLOAT,4,vp.m10); constants.setAtIndex(JAVA_FLOAT,5,vp.m11); constants.setAtIndex(JAVA_FLOAT,6,vp.m12); constants.setAtIndex(JAVA_FLOAT,7,vp.m13)
-                constants.setAtIndex(JAVA_FLOAT,8,vp.m20); constants.setAtIndex(JAVA_FLOAT,9,vp.m21); constants.setAtIndex(JAVA_FLOAT,10,vp.m22); constants.setAtIndex(JAVA_FLOAT,11,vp.m23)
-                constants.setAtIndex(JAVA_FLOAT,12,vp.m30); constants.setAtIndex(JAVA_FLOAT,13,vp.m31); constants.setAtIndex(JAVA_FLOAT,14,vp.m32); constants.setAtIndex(JAVA_FLOAT,15,vp.m33)
-                constants.setAtIndex(JAVA_FLOAT,16,oeil.x); constants.setAtIndex(JAVA_FLOAT,17,oeil.y); constants.setAtIndex(JAVA_FLOAT,18,oeil.z); constants.setAtIndex(JAVA_FLOAT,19,temps)
-                constants.setAtIndex(JAVA_FLOAT,20,pushSquare.x); constants.setAtIndex(JAVA_FLOAT,21,pushSquare.y); constants.setAtIndex(JAVA_FLOAT,22,pushSquare.z); constants.setAtIndex(JAVA_FLOAT,23,pushHalf)
-                if(water!=null) {
-                    constants.setAtIndex(JAVA_FLOAT,24,water.deep.r); constants.setAtIndex(JAVA_FLOAT,25,water.deep.g); constants.setAtIndex(JAVA_FLOAT,26,water.deep.b)
-                    constants.setAtIndex(JAVA_FLOAT,28,water.shallow.r); constants.setAtIndex(JAVA_FLOAT,29,water.shallow.g); constants.setAtIndex(JAVA_FLOAT,30,water.shallow.b)
-                    constants.setAtIndex(JAVA_FLOAT,31,water.reach)
-                }
-                dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT,0,PUSH_BYTES,constants)
-            }
-            val handles=s.allocate(JAVA_LONG,4); val offsets=s.allocate(JAVA_LONG,4)
-            handles.setAtIndex(JAVA_LONG,1,f.instances!!.buffer)
-            /** Every copy of a batch, or only its copy [one] (blended copies are drawn one by one, in order). */
-            fun draw(b: Batch, one: Int = -1) {
-                val m=b.mesh
-                handles.setAtIndex(JAVA_LONG,0,(if(m.dynamic) dynamicMeshes[m]!!.buffers[frameIndex] else meshes[m]!!).buffer)
-                handles.setAtIndex(JAVA_LONG,2,(effectBuffers[m] ?: zero!!).buffer)
-                handles.setAtIndex(JAVA_LONG,3,(surfaceBuffers[m] ?: zero!!).buffer)
-                offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start.toLong()); offsets.setAtIndex(JAVA_LONG,2,0L); offsets.setAtIndex(JAVA_LONG,3,0L)
-                dev.cmdBindVertexBuffers(command,0,4,handles,offsets)
-                if(one<0) dev.cmdDraw(command,m.vertices.size/9,b.count,0,0) else dev.cmdDraw(command,m.vertices.size/9,1,0,one)
-            }
-            fun area(w: Int, h: Int) {
-                dev.cmdSetViewport(command,s.struct(VkViewport, "width" to w.toFloat(), "height" to h.toFloat(), "maxDepth" to 1f))
-                dev.cmdSetScissor(command,s.struct(VkRect2D, "extent.width" to w, "extent.height" to h))
-            }
-            val sets=s.longs(f.set)
-            // The shadow maps first, one cascade per layer (only cleared when a cascade is off: the shaders then never read it).
-            val clearDepth=s.struct(VkClearValue).also { it.put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0) }
-            for(c in 0 until CASCADES) {
-                if(!cascadeNow[c]) continue                  // drawn a frame or three ago: its map is kept
-                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to shadowFramebuffers[c],
-                    "renderArea.extent.width" to shadowSize, "renderArea.extent.height" to shadowSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
-                    VK_SUBPASS_CONTENTS_INLINE)
-                if(squares[4*c+3]>0f && casters[c].isNotEmpty()) {
-                    dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipeline)
-                    dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
-                    area(shadowSize,shadowSize)
-                    pushSquare=Vec3(squares[4*c],squares[4*c+1],squares[4*c+2]); pushHalf=squares[4*c+3]
-                    pushConstants(camera)
-                    var cut=false
-                    for(b in casters[c]) if(b.mesh.cutOut) cut=true else draw(b)
-                    if(cut) {
-                        dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipelineCut)
-                        for(b in casters[c]) if(b.mesh.cutOut) draw(b)
-                    }
-                }
-                dev.cmdEndRenderPass(command)
-            }
-            // The lamps' cube faces (RenderBatches.lights), each through its own view from its lamp: the caches whose still
-            // casters changed, then the faces the shaders read, copied from their caches with the moving casters over them.
-            fun drawLampCasters(list: ArrayList<Batch>, k: Int) {
-                if(list.isEmpty()) return
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,lampPipeline)
-                dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
-                area(lampSize,lampSize)
-                pushConstants(lots.lampFace(k))
+        }
+
+        /** One cascade of the shadow maps, into its layer (only cleared when it has nothing to draw: the shaders then never read it). */
+        private fun cascade(s: NativeStack, w: FrameWork, k: Int) {
+            val squares=lots.squares; val casters=lots.casters[k]
+            dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to shadowFramebuffers[k],
+                "renderArea.extent.width" to shadowSize, "renderArea.extent.height" to shadowSize, "clearValueCount" to 1, "pClearValues" to clearDepth(s)),
+                VK_SUBPASS_CONTENTS_INLINE)
+            if(squares[4*k+3]>0f && casters.isNotEmpty()) {
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipeline)
+                dev.cmdBindDescriptorSets(c,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
+                area(s,shadowSize,shadowSize)
+                sqX=squares[4*k]; sqY=squares[4*k+1]; sqZ=squares[4*k+2]; sqHalf=squares[4*k+3]
+                pushConstants(w.camera)
                 var cut=false
-                for(b in list) if(b.mesh.cutOut) cut=true else draw(b)
+                for(b in casters) if(b.mesh.cutOut) cut=true else draw(b)
                 if(cut) {
-                    dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,lampPipelineCut)
-                    for(b in list) if(b.mesh.cutOut) draw(b)
+                    dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipelineCut)
+                    for(b in casters) if(b.mesh.cutOut) draw(b)
                 }
             }
-            fun layer(image: Long, k: Int, old: Int, new: Int, srcAccess: Int, dstAccess: Int, srcStage: Int, dstStage: Int) {
-                val b=s.struct(VkImageMemoryBarrier, "oldLayout" to old, "newLayout" to new, "srcAccessMask" to srcAccess, "dstAccessMask" to dstAccess,
-                    "srcQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "dstQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "image" to image,
-                    "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "subresourceRange.levelCount" to 1,
-                    "subresourceRange.baseArrayLayer" to k, "subresourceRange.layerCount" to 1)
-                dev.cmdPipelineBarrier(command,srcStage,dstStage,0,0,MemorySegment.NULL,0,MemorySegment.NULL,1,b)
+            dev.cmdEndRenderPass(c)
+        }
+
+        private fun drawLampCasters(s: NativeStack, list: ArrayList<Batch>, k: Int) {
+            if(list.isEmpty()) return
+            dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,lampPipeline)
+            dev.cmdBindDescriptorSets(c,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
+            area(s,lampSize,lampSize)
+            pushConstants(lots.lampFace(k))
+            var cut=false
+            for(b in list) if(b.mesh.cutOut) cut=true else draw(b)
+            if(cut) {
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,lampPipelineCut)
+                for(b in list) if(b.mesh.cutOut) draw(b)
+            }
+        }
+
+        private fun layer(s: NativeStack, image: Long, k: Int, old: Int, new: Int, srcAccess: Int, dstAccess: Int, srcStage: Int, dstStage: Int) {
+            val b=s.struct(VkImageMemoryBarrier, "oldLayout" to old, "newLayout" to new, "srcAccessMask" to srcAccess, "dstAccessMask" to dstAccess,
+                "srcQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "dstQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "image" to image,
+                "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "subresourceRange.levelCount" to 1,
+                "subresourceRange.baseArrayLayer" to k, "subresourceRange.layerCount" to 1)
+            dev.cmdPipelineBarrier(c,srcStage,dstStage,0,0,MemorySegment.NULL,0,MemorySegment.NULL,1,b)
+        }
+
+        /**
+         * The lamps' cube faces (RenderBatches.lights), each through its own view from its lamp: the caches whose still
+         * casters changed, then the faces the shaders read, copied from their caches with the moving casters over them.
+         */
+        private fun lamps(s: NativeStack, w: FrameWork) {
+            // The push constants keep the square of the last cascade drawn this frame, as when one thread recorded all.
+            squareOfScene()
+            val squares=lots.squares
+            for(k in 0 until CASCADES) if(lots.cascadeNow[k] && squares[4*k+3]>0f && lots.casters[k].isNotEmpty()) {
+                sqX=squares[4*k]; sqY=squares[4*k+1]; sqZ=squares[4*k+2]; sqHalf=squares[4*k+3]
             }
             val lampStatic=lots.lampStatic; val lampLive=lots.lampLive; val lampMovers=lots.lampMovers; val lampDirect=lots.lampDirect
+            val lampCasters=lots.lampCasters
+            val clear=clearDepth(s)
             for(k in lampDirect.indices) {
                 if(!lampDirect[k]) continue                  // its lamp moved: drawn whole, no cache
-                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampFramebuffers[k],
-                    "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
+                dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampFramebuffers[k],
+                    "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize, "clearValueCount" to 1, "pClearValues" to clear),
                     VK_SUBPASS_CONTENTS_INLINE)
-                drawLampCasters(lampCasters[k],k); drawLampCasters(lampMovers[k],k)
-                dev.cmdEndRenderPass(command)
+                drawLampCasters(s,lampCasters[k],k); drawLampCasters(s,lampMovers[k],k)
+                dev.cmdEndRenderPass(c)
             }
             // A cache drawn again may still be read by an earlier frame's copy: those copies end first.
             var copied=false
             for(k in lampStatic.indices) if(lampStatic[k] && lampCacheLayouts[k]==VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) copied=true
-            if(copied) dev.cmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,
+            if(copied) dev.cmdPipelineBarrier(c,VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT or VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,0,0,MemorySegment.NULL,0,MemorySegment.NULL,0,MemorySegment.NULL)
             for(k in lampStatic.indices) {
                 if(!lampStatic[k]) continue
-                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampCacheFramebuffers[k],
-                    "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
+                dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampCacheFramebuffers[k],
+                    "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize, "clearValueCount" to 1, "pClearValues" to clear),
                     VK_SUBPASS_CONTENTS_INLINE)
-                drawLampCasters(lampCasters[k],k)
-                dev.cmdEndRenderPass(command)
+                drawLampCasters(s,lampCasters[k],k)
+                dev.cmdEndRenderPass(c)
                 lampCacheLayouts[k]=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             }
             for(k in lampLive.indices) {
                 if(!lampLive[k]) continue
                 val cache=lampCache!!.image; val live=lampMap!!.image
                 if(lampCacheLayouts[k]!=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-                    layer(cache,k,lampCacheLayouts[k],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,
+                    layer(s,cache,k,lampCacheLayouts[k],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,
                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT or VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT)
                     lampCacheLayouts[k]=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
                 }
-                layer(live,k,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,0,VK_ACCESS_TRANSFER_WRITE_BIT,
+                layer(s,live,k,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,0,VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT)
                 val region=s.struct(VkImageCopy, "srcSubresource.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "srcSubresource.baseArrayLayer" to k,
                     "srcSubresource.layerCount" to 1, "dstSubresource.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "dstSubresource.baseArrayLayer" to k,
                     "dstSubresource.layerCount" to 1, "extent.width" to lampSize, "extent.height" to lampSize, "extent.depth" to 1)
-                dev.cmdCopyImage(command,cache,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,live,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
+                dev.cmdCopyImage(c,cache,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,live,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
                 if(lampMovers[k].isNotEmpty()) {
-                    dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to lampLivePass, "framebuffer" to lampFramebuffers[k],
+                    dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to lampLivePass, "framebuffer" to lampFramebuffers[k],
                         "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize),VK_SUBPASS_CONTENTS_INLINE)
-                    drawLampCasters(lampMovers[k],k)
-                    dev.cmdEndRenderPass(command)
-                } else layer(live,k,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
+                    drawLampCasters(s,lampMovers[k],k)
+                    dev.cmdEndRenderPass(c)
+                } else layer(s,live,k,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
             }
-            if(queries!=0L) dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,3*frameIndex+1)
-            // The scene: the finest square in the push constants (its w > 0 says shadows are on), all of them in the frame block.
-            pushSquare=centre; pushHalf=range
-            // The scene in linear light; the clear alpha is "very far" for the ink.
+        }
+
+        /** The scene in linear light: the finest square in the push constants (its w > 0 says shadows are on), all of them in the frame block. */
+        private fun scene(s: NativeStack, w: FrameWork) {
+            beginScene(s,w,VK_SUBPASS_CONTENTS_INLINE)
+            sceneState(s,w)
+            for(b in lots.opaque) draw(b)
+            for(b in lots.quiet) draw(b)
+            sceneTail(w)
+            dev.cmdEndRenderPass(c)
+        }
+
+        /** The timestamp after the shadow maps, then the scene's pass begun (its clear alpha is "very far" for the ink). */
+        private fun beginScene(s: NativeStack, w: FrameWork, contents: Int) {
+            if(queries!=0L) dev.cmdWriteTimestamp(c,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,3*w.fi+1)
+            val lighting=w.lighting
             val clear=s.structs(VkClearValue,2)
             clear.at(VkClearValue,0).put(VkClearValue, "float32[0]" to lighting.horizon.r, "float32[1]" to lighting.horizon.g,
                 "float32[2]" to lighting.horizon.b, "float32[3]" to 10000f)
             clear.at(VkClearValue,1).put(VkClearDepthStencilValue, "depth" to 1f, "stencil" to 0)
-            dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to renderPass, "framebuffer" to framebuffer,
+            dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to renderPass, "framebuffer" to framebuffer,
                 "renderArea.extent.width" to largeur, "renderArea.extent.height" to hauteur, "clearValueCount" to 2, "pClearValues" to clear),
-                VK_SUBPASS_CONTENTS_INLINE)
-            val grid=lots.gridOn                       // more than 16 lamps: the variants that read the light grid
-            dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineGrid else pipeline)
-            dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
-            area(largeur,hauteur)
-            pushConstants(camera)
-            for(b in opaque) draw(b)
-            for(b in quiet) draw(b)
+                contents)
+        }
+
+        /** The state the scene's opaque copies are drawn in: the finest square in the push constants (its w > 0 says shadows are on). */
+        private fun sceneState(s: NativeStack, w: FrameWork) {
+            squareOfScene()
+            dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,if(lots.gridOn) pipelineGrid else pipeline)   // more than 16 lamps: the variants that read the light grid
+            dev.cmdBindDescriptorSets(c,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
+            area(s,largeur,hauteur)
+            pushConstants(w.camera)
+        }
+
+        /** After the opaque copies: water, sky, blob shadows, what is blended, debug lines. */
+        private fun sceneTail(w: FrameWork) {
+            val camera=w.camera; val extras=w.extras; val f=w.f
+            val grid=lots.gridOn
+            val waters=lots.waters
             if(waters.isNotEmpty()) {
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineWaterGrid else pipelineWater)
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineWaterGrid else pipelineWater)
                 for(b in waters) { pushConstants(camera,b.water); draw(b) }
                 pushConstants(camera)
             }
-            if(skies.isNotEmpty()) {
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineSky)
-                for(b in skies) draw(b)
+            if(lots.skies.isNotEmpty()) {
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineSky)
+                for(b in lots.skies) draw(b)
             }
-            if(shadows.isNotEmpty()) {
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
-                for(b in shadows) draw(b)
+            if(lots.shadows.isNotEmpty()) {
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
+                for(b in lots.shadows) draw(b)
             }
             // What is blended, farthest first: the particles (sorted already) and the blended copies among them.
+            val particleCount=w.particleCount
             var drawnParticles=0
             fun particlesTo(end: Int) {
                 if(end<=drawnParticles) return
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineParticlesGrid else pipelineParticles)
-                handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,particleStart)
-                dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
-                dev.cmdDraw(command,6,end-drawnParticles,0,drawnParticles)
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineParticlesGrid else pipelineParticles)
+                handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,w.particleStart)
+                dev.cmdBindVertexBuffers(c,0,1,handles.asSlice(16),offsets.asSlice(16))
+                dev.cmdDraw(c,6,end-drawnParticles,0,drawnParticles)
                 drawnParticles=end
             }
             for(i in 0 until lots.blendedCount) {
                 val d=lots.blendedDistanceAt(i)
                 var end=drawnParticles
-                while(end<particleCount && particleDistance(extras!!,end,oeil)>d) end++
+                while(end<particleCount && particleDistance(extras!!,end,w.oeil)>d) end++
                 particlesTo(end)
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineBlendedGrid else pipelineBlended)
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,if(grid) pipelineBlendedGrid else pipelineBlended)
                 draw(lots.blendedBatchAt(i),lots.blendedIndexAt(i))
             }
             particlesTo(particleCount)
             // Debug lines: faint through the scenery first, then plain where they are seen.
+            val lineVertices=w.lineVertices
             if(lineVertices>0) {
-                handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,lineStart)
-                dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLinesXray)
-                dev.cmdDraw(command,lineVertices,1,0,0)
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLines)
-                dev.cmdDraw(command,lineVertices,1,0,0)
+                handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,w.lineStart)
+                dev.cmdBindVertexBuffers(c,0,1,handles.asSlice(16),offsets.asSlice(16))
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLinesXray)
+                dev.cmdDraw(c,lineVertices,1,0,0)
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLines)
+                dev.cmdDraw(c,lineVertices,1,0,0)
             }
-            dev.cmdEndRenderPass(command)
-            // The glow: the bright parts at half size, down the levels, then up again, each adding the level below.
+        }
+
+        private fun pass(s: NativeStack, post: MemorySegment, pass: Long, fb: Long, w: Int, h: Int, pipe: Long, set: Long,
+                         tx: Float, ty: Float, a: Float, b: Float, cc: Float, d: Float, z: Float=0f) {
+            dev.cmdBeginRenderPass(c,s.struct(VkRenderPassBeginInfo, "renderPass" to pass, "framebuffer" to fb,
+                "renderArea.extent.width" to w, "renderArea.extent.height" to h),VK_SUBPASS_CONTENTS_INLINE)
+            dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,pipe)
+            dev.cmdBindDescriptorSets(c,VK_PIPELINE_BIND_POINT_GRAPHICS,postLayout,0,1,s.longs(set))
+            area(s,w,h)
+            post.setAtIndex(JAVA_FLOAT,0,tx); post.setAtIndex(JAVA_FLOAT,1,ty); post.setAtIndex(JAVA_FLOAT,2,z); post.setAtIndex(JAVA_FLOAT,3,0f)
+            post.setAtIndex(JAVA_FLOAT,4,a); post.setAtIndex(JAVA_FLOAT,5,b); post.setAtIndex(JAVA_FLOAT,6,cc); post.setAtIndex(JAVA_FLOAT,7,d)
+            dev.cmdPushConstants(c,postLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,32,post)
+            dev.cmdDraw(c,3,1,0,0)
+        }
+
+        /**
+         * The picture from the scene: the glow (the bright parts at half size, down the levels, then up again, each adding
+         * the level below), the finished picture with the interface over it, then its copy for a capture and to the window.
+         */
+        private fun picture(s: NativeStack, w: FrameWork) {
             val post=s.allocate(JAVA_FLOAT,8)
-            fun pass(pass: Long, fb: Long, w: Int, h: Int, pipe: Long, set: Long, tx: Float, ty: Float, a: Float, b: Float, c: Float, d: Float, z: Float=0f) {
-                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to pass, "framebuffer" to fb,
-                    "renderArea.extent.width" to w, "renderArea.extent.height" to h),VK_SUBPASS_CONTENTS_INLINE)
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipe)
-                dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,postLayout,0,1,s.longs(set))
-                area(w,h)
-                post.setAtIndex(JAVA_FLOAT,0,tx); post.setAtIndex(JAVA_FLOAT,1,ty); post.setAtIndex(JAVA_FLOAT,2,z); post.setAtIndex(JAVA_FLOAT,3,0f)
-                post.setAtIndex(JAVA_FLOAT,4,a); post.setAtIndex(JAVA_FLOAT,5,b); post.setAtIndex(JAVA_FLOAT,6,c); post.setAtIndex(JAVA_FLOAT,7,d)
-                dev.cmdPushConstants(command,postLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,32,post)
-                dev.cmdDraw(command,3,1,0,0)
-            }
-            pass(postPass,downFramebuffers[0],levelWidth(0),levelHeight(0),pipelineBright,postSets[0],1f/largeur,1f/hauteur,1f,0f,0f,0f)
-            dev.cmdEndRenderPass(command)
+            val lighting=w.lighting; val hud=w.hud
+            pass(s,post,postPass,downFramebuffers[0],levelWidth(0),levelHeight(0),pipelineBright,postSets[0],1f/largeur,1f/hauteur,1f,0f,0f,0f)
+            dev.cmdEndRenderPass(c)
             for(i in 1 until BLOOM_LEVELS) {
-                pass(postPass,downFramebuffers[i],levelWidth(i),levelHeight(i),pipelineDown,postSets[i],1f/levelWidth(i-1),1f/levelHeight(i-1),0f,0f,0f,0f)
-                dev.cmdEndRenderPass(command)
+                pass(s,post,postPass,downFramebuffers[i],levelWidth(i),levelHeight(i),pipelineDown,postSets[i],1f/levelWidth(i-1),1f/levelHeight(i-1),0f,0f,0f,0f)
+                dev.cmdEndRenderPass(c)
             }
             for(i in BLOOM_LEVELS-2 downTo 0) {
-                pass(postPass,upFramebuffers[i],levelWidth(i),levelHeight(i),pipelineUp,postSets[upSet(i)],1f/levelWidth(i+1),1f/levelHeight(i+1),0f,0f,0f,0f)
-                dev.cmdEndRenderPass(command)
+                pass(s,post,postPass,upFramebuffers[i],levelWidth(i),levelHeight(i),pipelineUp,postSets[upSet(i)],1f/levelWidth(i+1),1f/levelHeight(i+1),0f,0f,0f,0f)
+                dev.cmdEndRenderPass(c)
             }
-            // The finished picture, then the interface over it.
-            pass(compositePass,compositeFramebuffer,largeur,hauteur,pipelineComposite,postSets[2*BLOOM_LEVELS-1],1f/largeur,1f/hauteur,
+            pass(s,post,compositePass,compositeFramebuffer,largeur,hauteur,pipelineComposite,postSets[2*BLOOM_LEVELS-1],1f/largeur,1f/hauteur,
                 lighting.glow/BLOOM_LEVELS,lighting.outlines,lighting.vignette,lighting.saturation,maxOf(1,Math.round(hauteur/900f)).toFloat())
             if(hud.vertices.isNotEmpty()) {
-                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineHud)
-                hudGpu.bind(command,s)
-                handles.setAtIndex(JAVA_LONG,2,f.hud!!.buffer); offsets.setAtIndex(JAVA_LONG,2,0L)
-                dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
-                dev.cmdDraw(command,hud.vertices.size/HUD_FLOATS,1,0,0)
+                dev.cmdBindPipeline(c,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineHud)
+                hudGpu.bind(c,s)
+                handles.setAtIndex(JAVA_LONG,2,w.f.hud!!.buffer); offsets.setAtIndex(JAVA_LONG,2,0L)
+                dev.cmdBindVertexBuffers(c,0,1,handles.asSlice(16),offsets.asSlice(16))
+                dev.cmdDraw(c,hud.vertices.size/HUD_FLOATS,1,0,0)
             }
-            dev.cmdEndRenderPass(command)
+            dev.cmdEndRenderPass(c)
+            val readback=w.readback
             if(readback!=null) {
                 val region=s.struct(VkBufferImageCopy, "imageExtent.width" to largeur, "imageExtent.height" to hauteur, "imageExtent.depth" to 1)
                     .subresource("imageSubresource",VkBufferImageCopy)
-                dev.cmdCopyImageToBuffer(command,color!!.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback.buffer,1,region)
+                dev.cmdCopyImageToBuffer(c,color!!.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,readback.buffer,1,region)
                 val mb=s.struct(VkMemoryBarrier, "srcAccessMask" to VK_ACCESS_TRANSFER_WRITE_BIT, "dstAccessMask" to VK_ACCESS_HOST_READ_BIT)
-                dev.cmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,mb,0,MemorySegment.NULL,0,MemorySegment.NULL)
+                dev.cmdPipelineBarrier(c,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,mb,0,MemorySegment.NULL,0,MemorySegment.NULL)
             }
+            val index=w.index
             if(index>=0) {
                 val img=swapImages[index]
-                barrier(command,img,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,s)
+                barrier(c,img,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,s)
                 val blit=s.struct(VkImageBlit, "srcOffsets[1].x" to largeur, "srcOffsets[1].y" to hauteur, "srcOffsets[1].z" to 1,
                     "dstOffsets[1].x" to swapWidth, "dstOffsets[1].y" to swapHeight, "dstOffsets[1].z" to 1)
                     .subresource("srcSubresource",VkImageBlit).subresource("dstSubresource",VkImageBlit)
-                dev.cmdBlitImage(command,color!!.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,blit,VK_FILTER_NEAREST)
-                barrier(command,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,VK_ACCESS_TRANSFER_WRITE_BIT,0,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,s)
+                dev.cmdBlitImage(c,color!!.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,blit,VK_FILTER_NEAREST)
+                barrier(c,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,VK_ACCESS_TRANSFER_WRITE_BIT,0,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,s)
             }
-            if(queries!=0L) dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,3*frameIndex+2)
-            dev.endCommandBuffer(command)
-            f.timed=queries!=0L
-            val submit=s.struct(VkSubmitInfo, "commandBufferCount" to 1, "pCommandBuffers" to s.pointers(command))
-            if(index>=0) submit.put(VkSubmitInfo, "waitSemaphoreCount" to 1, "pWaitSemaphores" to s.longs(f.acquired),
-                "pWaitDstStageMask" to s.ints(VK_PIPELINE_STAGE_TRANSFER_BIT), "signalSemaphoreCount" to 1, "pSignalSemaphores" to s.longs(finished[index]))
-            dev.resetFences(1,fenceRef)
-            dev.queueSubmit(queue,1,submit,f.fence)
-            frameIndex=(frameIndex+1)%FRAMES
-            if(index>=0) {
-                val pi=s.struct(VkPresentInfoKHR, "waitSemaphoreCount" to 1, "pWaitSemaphores" to s.longs(finished[index]),
-                    "swapchainCount" to 1, "pSwapchains" to s.longs(swapchain), "pImageIndices" to s.ints(index))
-                // Numbered, so that the next frame can wait until this one is on screen.
-                if(attenteAffichage) pi.put(VkPresentInfoKHR, "pNext" to s.struct(VkPresentIdKHR, "swapchainCount" to 1, "pPresentIds" to s.longs(++presents)))
-                val l2=System.nanoTime()
-                val result=dev.queuePresentKHR(queue,pi)
-                latPresent+=System.nanoTime()-l2; latFrames++
-                if(diagnostic && System.nanoTime()-latSince>1_000_000_000L) {
-                    val shown=if(latShownCount>0) "%.1f ms".format(latShown/1e6/latShownCount) else "?"
-                    println("SILLAGE_LATENCE keys read → on screen $shown; per frame: waiting for the screen %.2f ms, fence %.2f ms, image %.2f ms, present %.2f ms; %d frames/s"
-                        .format(latPresentWait/1e6/latFrames,latFence/1e6/latFrames,latAcquire/1e6/latFrames,latPresent/1e6/latFrames,latFrames))
-                    latShown=0; latShownCount=0; latPresentWait=0; latFence=0; latAcquire=0; latPresent=0; latFrames=0; latSince=System.nanoTime()
-                }
-                if(result==VK_ERROR_OUT_OF_DATE_KHR || result==VK_SUBOPTIMAL_KHR) recreateSwapchain() else result.vkCheck("Present")
-            }
-            if(capture!=null && readback!=null) { dev.waitForFences(1,fenceRef,Long.MAX_VALUE); save(readback,capture) }
-        } finally { if(readback!=null) { dev.waitForFences(1,fenceRef,Long.MAX_VALUE); destroy(readback) } }
+            if(queries!=0L) dev.cmdWriteTimestamp(c,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,3*w.fi+2)
+        }
+
+        override fun close() {
+            for(p in pools) dev.destroyCommandPool(p)
+            arena.close()
+        }
     }
 
     private fun save(b: Buffer, destination: Path) = stack.frame { s ->
@@ -1522,6 +1899,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.destroyRenderPass(renderPass); dev.destroyRenderPass(postPass); dev.destroyRenderPass(compositePass)
                 dev.destroySwapchainKHR(swapchain)
                 finished.forEach { dev.destroySemaphore(it) }
+                recorders.forEach { it.close() }; recorders.clear()
                 dev.destroyCommandPool(pool)
                 dev.destroyDevice()
             }
@@ -1623,14 +2001,14 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         }
 
         /** At the start of the frame's commands: the staged rows into the atlas image. */
-        fun record(command: MemorySegment) = stack.frame { s ->
-            if(copyRows==0) return@frame
+        fun record(command: MemorySegment, s: NativeStack, fi: Int) {
+            if(copyRows==0) return
             val img=image!!
             barrier(command,img.image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,s)
             val region=s.struct(VkBufferImageCopy, "bufferOffset" to 0L, "imageOffset.y" to copyTop,
                 "imageExtent.width" to width, "imageExtent.height" to copyRows, "imageExtent.depth" to 1).subresource("imageSubresource",VkBufferImageCopy)
-            dev.cmdCopyBufferToImage(command,staging[frameIndex]!!.buffer,img.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
+            dev.cmdCopyBufferToImage(command,staging[fi]!!.buffer,img.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
             barrier(command,img.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,s)
         }
