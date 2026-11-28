@@ -60,6 +60,7 @@ internal object Sig {
     @JvmField val V_PJJIIP = h(null, P, J, J, I, I, P)
     @JvmField val V_PIIIIPIPIP = h(null, P, I, I, I, I, P, I, P, I, P)
     @JvmField val V_PJIJIIPI = h(null, P, J, I, J, I, I, P, I)
+    @JvmField val V_PJIJIIP = h(null, P, J, I, J, I, I, P)
     @JvmField val I_PIPIJ = h(I, P, I, P, I, J)
     @JvmField val I_PIP = h(I, P, I, P)
     @JvmField val V_PJII = h(null, P, J, I, I)
@@ -257,6 +258,7 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     private val pCmdCopyBufferToImage = proc("vkCmdCopyBufferToImage")
     private val pCmdPipelineBarrier = proc("vkCmdPipelineBarrier")
     private val pCmdBlitImage = proc("vkCmdBlitImage")
+    private val pCmdCopyImage = proc("vkCmdCopyImage")
     private val pCmdSetViewport = proc("vkCmdSetViewport")
     private val pCmdSetScissor = proc("vkCmdSetScissor")
     private val pCreateFence = proc("vkCreateFence")
@@ -356,6 +358,8 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
             memoryCount, memory, bufferCount, buffers, imageCount, images) }
     fun cmdBlitImage(cmd: MemorySegment, src: Long, srcLayout: Int, dst: Long, dstLayout: Int, count: Int, regions: MemorySegment, filter: Int) {
         Sig.V_PJIJIIPI.invokeExact(pCmdBlitImage, cmd, src, srcLayout, dst, dstLayout, count, regions, filter) }
+    fun cmdCopyImage(cmd: MemorySegment, src: Long, srcLayout: Int, dst: Long, dstLayout: Int, count: Int, regions: MemorySegment) {
+        Sig.V_PJIJIIP.invokeExact(pCmdCopyImage, cmd, src, srcLayout, dst, dstLayout, count, regions) }
 
     fun cmdSetViewport(cmd: MemorySegment, viewports: MemorySegment) { Sig.V_PIIP.invokeExact(pCmdSetViewport, cmd, 0, 1, viewports) }
     fun cmdSetScissor(cmd: MemorySegment, scissors: MemorySegment) { Sig.V_PIIP.invokeExact(pCmdSetScissor, cmd, 0, 1, scissors) }

@@ -15,6 +15,10 @@ layout(location=6) in vec4 inEffect;
 layout(location=7) in vec4 inTexture;
 // Texture coordinates (xy, for an image painted on the model) and the alpha below which it is cut out (z, 0: opaque).
 layout(location=8) in vec4 inImage;
+// A model's material maps (Mesh.surface): its tangent (xyz; w: the handedness of the basis); its normal map (x: its
+// number, 0 for none) and how strongly it bends the normal (y), its emission map (z), its opacity when blended (w, 0: opaque).
+layout(location=9) in vec4 inTangent;
+layout(location=10) in vec4 inMaps;
 // 128 bytes: view × projection, eye (xyz) and time (w), the shadow map's centre (xyz) and half side (w, 0: none), the water's colours.
 layout(push_constant) uniform Push { mat4 viewProj; vec4 eye; vec4 shadow; vec4 water; vec4 shallows; } pc;
 layout(location=0) out vec3 normal;
@@ -25,6 +29,8 @@ layout(location=5) out vec3 detailAt;              // the point in the object's 
 layout(location=6) out vec3 detailNormal;          // the normal in the object's space
 layout(location=7) flat out vec4 detail;           // texture layer, strength, mapping, alpha cut-out
 layout(location=8) out vec2 uv;
+layout(location=9) out vec4 tangent;               // in the world; w: the handedness
+layout(location=10) flat out vec4 maps;
 #include "frame.glsl"
 #include "light.glsl"
 void main() {
@@ -40,5 +46,7 @@ void main() {
     detailNormal = inNormal;
     detail = vec4(inTexture.x - 1.0, inTexture.x > 0.5 ? inTexture.z : 0.0, inTexture.w, inImage.z);
     uv = inImage.xy;
-    glow = any(lessThan(inEffect.rgb, vec3(0.0))) ? -inEffect.rgb * fr.sunDir.w : inEffect.rgb;
+    tangent = vec4(dot(row0.xyz, inTangent.xyz), dot(row1.xyz, inTangent.xyz), dot(row2.xyz, inTangent.xyz), inTangent.w);
+    maps = inMaps;
+    glow =any(lessThan(inEffect.rgb, vec3(0.0))) ? -inEffect.rgb * fr.sunDir.w : inEffect.rgb;
 }

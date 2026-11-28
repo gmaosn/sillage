@@ -37,6 +37,8 @@ data class Color(val r: Float, val g: Float, val b: Float) {
  */
 /** Floats per vertex of [Mesh.effects]. */
 internal const val EFFECT_FLOATS = 12
+/** Floats per vertex of [Mesh.surface]. */
+internal const val SURFACE_FLOATS = 8
 
 class Mesh(val vertices: FloatArray) {
     init { require(vertices.size % 27 == 0) { "A mesh is made of whole triangles (27 floats each)" } }
@@ -49,6 +51,14 @@ class Mesh(val vertices: FloatArray) {
      * coordinates u, v, the alpha below which it is cut out (0: opaque), one spare. Null: none (most meshes).
      */
     internal var effects: FloatArray? = null
+        private set
+    /**
+     * Per vertex, [SURFACE_FLOATS] floats for a model's material maps: its tangent (x, y, z, then the handedness
+     * of the basis, ±1), its normal map (the map's [Texture.id], 0: none) and how strongly it bends the normal,
+     * its emission map (an id, 0: none; it tints the vertex's own light), and its opacity when the material is
+     * blended (0: not blended, drawn opaque). Null: none (most meshes).
+     */
+    internal var surface: FloatArray? = null
         private set
     /** Per triangle, its material's index in the model it comes from (−1: none); null for meshes made by hand. */
     internal var materials: IntArray? = null
@@ -67,23 +77,58 @@ class Mesh(val vertices: FloatArray) {
     /** The same triangles with [effects] ([EFFECT_FLOATS] per vertex), keeping the materials. */
     internal fun withEffects(effects: FloatArray): Mesh {
         require(effects.size == vertices.size / 9 * EFFECT_FLOATS) { "$EFFECT_FLOATS effect floats per vertex" }
-        return Mesh(vertices).also { it.effects = effects; it.materials = materials; it.dynamic = dynamic }
+        return Mesh(vertices).also { it.effects = effects; it.materials = materials; it.surface = surface; it.dynamic = dynamic }
+    }
+    /** The same triangles with [surface] ([SURFACE_FLOATS] per vertex), keeping the materials and effects. */
+    internal fun withSurface(surface: FloatArray): Mesh {
+        require(surface.size == vertices.size / 9 * SURFACE_FLOATS) { "$SURFACE_FLOATS surface floats per vertex" }
+        return Mesh(vertices).also { it.surface = surface; it.effects = effects; it.materials = materials; it.dynamic = dynamic }
     }
     /** The same mesh, knowing the material of each triangle. */
     internal fun withMaterials(materials: IntArray): Mesh {
         require(materials.size == triangleCount) { "One material per triangle" }
-        return Mesh(vertices).also { it.materials = materials; it.effects = effects; it.dynamic = dynamic }
+        return Mesh(vertices).also { it.materials = materials; it.effects = effects; it.surface = surface; it.dynamic = dynamic }
     }
     /** The same triangles with these normals (3 floats per vertex), keeping materials and effects. */
     internal fun withNormals(normals: FloatArray): Mesh {
         require(normals.size == vertices.size / 3) { "3 normal floats per vertex" }
         val v = vertices.copyOf()
         for (k in 0 until v.size / 9) { v[9 * k + 3] = normals[3 * k]; v[9 * k + 4] = normals[3 * k + 1]; v[9 * k + 5] = normals[3 * k + 2] }
-        return Mesh(v).also { it.materials = materials; it.effects = effects; it.dynamic = dynamic }
+        return Mesh(v).also { it.materials = materials; it.effects = effects; it.surface = surface; it.dynamic = dynamic }
     }
 
     /** A copy of its own (vertices copied, materials and effects shared) whose vertices change every frame. */
-    internal fun dynamicCopy(): Mesh = Mesh(vertices.copyOf()).also { it.materials = materials; it.effects = effects; it.dynamic = true }
+    internal fun dynamicCopy(): Mesh = Mesh(vertices.copyOf()).also { it.materials = materials; it.effects = effects; it.surface = surface; it.dynamic = true }
+
+    /**
+     * Its blended triangles (a glTF material in BLEND mode: [surface]'s opacity above 0) apart from the others:
+     * (the others, the blended ones), each keeping its materials, effects and surface; null when none is
+     * blended. A dynamic mesh (skinned) is not split: its blended triangles are cut out at half opacity.
+     */
+    internal val blendSplit: Pair<Mesh, Mesh>? by lazy {
+        val s = surface
+        if (s == null || dynamic) return@lazy null
+        val n = triangleCount
+        val blended = BooleanArray(n) { s[3 * it * SURFACE_FLOATS + 7] > 0f }
+        val count = blended.count { it }
+        if (count == 0) return@lazy null
+        fun part(keep: Boolean): Mesh {
+            val k = if (keep) count else n - count
+            val v = FloatArray(27 * k); val e = effects?.let { FloatArray(3 * k * EFFECT_FLOATS) }
+            val su = FloatArray(3 * k * SURFACE_FLOATS); val m = materials?.let { IntArray(k) }
+            var at = 0
+            for (t in 0 until n) {
+                if (blended[t] != keep) continue
+                vertices.copyInto(v, 27 * at, 27 * t, 27 * t + 27)
+                effects?.copyInto(e!!, 3 * at * EFFECT_FLOATS, 3 * t * EFFECT_FLOATS, 3 * (t + 1) * EFFECT_FLOATS)
+                s.copyInto(su, 3 * at * SURFACE_FLOATS, 3 * t * SURFACE_FLOATS, 3 * (t + 1) * SURFACE_FLOATS)
+                if (m != null) m[at] = materials!![t]
+                at++
+            }
+            return Mesh(v).also { it.effects = e; it.surface = su; it.materials = m }
+        }
+        part(false) to part(true)
+    }
     /** Part of it is cut out by its image's alpha: its shadow needs the image too (other shadows are depth alone, with no fragment shader). */
     internal val cutOut: Boolean by lazy {
         val e = effects; var cut = false

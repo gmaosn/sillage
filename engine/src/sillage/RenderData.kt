@@ -4,8 +4,21 @@ package sillage
 
 /** Side of the shadow map in texels. */
 internal const val SHADOW_TEXELS = 2048
-/** Point lights handed to the shaders each frame (the nearest to the camera). */
-internal const val MAX_LIGHTS = 16
+/** Point lights handed to the shaders each frame at most (the nearest to the camera first; frame.glsl). */
+internal const val MAX_LIGHTS = 128
+/**
+ * Up to this many lamps on screen, every point looks at every one of them, as it always did; with more, each
+ * looks only at those of its cluster of the light grid (see [RenderBatches.lights]).
+ */
+internal const val LOOP_LIGHTS = 16
+/** The light grid: tiles across and down the picture, slices of distance from the eye, lamps per cluster at most. */
+internal const val GRID_X = 16
+internal const val GRID_Y = 10
+internal const val GRID_Z = 16
+internal const val GRID_LAMPS = 15
+/** Lamps that may cast shadows at once (each a cube of six faces, a layer each), and the side of a face, at the high quality. */
+internal const val LAMP_SHADOWS = 4
+internal const val LAMP_TEXELS = 512
 /** Shadow squares one inside the other, each with its layer in the shadow map (see Lighting.shadowCascades). */
 internal const val CASCADES = 3
 /** Floats per particle drawn: centre and size (negative: it glows), colour and opacity. */
@@ -15,7 +28,11 @@ internal const val PARTICLE_FLOATS = 8
 internal class FrameExtras {
     /** Per light: position, radius, colour × intensity, unused (8 floats). */
     val lights = FloatArray(8 * MAX_LIGHTS)
+    /** Per light, which lamp it is ([PointLight.id]): a lamp keeps its shadow cube from frame to frame. */
+    val lightIds = IntArray(MAX_LIGHTS)
     var lightCount = 0
+    /** The renderer drew things blended with the particles last frame: the particles must come sorted even if they all glow. */
+    var sortParticles = false
     /** Per particle [PARTICLE_FLOATS] floats. */
     var particles = FloatArray(PARTICLE_FLOATS * 256)
     var particleCount = 0
@@ -26,6 +43,13 @@ internal class FrameExtras {
 
 /** Floats per debug line vertex: position, colour and opacity. */
 internal const val LINE_FLOATS = 7
+
+/** How far particle [i] of the frame is from [eye] (the particles come farthest first): where the blended copies go among them. */
+internal fun particleDistance(e: FrameExtras, i: Int, eye: sillage.math.Vec3): Float {
+    val o = PARTICLE_FLOATS * i
+    val dx = e.particles[o] - eye.x; val dy = e.particles[o + 1] - eye.y; val dz = e.particles[o + 2] - eye.z
+    return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+}
 
 /**
  * What draws a scene, whatever is under it. The loop hands it, each frame, the nodes to draw (already
@@ -65,11 +89,13 @@ internal interface Renderer {
  * Chosen once from the graphics card's name — a Raspberry Pi's (« V3D ») gets [MEDIUM] — unless the launch
  * says otherwise: `--quality low|medium|high`, the setting `sillage.quality` or the variable SILLAGE_QUALITY.
  */
-internal class RenderQuality private constructor(val name: String, val shadowTexels: Int, val samples: Int) {
+internal class RenderQuality private constructor(val name: String, val shadowTexels: Int, val samples: Int,
+                                                  /** Lamps with a shadow cube at once, and the side of each face. */
+                                                  val lampShadows: Int, val lampTexels: Int) {
     companion object {
-        val HIGH = RenderQuality("high", SHADOW_TEXELS, 4)
-        val MEDIUM = RenderQuality("medium", SHADOW_TEXELS / 2, 4)
-        val LOW = RenderQuality("low", SHADOW_TEXELS / 2, 1)
+        val HIGH = RenderQuality("high", SHADOW_TEXELS, 4, LAMP_SHADOWS, LAMP_TEXELS)
+        val MEDIUM = RenderQuality("medium", SHADOW_TEXELS / 2, 4, 2, LAMP_TEXELS / 2)
+        val LOW = RenderQuality("low", SHADOW_TEXELS / 2, 1, 1, LAMP_TEXELS / 2)
 
         fun choose(gpuName: String): RenderQuality {
             val asked = (sillage.io.Storage.setting("sillage.quality") ?: sillage.io.Storage.environment("SILLAGE_QUALITY"))?.lowercase()

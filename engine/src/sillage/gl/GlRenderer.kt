@@ -5,7 +5,11 @@ import sillage.CASCADES
 import sillage.EFFECT_FLOATS
 import sillage.FRAME_FLOATS
 import sillage.FrameExtras
+import sillage.GRID_WIDTH
+import sillage.GRID_Z
 import sillage.HudMesh
+import sillage.LAMP_SHADOWS
+import sillage.LAMP_TEXELS
 import sillage.LINE_FLOATS
 import sillage.Lighting
 import sillage.Mesh
@@ -14,6 +18,8 @@ import sillage.PARTICLE_FLOATS
 import sillage.RenderBatches
 import sillage.Renderer
 import sillage.SHADOW_TEXELS
+import sillage.SURFACE_FLOATS
+import sillage.particleDistance
 import sillage.Texture
 import sillage.WaterLook
 import sillage.math.Mat4
@@ -72,7 +78,7 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
     private val programs = ArrayList<Int>()
     private val toon: Int; private val water: Int; private val sky: Int; private val ombre: Int
     private val particles: Int; private val lines: Int; private val linesXray: Int
-    private val shadow: Int; private val shadowCut: Int
+    private val shadow: Int; private val shadowCut: Int; private val lampShadow: Int; private val lampShadowCut: Int
     private val bright: Int; private val down: Int; private val up: Int; private val composite: Int; private val hudProgram: Int
 
     // ---- what the shaders read each frame
@@ -86,6 +92,13 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
     private var shadowSize = 0
     private var shadowMap = 0
     private val shadowFramebuffers = IntArray(CASCADES)
+    // ---- the lamps' shadow cubes: six layers per lamp of a depth texture array, a framebuffer per layer; the light grid
+    private var lampSize = 0
+    private var lampMap = 0                                      // the faces the shaders read
+    private val lampFramebuffers = IntArray(6 * LAMP_SHADOWS)
+    private var lampCache = 0                                    // each face's cache: what stands still around its lamp
+    private val lampCacheFramebuffers = IntArray(6 * LAMP_SHADOWS)
+    private val lightGrid: Int
 
     // ---- detail textures (Texture): one layer each, every level, in one array texture
     private var textures = 0
@@ -102,8 +115,8 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
     private val bloomUp = IntArray(BLOOM_LEVELS - 1); private val upFramebuffers = IntArray(BLOOM_LEVELS - 1)
 
     // ---- meshes
-    /** A mesh on the GPU: its vertex array (the mesh, the instance rows, its effects) and buffers. */
-    private class MeshGpu(val array: Int, val vertices: Int, val effects: Int) { var version = -1 }
+    /** A mesh on the GPU: its vertex array (the mesh, the instance rows, its effects, its material maps) and buffers. */
+    private class MeshGpu(val array: Int, val vertices: Int, val effects: Int, val surface: Int) { var version = -1 }
     private val meshes = HashMap<Mesh, MeshGpu>()
     private var instanceBuffer = 0
     private var instances = FloatArray(16 * 1024)
@@ -125,13 +138,14 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         particles = program("particle.vert", "particle.frag")
         lines = program("lines.vert", "lines.frag"); linesXray = program("lines.vert", "lines_xray.frag")
         shadow = program("shadow.vert", null); shadowCut = program("shadow.vert", "shadow.frag")
+        lampShadow = program("lamp_shadow.vert", null); lampShadowCut = program("lamp_shadow.vert", "shadow.frag")
         bright = program("post.vert", "bright.frag"); down = program("post.vert", "down.frag")
         up = program("post.vert", "up.frag"); composite = program("post.vert", "composite.frag")
         hudProgram = program("hud.vert", "hud.frag", BLOCK_HUD)
         frameBlock = block(BLOCK_FRAME, FRAME_FLOATS); pushBlock = block(BLOCK_PUSH, 32)
         postBlock = block(BLOCK_POST, 8); hudBlock = block(BLOCK_HUD, 4)
-        // What a mesh without effects reads as its effects: zeros (no light of its own, no sway, no texture).
-        for (i in 6..8) gl.vertexAttrib4f(i, 0f, 0f, 0f, 0f)
+        // What a mesh without effects or material maps reads as them: zeros (no light of its own, no sway, no texture, opaque).
+        for (i in 6..10) gl.vertexAttrib4f(i, 0f, 0f, 0f, 0f)
         instanceBuffer = gl.createBuffer()
         gl.bindBuffer(GL.ARRAY_BUFFER, instanceBuffer); gl.bufferData(GL.ARRAY_BUFFER, 4 * instances.size, GL.STREAM_DRAW)
         // Particles: per instance its centre and size, its colour and opacity. Debug lines: per vertex its position, its colour and opacity.
@@ -145,6 +159,12 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         val sizes = intArrayOf(2, 2, 4, 4, 4); val at = intArrayOf(0, 8, 16, 32, 48)
         for (i in 0..4) { gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, sizes[i], GL.FLOAT, false, 4 * HUD_FLOATS, at[i]) }
         gl.bindVertexArray(0)
+        // The light grid: four RGBA texels per cluster, a row per slice of distance, read texel by texel.
+        lightGrid = gl.createTexture()
+        gl.activeTexture(GL.TEXTURE0 + 3); gl.bindTexture(GL.TEXTURE_2D, lightGrid)
+        gl.texStorage2D(GL.TEXTURE_2D, 1, GL.RGBA8, GRID_WIDTH, GRID_Z)
+        gl.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, GL.NEAREST); gl.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MAG_FILTER, GL.NEAREST)
+        gl.activeTexture(GL.TEXTURE0)
         createShadowMaps(if (shadows) SHADOW_TEXELS else 1)
         makeAtlas(4, 4)
         syncTextures(false)
@@ -163,6 +183,9 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         // Texture units: 0 the shadow maps or a pass's first image or the glyph atlas, 1 the detail textures or a pass's second image.
         for (name in UNIT0) gl.uniformLocation(p, name).let { if (it >= 0) gl.uniform1i(it, 0) }
         for (name in UNIT1) gl.uniformLocation(p, name).let { if (it >= 0) gl.uniform1i(it, 1) }
+        // 2 the lamps' shadow cubes, 3 the light grid.
+        for (name in UNIT2) gl.uniformLocation(p, name).let { if (it >= 0) gl.uniform1i(it, 2) }
+        for (name in UNIT3) gl.uniformLocation(p, name).let { if (it >= 0) gl.uniform1i(it, 3) }
         return p
     }
 
@@ -223,6 +246,31 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
             gl.framebufferTextureLayer(GL.FRAMEBUFFER, GL.DEPTH_ATTACHMENT, shadowMap, 0, c)
             complete("the shadow map")
         }
+        // The lamps' cubes, the same way: six layers per lamp, read through a comparison; one texel each without shadows.
+        if (lampMap != 0) {
+            gl.deleteTexture(lampMap); gl.deleteTexture(lampCache)
+            for (f in lampFramebuffers) gl.deleteFramebuffer(f); for (f in lampCacheFramebuffers) gl.deleteFramebuffer(f)
+        }
+        lampSize = if (size > 1) LAMP_TEXELS else 1
+        for (cache in booleanArrayOf(false, true)) {
+            val t = gl.createTexture()
+            gl.activeTexture(GL.TEXTURE0 + 2); gl.bindTexture(GL.TEXTURE_2D_ARRAY, t)
+            gl.texStorage3D(GL.TEXTURE_2D_ARRAY, 1, GL.DEPTH_COMPONENT16, lampSize, lampSize, 6 * LAMP_SHADOWS)
+            gl.texParameteri(GL.TEXTURE_2D_ARRAY, GL.TEXTURE_MIN_FILTER, GL.LINEAR); gl.texParameteri(GL.TEXTURE_2D_ARRAY, GL.TEXTURE_MAG_FILTER, GL.LINEAR)
+            gl.texParameteri(GL.TEXTURE_2D_ARRAY, GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE); gl.texParameteri(GL.TEXTURE_2D_ARRAY, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE)
+            gl.texParameteri(GL.TEXTURE_2D_ARRAY, GL.TEXTURE_COMPARE_MODE, GL.COMPARE_REF_TO_TEXTURE)
+            gl.texParameteri(GL.TEXTURE_2D_ARRAY, GL.TEXTURE_COMPARE_FUNC, GL.LEQUAL)
+            val fbs = if (cache) lampCacheFramebuffers else lampFramebuffers
+            for (k in 0 until 6 * LAMP_SHADOWS) {
+                val f = gl.createFramebuffer(); fbs[k] = f
+                gl.bindFramebuffer(GL.FRAMEBUFFER, f)
+                gl.framebufferTextureLayer(GL.FRAMEBUFFER, GL.DEPTH_ATTACHMENT, t, 0, k)
+                complete("a lamp's shadow")
+            }
+            if (cache) lampCache = t else lampMap = t
+        }
+        gl.activeTexture(GL.TEXTURE0)
+        batches.lampShadows(if (size > 1) LAMP_SHADOWS else 0, lampSize)
         batches.newShadowMaps()
     }
 
@@ -367,13 +415,22 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
             gl.bindBuffer(GL.ARRAY_BUFFER, effects); gl.bufferData(GL.ARRAY_BUFFER, e, 0, e.size, GL.STATIC_DRAW)
             for (i in 6..8) { gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, 4, GL.FLOAT, false, 4 * EFFECT_FLOATS, 16 * (i - 6)) }
         }
+        // A model's material maps (Mesh.surface): 9 to 10, read as zeros without.
+        var surface = 0
+        val su = m.surface
+        if (su != null) {
+            surface = gl.createBuffer()
+            gl.bindBuffer(GL.ARRAY_BUFFER, surface); gl.bufferData(GL.ARRAY_BUFFER, su, 0, su.size, GL.STATIC_DRAW)
+            for (i in 9..10) { gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i, 4, GL.FLOAT, false, 4 * SURFACE_FLOATS, 16 * (i - 9)) }
+        }
         gl.bindVertexArray(0)
-        return MeshGpu(array, vertices, effects).also { meshes[m] = it }
+        return MeshGpu(array, vertices, effects, surface).also { meshes[m] = it }
     }
 
     private fun free(g: MeshGpu) {
         gl.deleteVertexArray(g.array); gl.deleteBuffer(g.vertices)
         if (g.effects != 0) gl.deleteBuffer(g.effects)
+        if (g.surface != 0) gl.deleteBuffer(g.surface)
     }
 
     override fun forget() {
@@ -429,17 +486,21 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         gl.bindBuffer(GL.UNIFORM_BUFFER, pushBlock); gl.bufferSubData(GL.UNIFORM_BUFFER, 0, p, 0, 32)
     }
 
-    /** Draws every copy of a batch in one call: its mesh's vertex array, the instance rows from where the batch's start. */
-    private fun draw(b: Batch) {
+    /**
+     * Draws every copy of a batch in one call: its mesh's vertex array, the instance rows from where the batch's start;
+     * or only its copy [one] (blended copies are drawn one by one, in order).
+     */
+    private fun draw(b: Batch, one: Int = -1) {
         val m = b.mesh
         var g = b.gpu as MeshGpu?
         if (g == null) { g = meshes[m]!!; b.gpu = g }
         gl.bindVertexArray(g.array)
         // No base instance in WebGL 2: the rows' place in the instance buffer (bound) is given with the attributes.
-        gl.vertexAttribPointer(3, 4, GL.FLOAT, false, 48, b.start)
-        gl.vertexAttribPointer(4, 4, GL.FLOAT, false, 48, b.start + 16)
-        gl.vertexAttribPointer(5, 4, GL.FLOAT, false, 48, b.start + 32)
-        gl.drawArraysInstanced(GL.TRIANGLES, 0, m.vertices.size / 9, b.count)
+        val start = b.start + (if (one < 0) 0 else 48 * one)
+        gl.vertexAttribPointer(3, 4, GL.FLOAT, false, 48, start)
+        gl.vertexAttribPointer(4, 4, GL.FLOAT, false, 48, start + 16)
+        gl.vertexAttribPointer(5, 4, GL.FLOAT, false, 48, start + 32)
+        gl.drawArraysInstanced(GL.TRIANGLES, 0, m.vertices.size / 9, if (one < 0) b.count else 1)
     }
 
     private fun blend(on: Boolean, premultiplied: Boolean = false) {
@@ -476,7 +537,11 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         syncTextures(waitForTextures || capture != null)
         val main = lighting.mainLight()
         batches.schedule(shadowSize > 1 && lighting.shadows && focus != null, lighting, focus, main, shadowSize)
+        // The lamps the shaders get (their grid when there are many), those that cast shadows, then the copies.
+        batches.lights(extras, viewProjection, eye, lighting.fogEnd, width, height, shadowSize > 1 && lighting.shadows)
         batches.gather(nodes, hidden, viewProjection, eye, lighting.fogEnd, main)
+        extras?.sortParticles = batches.blendedCount > 0
+        val lampStatic = batches.lampStatic; val lampLive = batches.lampLive; val lampDirect = batches.lampDirect
         if (hud !== hudSent) {
             gl.bindBuffer(GL.ARRAY_BUFFER, hudBuffer); gl.bufferData(GL.ARRAY_BUFFER, hud.vertices, 0, hud.vertices.size, GL.DYNAMIC_DRAW)
             hudSent = hud
@@ -488,19 +553,29 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         val lineVertices = extras?.lineVertexCount ?: 0
         var total = PARTICLE_FLOATS * particleCount + LINE_FLOATS * lineVertices
         for (list in batches.casters) for (b in list) total += 12 * b.count
+        for (k in lampStatic.indices) {
+            if (lampStatic[k] || lampDirect[k]) for (b in batches.lampCasters[k]) total += 12 * b.count
+            if (lampLive[k] || lampDirect[k]) for (b in batches.lampMovers[k]) total += 12 * b.count
+        }
         for (b in batches.opaque) total += 12 * b.count
         for (b in batches.quiet) total += 12 * b.count
         for (b in batches.skies) total += 12 * b.count
         for (b in batches.shadows) total += 12 * b.count
         for (b in batches.waters) total += 12 * b.count
+        for (b in batches.blended) total += 12 * b.count
         if (total > instances.size) instances = FloatArray(total.takeHighestOneBit() * 2)
         var at = 0
         for (list in batches.casters) for (b in list) at = put(b, at)
+        for (k in lampStatic.indices) {
+            if (lampStatic[k] || lampDirect[k]) for (b in batches.lampCasters[k]) at = put(b, at)
+            if (lampLive[k] || lampDirect[k]) for (b in batches.lampMovers[k]) at = put(b, at)
+        }
         for (b in batches.opaque) at = put(b, at)
         for (b in batches.quiet) at = put(b, at)
         for (b in batches.skies) at = put(b, at)
         for (b in batches.shadows) at = put(b, at)
         for (b in batches.waters) at = put(b, at)
+        for (b in batches.blended) at = put(b, at)
         val particleStart = 4 * at
         if (particleCount > 0) extras!!.particles.copyInto(instances, at, 0, PARTICLE_FLOATS * particleCount)
         val lineStart = particleStart + 4 * PARTICLE_FLOATS * particleCount
@@ -537,6 +612,49 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
                 gl.disable(GL.POLYGON_OFFSET_FILL)
             }
         }
+        // The lamps' cube faces (RenderBatches.lights), each through its own view from its lamp: the caches whose still
+        // casters changed, then the faces the shaders read, copied from their caches with the moving casters over them.
+        gl.activeTexture(GL.TEXTURE0 + 2); gl.bindTexture(GL.TEXTURE_2D_ARRAY, 0)
+        fun drawLampCasters(casters: ArrayList<Batch>, k: Int) {
+            if (casters.isEmpty()) return
+            gl.viewport(0, 0, lampSize, lampSize)
+            gl.enable(GL.POLYGON_OFFSET_FILL); gl.polygonOffset(2f, 1.5f)
+            gl.useProgram(lampShadow)
+            push(batches.lampFace(k), eye, time, 0, null)
+            var cut = false
+            for (b in casters) if (b.mesh.cutOut) cut = true else draw(b)
+            if (cut) {
+                gl.useProgram(lampShadowCut)
+                for (b in casters) if (b.mesh.cutOut) draw(b)
+            }
+            gl.disable(GL.POLYGON_OFFSET_FILL)
+        }
+        for (k in lampDirect.indices) {
+            if (!lampDirect[k]) continue                                   // its lamp moved: drawn whole, no cache
+            gl.bindFramebuffer(GL.FRAMEBUFFER, lampFramebuffers[k])
+            gl.viewport(0, 0, lampSize, lampSize)
+            gl.clearDepth(1f); gl.clear(GL.DEPTH_BUFFER_BIT)
+            drawLampCasters(batches.lampCasters[k], k); drawLampCasters(batches.lampMovers[k], k)
+        }
+        for (k in lampStatic.indices) {
+            if (!lampStatic[k]) continue
+            gl.bindFramebuffer(GL.FRAMEBUFFER, lampCacheFramebuffers[k])
+            gl.viewport(0, 0, lampSize, lampSize)
+            gl.clearDepth(1f); gl.clear(GL.DEPTH_BUFFER_BIT)
+            drawLampCasters(batches.lampCasters[k], k)
+        }
+        for (k in lampLive.indices) {
+            if (!lampLive[k]) continue
+            gl.bindFramebuffer(GL.READ_FRAMEBUFFER, lampCacheFramebuffers[k]); gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, lampFramebuffers[k])
+            gl.blitFramebuffer(0, 0, lampSize, lampSize, 0, 0, lampSize, lampSize, GL.DEPTH_BUFFER_BIT, GL.NEAREST)
+            gl.bindFramebuffer(GL.FRAMEBUFFER, lampFramebuffers[k])
+            drawLampCasters(batches.lampMovers[k], k)
+        }
+        gl.bindTexture(GL.TEXTURE_2D_ARRAY, lampMap)
+        // The light grid of this frame, when the shaders use it.
+        gl.activeTexture(GL.TEXTURE0 + 3); gl.bindTexture(GL.TEXTURE_2D, lightGrid)
+        if (batches.gridOn) gl.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, GRID_WIDTH, GRID_Z, GL.RGBA, GL.UNSIGNED_BYTE, batches.grid, 0)
+        gl.activeTexture(GL.TEXTURE0)
         gl.bindTexture(GL.TEXTURE_2D_ARRAY, shadowMap)
 
         // The scene in linear light; the finest square in the push block (its w > 0 says shadows are on), all of
@@ -562,13 +680,26 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
             gl.useProgram(ombre); depth(true, false); blend(true)
             for (b in batches.shadows) draw(b)
         }
-        if (particleCount > 0) {
+        // What is blended, farthest first: the particles (sorted already) and the blended copies among them.
+        var drawnParticles = 0
+        fun particlesTo(end: Int) {
+            if (end <= drawnParticles) return
             gl.useProgram(particles); depth(true, false); blend(true, premultiplied = true)
             gl.bindVertexArray(particleArray)
-            gl.vertexAttribPointer(0, 4, GL.FLOAT, false, 4 * PARTICLE_FLOATS, particleStart)
-            gl.vertexAttribPointer(1, 4, GL.FLOAT, false, 4 * PARTICLE_FLOATS, particleStart + 16)
-            gl.drawArraysInstanced(GL.TRIANGLES, 0, 6, particleCount)
+            gl.vertexAttribPointer(0, 4, GL.FLOAT, false, 4 * PARTICLE_FLOATS, particleStart + 4 * PARTICLE_FLOATS * drawnParticles)
+            gl.vertexAttribPointer(1, 4, GL.FLOAT, false, 4 * PARTICLE_FLOATS, particleStart + 4 * PARTICLE_FLOATS * drawnParticles + 16)
+            gl.drawArraysInstanced(GL.TRIANGLES, 0, 6, end - drawnParticles)
+            drawnParticles = end
         }
+        for (i in 0 until batches.blendedCount) {
+            val d = batches.blendedDistanceAt(i)
+            var end = drawnParticles
+            while (end < particleCount && particleDistance(extras!!, end, eye) > d) end++
+            particlesTo(end)
+            gl.useProgram(toon); depth(true, false); blend(true, premultiplied = true)
+            draw(batches.blendedBatchAt(i), batches.blendedIndexAt(i))
+        }
+        particlesTo(particleCount)
         // Debug lines: faint through the scenery first, then plain where they are seen; red, green and blue only.
         if (lineVertices > 0) {
             gl.bindVertexArray(lineArray)
@@ -635,6 +766,9 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
         meshes.clear()
         destroyTargets()
         gl.deleteTexture(shadowMap); for (f in shadowFramebuffers) gl.deleteFramebuffer(f)
+        gl.deleteTexture(lampMap); for (f in lampFramebuffers) gl.deleteFramebuffer(f)
+        gl.deleteTexture(lampCache); for (f in lampCacheFramebuffers) gl.deleteFramebuffer(f)
+        gl.deleteTexture(lightGrid)
         if (textures != 0) gl.deleteTexture(textures)
         if (atlas != 0) gl.deleteTexture(atlas)
         for (b in intArrayOf(instanceBuffer, hudBuffer, frameBlock, pushBlock, postBlock, hudBlock)) gl.deleteBuffer(b)
@@ -645,5 +779,7 @@ internal class GlRenderer(private val gl: Gl, width: Int, height: Int, shadows: 
     private companion object {
         val UNIT0 = arrayOf("shadowMap", "source", "smaller", "scene", "atlas")
         val UNIT1 = arrayOf("detailMaps", "level", "bloom")
+        val UNIT2 = arrayOf("lampShadows")
+        val UNIT3 = arrayOf("lightGrid")
     }
 }

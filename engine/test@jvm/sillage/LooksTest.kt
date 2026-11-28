@@ -154,11 +154,15 @@ class LooksTest {
         s.light(at = vec(0, 1, 1), radius = 6, onlyAtNight = true)
         s.lighting.time = 12f
         var x = s.frameExtras(vec(0, 1, 0))
-        assertEquals(MAX_LIGHTS, x.lightCount)
-        assertEquals(0f, x.lights[0]); assertEquals(2f, x.lights[8]); assertEquals(30f, x.lights[8 * 15])
+        // Toutes les lampes allumées (128 au plus), la plus proche d'abord ; celle du soir est éteinte de jour.
+        assertEquals(20, x.lightCount)
+        assertEquals(0f, x.lights[0]); assertEquals(2f, x.lights[8]); assertEquals(30f, x.lights[8 * 15]); assertEquals(38f, x.lights[8 * 19])
         s.lighting.time = 23f
         x = s.frameExtras(vec(0, 1, 0))
-        assertEquals(1f, x.lights[2], "la nuit, la lampe du soir est la plus proche"); assertEquals(MAX_LIGHTS, x.lightCount)
+        assertEquals(1f, x.lights[2], "la nuit, la lampe du soir est la plus proche"); assertEquals(21, x.lightCount)
+        repeat(200) { s.light(at = vec(100 + it, 1, 0), radius = 3) }
+        assertEquals(MAX_LIGHTS, s.frameExtras(vec(0, 1, 0)).lightCount, "au plus $MAX_LIGHTS, les plus proches")
+        repeat(200) { s.removeLight(s.lights.last()) }
         val box = s.box(1, at = vec(5, 0, 5)); box.light(offset = vec(0, 2, 0), radius = 50)
         box.position = vec(7, 0, 5)
         x = s.frameExtras(vec(0, 1, 0))

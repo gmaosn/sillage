@@ -114,6 +114,22 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var shadowLayerViews=LongArray(0)
     private var shadowPipeline=0L
     private var shadowPipelineCut=0L          // the same with shadow.frag: only for meshes cut out by an image's alpha
+    // The lamps' shadow cubes: one depth image, six layers per lamp (a face each), drawn by lamp_shadow.vert.
+    private var lampSize=1
+    private var lampMap: Image?=null           // the faces the shaders read
+    private var lampLayerViews=LongArray(0)
+    private var lampFramebuffers=LongArray(0)
+    // Each face's cache: what stands still around its lamp, copied into the face read before the moving things are drawn over it.
+    private var lampCache: Image?=null
+    private var lampCacheViews=LongArray(0)
+    private var lampCacheFramebuffers=LongArray(0)
+    private var lampCacheLayouts=IntArray(0)   // the layout each cache layer was left in
+    private var lampLivePass=0L                // draws over a face copied from its cache (loaded, not cleared)
+    private var lampPipeline=0L
+    private var lampPipelineCut=0L
+    // The light grid (RenderBatches.grid), sent through a staging buffer of the frame when the frame uses it.
+    private var gridImage: Image?=null
+    private var pipelineBlended=0L             // blended surfaces: premultiplied over what is behind, depth kept
     private var sampler=0L                     // compares depths in the shadow map
     private var repeat=0L                      // reads the detail textures: repeating, filtered between levels
     // Detail textures (Texture): one layer each, every level, in one array image; made again when new textures appear.
@@ -130,6 +146,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         var hud: Buffer?=null; var hudSent: HudMesh?=null
         var instances: Buffer?=null; var mapped: MemorySegment=MemorySegment.NULL
         var uniform: Buffer?=null; var uniformMapped: MemorySegment=MemorySegment.NULL; var set=0L
+        var grid: Buffer?=null; var gridMapped: MemorySegment=MemorySegment.NULL
         var timed=false
     }
     private val frames=ArrayList<Frame>()
@@ -142,12 +159,17 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private var presents=0L                    // presents numbered so far on this swapchain (VkPresentIdKHR)
     private var pret=false                     // this frame's fence waited and its swapchain image acquired (attendre)
     private var image=-1
-    private var queries=0L                     // two timestamps per frame in flight
+    private var queries=0L                     // three timestamps per frame in flight: start, after the shadow maps, end
     private var timestampBits=0
     private var timestampPeriod=0f
     /** GPU time of the last finished frame in milliseconds (0 if the GPU cannot time its work). */
     var gpuMs=0.0
         private set
+    /** Of which the shadow maps: the sun's cascades and the lamps' cubes. */
+    var shadowMs=0.0
+        private set
+    private val traceLamps=System.getenv("SILLAGE_LAMPES")!=null
+    private var timedFrames=0L
     private var messenger=0L
     var erreursValidation=0
         private set
@@ -163,6 +185,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private val upFramebuffers=LongArray(BLOOM_LEVELS-1)
     private val meshes=IdentityHashMap<Mesh,Buffer>()
     private val effectBuffers=IdentityHashMap<Mesh,Buffer>()   // per-vertex light and sway, for the meshes that have them
+    private val surfaceBuffers=IdentityHashMap<Mesh,Buffer>()  // a model's material maps per vertex, for the meshes that have them
     // Meshes whose vertices change every frame (skinned parts): a buffer per frame in flight, sent again when their version moved.
     private class Dynamic(val buffers: Array<Buffer>, val versions: IntArray)
     private val dynamicMeshes=IdentityHashMap<Mesh,Dynamic>()
@@ -196,10 +219,11 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                     dev.createSemaphore(s.struct(VkSemaphoreCreateInfo),out); val acquired=out.get(JAVA_LONG,0)
                     frames.add(Frame(cmd.getAtIndex(ADDRESS,f.toLong()),fence,acquired).also {
                         it.hud=buffer(4L*1024*1024,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); growInstances(it,16*1024)
-                        val u=buffer(FRAME_BYTES.toLong(),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT); it.uniform=u; it.uniformMapped=map(u) })
+                        val u=buffer(FRAME_BYTES.toLong(),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT); it.uniform=u; it.uniformMapped=map(u)
+                        val g=buffer(GRID_BYTES.toLong(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT); it.grid=g; it.gridMapped=map(g) })
                 }
                 if(timestampBits>0 && timestampPeriod>0f) {
-                    dev.createQueryPool(s.struct(VkQueryPoolCreateInfo, "queryType" to VK_QUERY_TYPE_TIMESTAMP, "queryCount" to 2*FRAMES),out)
+                    dev.createQueryPool(s.struct(VkQueryPoolCreateInfo, "queryType" to VK_QUERY_TYPE_TIMESTAMP, "queryCount" to 3*FRAMES),out)
                     queries=out.get(JAVA_LONG,0)
                 }
             }
@@ -293,7 +317,8 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) { "This GPU ($nomGpu) cannot draw into 16-bit float pictures (R16G16B16A16_SFLOAT), which the engine's light needs" }
         quality=RenderQuality.choose(nomGpu)
         echantillons=minOf(echantillons,quality.samples)
-        if(shadowSize>1) shadowSize=quality.shadowTexels
+        if(shadowSize>1) { shadowSize=quality.shadowTexels; lampSize=quality.lampTexels }
+        lots.lampShadows(if(shadowSize>1) quality.lampShadows else 0,lampSize)
         val mp=s.struct(VkPhysicalDeviceMemoryProperties); vk.getPhysicalDeviceMemoryProperties(physical,mp)
         memoryFlags=IntArray(mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypeCount")) {
             mp.u32(VkPhysicalDeviceMemoryProperties,"memoryTypes[$it].propertyFlags") }
@@ -495,6 +520,71 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             "addressModeV" to VK_SAMPLER_ADDRESS_MODE_REPEAT, "addressModeW" to VK_SAMPLER_ADDRESS_MODE_REPEAT,
             "maxAnisotropy" to 1f, "maxLod" to 16f, "borderColor" to VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE),p)
         repeat=p.get(JAVA_LONG,0)
+        // The lamps' cubes: six layers per lamp that may have one, a view and a framebuffer per layer (the shadow map's pass).
+        val lampLayers=6*maxOf(1,if(lampSize>1) quality.lampShadows else 1)
+        val cubes=image(VK_FORMAT_D16_UNORM,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT or VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,
+            1,lampSize,lampSize,lampLayers)
+        lampMap=cubes
+        // Readable from the start (a layer is drawn before any shader reads it, but the descriptor covers them all).
+        readable(cubes.image,VK_IMAGE_ASPECT_DEPTH_BIT,lampLayers)
+        lampLayerViews=LongArray(lampLayers) { c ->
+            dev.createImageView(s.struct(VkImageViewCreateInfo, "image" to cubes.image, "viewType" to VK_IMAGE_VIEW_TYPE_2D, "format" to VK_FORMAT_D16_UNORM,
+                "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "subresourceRange.levelCount" to 1,
+                "subresourceRange.baseArrayLayer" to c, "subresourceRange.layerCount" to 1),p)
+            p.get(JAVA_LONG,0)
+        }
+        lampFramebuffers=LongArray(lampLayers) { c ->
+            dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to shadowPass, "attachmentCount" to 1,
+                "pAttachments" to s.longs(lampLayerViews[c]), "width" to lampSize, "height" to lampSize, "layers" to 1),p)
+            p.get(JAVA_LONG,0)
+        }
+        val cache=image(VK_FORMAT_D16_UNORM,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_DEPTH_BIT,
+            1,lampSize,lampSize,lampLayers)
+        lampCache=cache
+        lampCacheLayouts=IntArray(lampLayers) { VK_IMAGE_LAYOUT_UNDEFINED }
+        lampCacheViews=LongArray(lampLayers) { c ->
+            dev.createImageView(s.struct(VkImageViewCreateInfo, "image" to cache.image, "viewType" to VK_IMAGE_VIEW_TYPE_2D, "format" to VK_FORMAT_D16_UNORM,
+                "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "subresourceRange.levelCount" to 1,
+                "subresourceRange.baseArrayLayer" to c, "subresourceRange.layerCount" to 1),p)
+            p.get(JAVA_LONG,0)
+        }
+        lampCacheFramebuffers=LongArray(lampLayers) { c ->
+            dev.createFramebuffer(s.struct(VkFramebufferCreateInfo, "renderPass" to shadowPass, "attachmentCount" to 1,
+                "pAttachments" to s.longs(lampCacheViews[c]), "width" to lampSize, "height" to lampSize, "layers" to 1),p)
+            p.get(JAVA_LONG,0)
+        }
+        // The pass that draws the moving things over a face just copied from its cache: loaded, then left for the shaders.
+        val la=s.structs(VkAttachmentDescription,1)
+        la.at(VkAttachmentDescription,0).put(VkAttachmentDescription, "format" to VK_FORMAT_D16_UNORM, "samples" to VK_SAMPLE_COUNT_1_BIT,
+            "loadOp" to VK_ATTACHMENT_LOAD_OP_LOAD, "storeOp" to VK_ATTACHMENT_STORE_OP_STORE,
+            "stencilLoadOp" to VK_ATTACHMENT_LOAD_OP_DONT_CARE, "stencilStoreOp" to VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            "initialLayout" to VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, "finalLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        val ld=s.structs(VkSubpassDependency,2)
+        dependency(ld,0,VK_SUBPASS_EXTERNAL,0,VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT or VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT or VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+        dependency(ld,1,0,VK_SUBPASS_EXTERNAL,VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT)
+        lampLivePass=renderPass(s,la,1,false,0,-1,ld)
+        // The light grid: four RGBA texels per cluster, a row per slice of distance.
+        val grid=image(VK_FORMAT_R8G8B8A8_UNORM,VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT,1,GRID_WIDTH,GRID_Z)
+        gridImage=grid
+        readable(grid.image,VK_IMAGE_ASPECT_COLOR_BIT,1)
+    }
+
+    /** An image's [layers] made readable by the shaders at once (their contents undefined until drawn or copied). */
+    private fun readable(image: Long, aspect: Int, layers: Int) = stack.frame { s ->
+        val cmd=uploads
+        dev.resetCommandBuffer(cmd,0)
+        dev.beginCommandBuffer(cmd,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+        val b=s.struct(VkImageMemoryBarrier, "oldLayout" to VK_IMAGE_LAYOUT_UNDEFINED, "newLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            "srcAccessMask" to 0, "dstAccessMask" to VK_ACCESS_SHADER_READ_BIT,
+            "srcQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "dstQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "image" to image,
+            "subresourceRange.aspectMask" to aspect, "subresourceRange.levelCount" to 1, "subresourceRange.layerCount" to layers)
+        dev.cmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,MemorySegment.NULL,0,MemorySegment.NULL,1,b)
+        dev.endCommandBuffer(cmd)
+        dev.queueSubmit(queue,1,s.struct(VkSubmitInfo, "commandBufferCount" to 1, "pCommandBuffers" to s.pointers(cmd)),0L)
+        dev.queueWaitIdle(queue)
     }
 
     /**
@@ -503,15 +593,16 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
      */
     private fun createDescriptors() = stack.frame { s ->
         val p=s.allocate(JAVA_LONG)
-        var b=s.structs(VkDescriptorSetLayoutBinding,3)
+        var b=s.structs(VkDescriptorSetLayoutBinding,5)
         b.at(VkDescriptorSetLayoutBinding,0).put(VkDescriptorSetLayoutBinding, "binding" to 0,
             "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 1, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT)
         b.at(VkDescriptorSetLayoutBinding,1).put(VkDescriptorSetLayoutBinding, "binding" to 1,
             "descriptorType" to VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, "descriptorCount" to 1,
             "stageFlags" to (VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT))
-        b.at(VkDescriptorSetLayoutBinding,2).put(VkDescriptorSetLayoutBinding, "binding" to 2,
+        // 2: the detail textures, 3: the lamps' shadow cubes, 4: the light grid.
+        for(k in 2..4) b.at(VkDescriptorSetLayoutBinding,k).put(VkDescriptorSetLayoutBinding, "binding" to k,
             "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 1, "stageFlags" to VK_SHADER_STAGE_FRAGMENT_BIT)
-        dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 3, "pBindings" to b),p)
+        dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 5, "pBindings" to b),p)
         setLayout=p.get(JAVA_LONG,0)
         b=s.structs(VkDescriptorSetLayoutBinding,2)
         for(i in 0..1) b.at(VkDescriptorSetLayoutBinding,i).put(VkDescriptorSetLayoutBinding, "binding" to i,
@@ -519,7 +610,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         dev.createDescriptorSetLayout(s.struct(VkDescriptorSetLayoutCreateInfo, "bindingCount" to 2, "pBindings" to b),p)
         postSetLayout=p.get(JAVA_LONG,0)
         val sizes=s.structs(VkDescriptorPoolSize,2)
-        sizes.at(VkDescriptorPoolSize,0).put(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 2*FRAMES+4*BLOOM_LEVELS)
+        sizes.at(VkDescriptorPoolSize,0).put(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "descriptorCount" to 4*FRAMES+4*BLOOM_LEVELS)
         sizes.at(VkDescriptorPoolSize,1).put(VkDescriptorPoolSize, "type" to VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, "descriptorCount" to FRAMES)
         dev.createDescriptorPool(s.struct(VkDescriptorPoolCreateInfo, "maxSets" to FRAMES+2*BLOOM_LEVELS, "poolSizeCount" to 2, "pPoolSizes" to sizes),p)
         descriptorPool=p.get(JAVA_LONG,0)
@@ -528,14 +619,20 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             "descriptorSetCount" to FRAMES, "pSetLayouts" to s.longs(*LongArray(FRAMES) { setLayout })),sets)
         for((i,f) in frames.withIndex()) {
             f.set=sets.getAtIndex(JAVA_LONG,i.toLong())
-            val w=s.structs(VkWriteDescriptorSet,2)
+            val w=s.structs(VkWriteDescriptorSet,4)
             w.at(VkWriteDescriptorSet,0).put(VkWriteDescriptorSet, "dstSet" to f.set, "dstBinding" to 0, "descriptorCount" to 1,
                 "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "pImageInfo" to s.struct(VkDescriptorImageInfo,
                     "sampler" to sampler, "imageView" to shadowMap!!.view, "imageLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
             w.at(VkWriteDescriptorSet,1).put(VkWriteDescriptorSet, "dstSet" to f.set, "dstBinding" to 1, "descriptorCount" to 1,
                 "descriptorType" to VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, "pBufferInfo" to s.struct(VkDescriptorBufferInfo,
                     "buffer" to f.uniform!!.buffer, "offset" to 0L, "range" to FRAME_BYTES.toLong()))
-            dev.updateDescriptorSets(2,w)
+            w.at(VkWriteDescriptorSet,2).put(VkWriteDescriptorSet, "dstSet" to f.set, "dstBinding" to 3, "descriptorCount" to 1,
+                "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "pImageInfo" to s.struct(VkDescriptorImageInfo,
+                    "sampler" to sampler, "imageView" to lampMap!!.view, "imageLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+            w.at(VkWriteDescriptorSet,3).put(VkWriteDescriptorSet, "dstSet" to f.set, "dstBinding" to 4, "descriptorCount" to 1,
+                "descriptorType" to VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, "pImageInfo" to s.struct(VkDescriptorImageInfo,
+                    "sampler" to linear, "imageView" to gridImage!!.view, "imageLayout" to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+            dev.updateDescriptorSets(4,w)
         }
         dev.allocateDescriptorSets(s.struct(VkDescriptorSetAllocateInfo, "descriptorPool" to descriptorPool,
             "descriptorSetCount" to 2*BLOOM_LEVELS, "pSetLayouts" to s.longs(*LongArray(2*BLOOM_LEVELS) { postSetLayout })),sets)
@@ -718,22 +815,26 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
      * matrix per copy as three rows, binding 2 per vertex its own light and sway, its texture ([Mesh.effects], or zeros).
      */
     private fun sceneInput(s: NativeStack, shadow: Boolean): MemorySegment {
-        val bindings=s.structs(VkVertexInputBindingDescription,3)
+        val count=if(shadow) 3 else 4
+        val bindings=s.structs(VkVertexInputBindingDescription,count)
         bindings.at(VkVertexInputBindingDescription,0).put(VkVertexInputBindingDescription, "binding" to 0, "stride" to 36, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
         bindings.at(VkVertexInputBindingDescription,1).put(VkVertexInputBindingDescription, "binding" to 1, "stride" to 48, "inputRate" to VK_VERTEX_INPUT_RATE_INSTANCE)
         bindings.at(VkVertexInputBindingDescription,2).put(VkVertexInputBindingDescription, "binding" to 2, "stride" to 4*EFFECT_FLOATS, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
-        val locations=if(shadow) intArrayOf(0,3,4,5,6,7,8) else intArrayOf(0,1,2,3,4,5,6,7,8)
+        // Binding 3: a model's material maps per vertex ([Mesh.surface], or the zeros).
+        if(!shadow) bindings.at(VkVertexInputBindingDescription,3).put(VkVertexInputBindingDescription, "binding" to 3, "stride" to 4*SURFACE_FLOATS, "inputRate" to VK_VERTEX_INPUT_RATE_VERTEX)
+        val locations=if(shadow) intArrayOf(0,3,4,5,6,7,8) else intArrayOf(0,1,2,3,4,5,6,7,8,9,10)
         val attrs=s.structs(VkVertexInputAttributeDescription,locations.size)
         for((k,loc) in locations.withIndex()) {
             val (binding,format,offset)=when(loc) {
                 in 0..2 -> Triple(0,VK_FORMAT_R32G32B32_SFLOAT,loc*12)
                 in 3..5 -> Triple(1,VK_FORMAT_R32G32B32A32_SFLOAT,(loc-3)*16)
-                else -> Triple(2,VK_FORMAT_R32G32B32A32_SFLOAT,(loc-6)*16)
+                in 6..8 -> Triple(2,VK_FORMAT_R32G32B32A32_SFLOAT,(loc-6)*16)
+                else -> Triple(3,VK_FORMAT_R32G32B32A32_SFLOAT,(loc-9)*16)
             }
             attrs.at(VkVertexInputAttributeDescription,k).put(VkVertexInputAttributeDescription,
                 "binding" to binding, "location" to loc, "format" to format, "offset" to offset)
         }
-        return s.struct(VkPipelineVertexInputStateCreateInfo, "vertexBindingDescriptionCount" to 3, "pVertexBindingDescriptions" to bindings,
+        return s.struct(VkPipelineVertexInputStateCreateInfo, "vertexBindingDescriptionCount" to count, "pVertexBindingDescriptions" to bindings,
             "vertexAttributeDescriptionCount" to locations.size, "pVertexAttributeDescriptions" to attrs)
     }
 
@@ -831,6 +932,9 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 topology=VK_PRIMITIVE_TOPOLOGY_LINE_LIST,keepAlpha=true)
             shadowPipeline=make(s,m("shadow.vert"),null,sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
             shadowPipelineCut=make(s,m("shadow.vert"),m("shadow.frag"),sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
+            lampPipeline=make(s,m("lamp_shadow.vert"),null,sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
+            lampPipelineCut=make(s,m("lamp_shadow.vert"),m("shadow.frag"),sceneInput(s,true),shadowPass,VK_SAMPLE_COUNT_1_BIT,layout,true,true,null,bias=true)
+            pipelineBlended=make(s,m("toon.vert"),m("toon.frag"),scene,renderPass,n,layout,true,false,BLEND_PREMULTIPLIED)
             pipelineBright=make(s,m("post.vert"),m("bright.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineDown=make(s,m("post.vert"),m("down.frag"),none,postPass,1,postLayout,false,false,null)
             pipelineUp=make(s,m("post.vert"),m("up.frag"),none,postPass,1,postLayout,false,false,null)
@@ -901,8 +1005,9 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         dev.deviceWaitIdle()
         meshes.values.forEach { destroy(it) }; meshes.clear()
         effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
+        surfaceBuffers.values.forEach { destroy(it) }; surfaceBuffers.clear()
         dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
-        lots.forget()                // what meshes remember of this renderer is forgotten with it; the next scene draws every shadow map at its first frame
+        lots.forget()             // what meshes remember of this renderer is forgotten with it; the next scene draws every shadow map at its first frame
         for(f in frames) f.hudSent=null
     }
 
@@ -931,7 +1036,10 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
     private fun effects(m: Mesh) {
         val e=m.effects
         if(e!=null) { val eb=buffer(e.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(eb,e); effectBuffers[m]=eb }
-        else if(m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
+        val su=m.surface
+        if(su!=null) { val sb=buffer(su.size.toLong()*4,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); upload(sb,su); surfaceBuffers[m]=sb }
+        // The zeros stand for the effects or the surface of a mesh without them (the effects' stride is the longer).
+        if((e==null || su==null) && m.vertices.size/9*4L*EFFECT_FLOATS>zero!!.size) growZero(m.vertices.size/9)
     }
 
     /** A mesh goes to the GPU the first time it is drawn; one whose vertices change, again when its version moved (in this frame's buffer). */
@@ -1003,11 +1111,15 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val f=frames[frameIndex]
         val fenceRef=s.longs(f.fence)
         if(f.timed) {
-            val t=s.allocate(JAVA_LONG,2)
-            if(dev.getQueryPoolResults(queries,2*frameIndex,2,16,t,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS) {
-                var ticks=t.getAtIndex(JAVA_LONG,1)-t.getAtIndex(JAVA_LONG,0)
-                if(timestampBits<64) ticks=ticks and ((1L shl timestampBits)-1)
-                gpuMs=ticks*timestampPeriod/1e6
+            val t=s.allocate(JAVA_LONG,3)
+            if(dev.getQueryPoolResults(queries,3*frameIndex,3,24,t,8,VK_QUERY_RESULT_64_BIT)==VK_SUCCESS) {
+                fun ms(a: Int, b: Int): Double {
+                    var ticks=t.getAtIndex(JAVA_LONG,b.toLong())-t.getAtIndex(JAVA_LONG,a.toLong())
+                    if(timestampBits<64) ticks=ticks and ((1L shl timestampBits)-1)
+                    return ticks*timestampPeriod/1e6
+                }
+                gpuMs=ms(0,2); shadowMs=ms(0,1)
+                if(traceLamps && timedFrames++%30==0L) println("SILLAGE_LAMPES gpu %.2f ms, of which the shadow maps (sun and lamps) %.2f ms".format(gpuMs,shadowMs))
             }
         }
         val index=image
@@ -1018,8 +1130,12 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val squares=lots.squares; val cascadeNow=lots.cascadeNow
         val range=squares[3]
         val centre=Vec3(squares[0],squares[1],squares[2])
+        // The lamps the shaders get (their grid when there are many), those that cast shadows, then the copies.
+        lots.lights(extras,camera,oeil,lighting.fogEnd,largeur,hauteur,shadowSize>1 && lighting.shadows)
         lots.gather(objets,hidden,camera,oeil,lighting.fogEnd,main)
         val casters=lots.casters; val opaque=lots.opaque; val quiet=lots.quiet; val skies=lots.skies; val shadows=lots.shadows; val waters=lots.waters
+        val blended=lots.blended; val lampCasters=lots.lampCasters
+        extras?.sortParticles=lots.blendedCount>0
         if(hud!==f.hudSent) { hudGpu.send(f,hud); f.hudSent=hud }
         hudGpu.prepare(hud.atlas)
         // Instance rows of every batch, side by side, then the particles.
@@ -1027,21 +1143,32 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
         val lineVertices=extras?.lineVertexCount ?: 0
         var total=PARTICLE_FLOATS*particleCount+LINE_FLOATS*lineVertices
         for(list in casters) for(b in list) total+=12*b.count
+        for(k in lampCasters.indices) {
+            if(lots.lampStatic[k] || lots.lampDirect[k]) for(b in lampCasters[k]) total+=12*b.count
+            if(lots.lampLive[k] || lots.lampDirect[k]) for(b in lots.lampMovers[k]) total+=12*b.count
+        }
         for(b in opaque) total+=12*b.count
         for(b in quiet) total+=12*b.count
         for(b in skies) total+=12*b.count
         for(b in shadows) total+=12*b.count
         for(b in waters) total+=12*b.count
+        for(b in blended) total+=12*b.count
         if(total*4L>f.instances!!.size) growInstances(f,Integer.highestOneBit(total)*2)
         val mapped=f.mapped
         var at=0L
         fun put(b: Batch) { b.start=at.toInt(); MemorySegment.copy(b.rows,0,mapped,JAVA_FLOAT,at,12*b.count); at+=48L*b.count }
         for(list in casters) for(b in list) put(b)
+        for(k in lampCasters.indices) {
+            if(lots.lampStatic[k] || lots.lampDirect[k]) for(b in lampCasters[k]) put(b)
+            if(lots.lampLive[k] || lots.lampDirect[k]) for(b in lots.lampMovers[k]) put(b)
+        }
         for(b in opaque) put(b)
         for(b in quiet) put(b)
         for(b in skies) put(b)
         for(b in shadows) put(b)
         for(b in waters) put(b)
+        for(b in blended) put(b)
+        if(lots.gridOn) MemorySegment.copy(lots.grid,0,f.gridMapped,JAVA_BYTE,0L,GRID_BYTES)
         val particleStart=at
         if(particleCount>0) MemorySegment.copy(extras!!.particles,0,mapped,JAVA_FLOAT,at,PARTICLE_FLOATS*particleCount)
         val lineStart=particleStart+4L*PARTICLE_FLOATS*particleCount
@@ -1054,10 +1181,21 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
             dev.resetCommandBuffer(command,0)
             dev.beginCommandBuffer(command,s.struct(VkCommandBufferBeginInfo, "flags" to VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
             if(queries!=0L) {
-                dev.cmdResetQueryPool(command,queries,2*frameIndex,2)
-                dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,2*frameIndex)
+                dev.cmdResetQueryPool(command,queries,3*frameIndex,3)
+                dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,queries,3*frameIndex)
             }
             hudGpu.record(command)
+            // The light grid of this frame, from its staging buffer (after the last frame's reads of it).
+            if(lots.gridOn) {
+                val img=gridImage!!.image
+                barrier(command,img,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,s)
+                val region=s.struct(VkBufferImageCopy, "bufferOffset" to 0L,
+                    "imageExtent.width" to GRID_WIDTH, "imageExtent.height" to GRID_Z, "imageExtent.depth" to 1).subresource("imageSubresource",VkBufferImageCopy)
+                dev.cmdCopyBufferToImage(command,f.grid!!.buffer,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
+                barrier(command,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,s)
+            }
             val constants=s.allocate(JAVA_FLOAT,32)
             var pushSquare=centre; var pushHalf=range
             fun pushConstants(vp: Mat4, water: WaterLook?=null) {
@@ -1075,15 +1213,17 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
                 dev.cmdPushConstants(command,layout,VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT,0,PUSH_BYTES,constants)
             }
-            val handles=s.allocate(JAVA_LONG,3); val offsets=s.allocate(JAVA_LONG,3)
+            val handles=s.allocate(JAVA_LONG,4); val offsets=s.allocate(JAVA_LONG,4)
             handles.setAtIndex(JAVA_LONG,1,f.instances!!.buffer)
-            fun draw(b: Batch) {
+            /** Every copy of a batch, or only its copy [one] (blended copies are drawn one by one, in order). */
+            fun draw(b: Batch, one: Int = -1) {
                 val m=b.mesh
                 handles.setAtIndex(JAVA_LONG,0,(if(m.dynamic) dynamicMeshes[m]!!.buffers[frameIndex] else meshes[m]!!).buffer)
                 handles.setAtIndex(JAVA_LONG,2,(effectBuffers[m] ?: zero!!).buffer)
-                offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start.toLong()); offsets.setAtIndex(JAVA_LONG,2,0L)
-                dev.cmdBindVertexBuffers(command,0,3,handles,offsets)
-                dev.cmdDraw(command,m.vertices.size/9,b.count,0,0)
+                handles.setAtIndex(JAVA_LONG,3,(surfaceBuffers[m] ?: zero!!).buffer)
+                offsets.setAtIndex(JAVA_LONG,0,0L); offsets.setAtIndex(JAVA_LONG,1,b.start.toLong()); offsets.setAtIndex(JAVA_LONG,2,0L); offsets.setAtIndex(JAVA_LONG,3,0L)
+                dev.cmdBindVertexBuffers(command,0,4,handles,offsets)
+                if(one<0) dev.cmdDraw(command,m.vertices.size/9,b.count,0,0) else dev.cmdDraw(command,m.vertices.size/9,1,0,one)
             }
             fun area(w: Int, h: Int) {
                 dev.cmdSetViewport(command,s.struct(VkViewport, "width" to w.toFloat(), "height" to h.toFloat(), "maxDepth" to 1f))
@@ -1112,6 +1252,69 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 }
                 dev.cmdEndRenderPass(command)
             }
+            // The lamps' cube faces (RenderBatches.lights), each through its own view from its lamp: the caches whose still
+            // casters changed, then the faces the shaders read, copied from their caches with the moving casters over them.
+            fun drawLampCasters(list: ArrayList<Batch>, k: Int) {
+                if(list.isEmpty()) return
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,lampPipeline)
+                dev.cmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,sets)
+                area(lampSize,lampSize)
+                pushConstants(lots.lampFace(k))
+                var cut=false
+                for(b in list) if(b.mesh.cutOut) cut=true else draw(b)
+                if(cut) {
+                    dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,lampPipelineCut)
+                    for(b in list) if(b.mesh.cutOut) draw(b)
+                }
+            }
+            fun layer(image: Long, k: Int, old: Int, new: Int, srcAccess: Int, dstAccess: Int, srcStage: Int, dstStage: Int) {
+                val b=s.struct(VkImageMemoryBarrier, "oldLayout" to old, "newLayout" to new, "srcAccessMask" to srcAccess, "dstAccessMask" to dstAccess,
+                    "srcQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "dstQueueFamilyIndex" to VK_QUEUE_FAMILY_IGNORED, "image" to image,
+                    "subresourceRange.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "subresourceRange.levelCount" to 1,
+                    "subresourceRange.baseArrayLayer" to k, "subresourceRange.layerCount" to 1)
+                dev.cmdPipelineBarrier(command,srcStage,dstStage,0,0,MemorySegment.NULL,0,MemorySegment.NULL,1,b)
+            }
+            val lampStatic=lots.lampStatic; val lampLive=lots.lampLive; val lampMovers=lots.lampMovers; val lampDirect=lots.lampDirect
+            for(k in lampDirect.indices) {
+                if(!lampDirect[k]) continue                  // its lamp moved: drawn whole, no cache
+                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampFramebuffers[k],
+                    "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
+                    VK_SUBPASS_CONTENTS_INLINE)
+                drawLampCasters(lampCasters[k],k); drawLampCasters(lampMovers[k],k)
+                dev.cmdEndRenderPass(command)
+            }
+            for(k in lampStatic.indices) {
+                if(!lampStatic[k]) continue
+                dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to shadowPass, "framebuffer" to lampCacheFramebuffers[k],
+                    "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize, "clearValueCount" to 1, "pClearValues" to clearDepth),
+                    VK_SUBPASS_CONTENTS_INLINE)
+                drawLampCasters(lampCasters[k],k)
+                dev.cmdEndRenderPass(command)
+                lampCacheLayouts[k]=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            }
+            for(k in lampLive.indices) {
+                if(!lampLive[k]) continue
+                val cache=lampCache!!.image; val live=lampMap!!.image
+                if(lampCacheLayouts[k]!=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+                    layer(cache,k,lampCacheLayouts[k],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT,
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT or VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT)
+                    lampCacheLayouts[k]=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                }
+                layer(live,k,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,0,VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT)
+                val region=s.struct(VkImageCopy, "srcSubresource.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "srcSubresource.baseArrayLayer" to k,
+                    "srcSubresource.layerCount" to 1, "dstSubresource.aspectMask" to VK_IMAGE_ASPECT_DEPTH_BIT, "dstSubresource.baseArrayLayer" to k,
+                    "dstSubresource.layerCount" to 1, "extent.width" to lampSize, "extent.height" to lampSize, "extent.depth" to 1)
+                dev.cmdCopyImage(command,cache,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,live,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,region)
+                if(lampMovers[k].isNotEmpty()) {
+                    dev.cmdBeginRenderPass(command,s.struct(VkRenderPassBeginInfo, "renderPass" to lampLivePass, "framebuffer" to lampFramebuffers[k],
+                        "renderArea.extent.width" to lampSize, "renderArea.extent.height" to lampSize),VK_SUBPASS_CONTENTS_INLINE)
+                    drawLampCasters(lampMovers[k],k)
+                    dev.cmdEndRenderPass(command)
+                } else layer(live,k,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+            }
+            if(queries!=0L) dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,3*frameIndex+1)
             // The scene: the finest square in the push constants (its w > 0 says shadows are on), all of them in the frame block.
             pushSquare=centre; pushHalf=range
             // The scene in linear light; the clear alpha is "very far" for the ink.
@@ -1141,12 +1344,25 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineOmbre)
                 for(b in shadows) draw(b)
             }
-            if(particleCount>0) {
+            // What is blended, farthest first: the particles (sorted already) and the blended copies among them.
+            var drawnParticles=0
+            fun particlesTo(end: Int) {
+                if(end<=drawnParticles) return
                 dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineParticles)
                 handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,particleStart)
                 dev.cmdBindVertexBuffers(command,0,1,handles.asSlice(16),offsets.asSlice(16))
-                dev.cmdDraw(command,6,particleCount,0,0)
+                dev.cmdDraw(command,6,end-drawnParticles,0,drawnParticles)
+                drawnParticles=end
             }
+            for(i in 0 until lots.blendedCount) {
+                val d=lots.blendedDistanceAt(i)
+                var end=drawnParticles
+                while(end<particleCount && particleDistance(extras!!,end,oeil)>d) end++
+                particlesTo(end)
+                dev.cmdBindPipeline(command,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineBlended)
+                draw(lots.blendedBatchAt(i),lots.blendedIndexAt(i))
+            }
+            particlesTo(particleCount)
             // Debug lines: faint through the scenery first, then plain where they are seen.
             if(lineVertices>0) {
                 handles.setAtIndex(JAVA_LONG,2,f.instances!!.buffer); offsets.setAtIndex(JAVA_LONG,2,lineStart)
@@ -1207,7 +1423,7 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.cmdBlitImage(command,color!!.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,blit,VK_FILTER_NEAREST)
                 barrier(command,img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,VK_ACCESS_TRANSFER_WRITE_BIT,0,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,s)
             }
-            if(queries!=0L) dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,2*frameIndex+1)
+            if(queries!=0L) dev.cmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,queries,3*frameIndex+2)
             dev.endCommandBuffer(command)
             f.timed=queries!=0L
             val submit=s.struct(VkSubmitInfo, "commandBufferCount" to 1, "pCommandBuffers" to s.pointers(command))
@@ -1259,18 +1475,28 @@ internal class VulkanRenderer(private val target: SurfaceSource? = null, private
                 dev.deviceWaitIdle()
                 meshes.values.forEach { destroy(it) }; meshes.clear()
                 effectBuffers.values.forEach { destroy(it) }; effectBuffers.clear()
+                surfaceBuffers.values.forEach { destroy(it) }; surfaceBuffers.clear()
                 dynamicMeshes.values.forEach { d -> d.buffers.forEach { destroy(it) } }; dynamicMeshes.clear()
                 zero?.let { destroy(it) }; zero=null
                 hudGpu.close()
                 for(f in frames) {
                     f.hud?.let { destroy(it) }; f.instances?.let { dev.unmapMemory(it.memory); destroy(it) }
                     f.uniform?.let { dev.unmapMemory(it.memory); destroy(it) }
+                    f.grid?.let { dev.unmapMemory(it.memory); destroy(it) }
                     dev.destroyFence(f.fence); dev.destroySemaphore(f.acquired)
                 }
                 frames.clear()
                 if(queries!=0L) dev.destroyQueryPool(queries)
                 for(p in longArrayOf(pipeline,pipelineSky,pipelineOmbre,pipelineWater,pipelineParticles,pipelineLines,pipelineLinesXray,pipelineHud,pipelineBright,
-                        pipelineDown,pipelineUp,pipelineComposite,shadowPipeline,shadowPipelineCut)) dev.destroyPipeline(p)
+                        pipelineDown,pipelineUp,pipelineComposite,shadowPipeline,shadowPipelineCut,lampPipeline,lampPipelineCut,pipelineBlended)) dev.destroyPipeline(p)
+                for(fb in lampFramebuffers) dev.destroyFramebuffer(fb)
+                for(v in lampLayerViews) dev.destroyImageView(v)
+                lampMap?.let { destroy(it) }; lampMap=null
+                for(fb in lampCacheFramebuffers) dev.destroyFramebuffer(fb)
+                for(v in lampCacheViews) dev.destroyImageView(v)
+                lampCache?.let { destroy(it) }; lampCache=null
+                if(lampLivePass!=0L) dev.destroyRenderPass(lampLivePass)
+                gridImage?.let { destroy(it) }; gridImage=null
                 dev.destroyPipelineLayout(layout); dev.destroyPipelineLayout(postLayout)
                 dev.destroyDescriptorPool(descriptorPool); dev.destroyDescriptorSetLayout(setLayout); dev.destroyDescriptorSetLayout(postSetLayout)
                 dev.destroySampler(sampler); dev.destroySampler(linear); dev.destroySampler(repeat)

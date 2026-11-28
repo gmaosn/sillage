@@ -367,6 +367,12 @@ class Part internal constructor(val node: Int, mesh: Mesh) {
             return made
         }
         internal set(v) { copyMat4(v, m, 0); version++ }
+    // What the renderer last saw of it (its pose's version, its node's place) and for how many frames it has not changed.
+    internal var seenVersion = -1
+    internal var seenPosition: Vec3? = null
+    internal var seenRotation: Quat? = null
+    internal var seenScale = Float.NaN
+    internal var stillFrames = 0
 }
 
 /** The matrix of the 16 coefficients of [a] from [o], column first (as [copyMat4] lays them). */

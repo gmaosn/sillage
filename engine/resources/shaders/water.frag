@@ -26,6 +26,8 @@ float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2))
 void main() {
     float t = pc.eye.w;
     float d = color.r;                                   // distance to the shore (m)
+    // Where a steep solid thing cuts the water (a cliff, a rock, a post): the green is 1 + the distance to it, 0 when none is near.
+    float wall = color.g > 0.5 ? color.g - 1.0 : 1e4;
     vec2 p = world.xz;
     float far = length(world - pc.eye.xyz);
     float reach = max(pc.shallows.w, 0.01);
@@ -36,7 +38,10 @@ void main() {
     // Foam against the shore, swelling and ebbing.
     float swell = 0.5 + 0.5 * sin(t * 1.3 + noise(p * 0.5) * 4.0);
     float lace = noise(p * 2.2 + vec2(t * 0.3, -t * 0.2));
-    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, d + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, min(d, wall) + wobble * 0.12 + (lace - 0.5) * 0.18);
+    // At the foot of a wall the waves break: a wider lace of foam that comes and goes, torn by the noise.
+    float crash = (1.0 - smoothstep(0.2, 0.7 + 0.3 * swell, wall + (lace - 0.5) * 0.4)) * smoothstep(0.38, 0.62, noise(p * 3.1 + vec2(-t * 0.4, t * 0.3)));
+    shore = max(shore, crash * 0.75);
     // A line of surf rolling towards the beach, broken into pieces, every few seconds.
     float roll = fract(t * 0.16);
     float at = (1.0 - roll) * reach * 0.55 + 0.35;
@@ -53,7 +58,7 @@ void main() {
     float shade = sunlight(world, dot(normal, normal) > 1e-8 ? normalize(normal) : vec3(0.0));
     vec3 tint = fr.sunColor.rgb / vec3(1.0, 0.95, 0.84);
     vec3 light = mix(fr.shade.rgb * 0.62 + fr.skyAmb.rgb * 0.25, tint, shade) * mix(0.92, 1.0, max(fr.sunDir.y, 0.0));
-    c = mix(c, vec3(0.93, 0.98, 0.97), foam) * (light + pointLights(vec3(0.0, 1.0, 0.0), world));
+    c = mix(c, vec3(0.93, 0.98, 0.97), foam) * (light + pointLights(vec3(0.0, 1.0, 0.0), world, true));
     // Small waves tilt the surface: the sky mirrored at grazing angles, glitter where they face the lights.
     vec3 v = (pc.eye.xyz - world) / max(far, 1e-4);
     float e = 0.15;
@@ -68,7 +73,7 @@ void main() {
     float sunGlint = pow(max(dot(r, fr.sun.xyz), 0.0), 300.0) * fr.sun.w * shade;
     float moonGlint = pow(max(dot(r, fr.moon.xyz), 0.0), 160.0) * fr.moon.w;
     c += (fr.glow.rgb * sunGlint * 6.0 + vec3(0.75, 0.82, 1.0) * moonGlint * 1.6) * sparkle * calm;
-    int count = int(fr.skyAmb.w);
+    int count = min(int(fr.skyAmb.w), 16);                // the nearest lamps glitter: the first of the frame's list
     for (int i = 0; i < count; i++) {
         vec3 l = fr.lightPos[i].xyz - world;
         float dl = length(l);

@@ -213,6 +213,8 @@ private class Simplifier(private val mesh: Mesh) {
         for (t in 0 until nTri) if (alive[t]) out.add(t)
         val verts = FloatArray(out.size * 27)
         val effects = if (e != null) FloatArray(out.size * 3 * EFFECT_FLOATS) else null
+        val su = mesh.surface
+        val surface = if (su != null) FloatArray(out.size * 3 * SURFACE_FLOATS) else null
         val materials = if (mats != null) IntArray(out.size) else null
         for ((n, t) in out.withIndex()) {
             for (j in 0..2) {
@@ -222,6 +224,7 @@ private class Simplifier(private val mesh: Mesh) {
                 verts[o + 3] = v[9 * src + 3]; verts[o + 4] = v[9 * src + 4]; verts[o + 5] = v[9 * src + 5]
                 verts[o + 6] = v[9 * src + 6]; verts[o + 7] = v[9 * src + 7]; verts[o + 8] = v[9 * src + 8]
                 if (effects != null) (e!!).copyInto(effects, EFFECT_FLOATS * (3 * n + j), EFFECT_FLOATS * src, EFFECT_FLOATS * src + EFFECT_FLOATS)
+                if (surface != null) su!!.copyInto(surface, SURFACE_FLOATS * (3 * n + j), SURFACE_FLOATS * src, SURFACE_FLOATS * src + SURFACE_FLOATS)
             }
             if (materials != null) materials[n] = mats!![t]
         }
@@ -229,6 +232,7 @@ private class Simplifier(private val mesh: Mesh) {
         var m = Mesh(verts).smooth()
         if (materials != null) m = m.withMaterials(materials)
         if (effects != null) m = m.withEffects(effects)
+        if (surface != null) m = m.withSurface(surface)
         return m
     }
 }
