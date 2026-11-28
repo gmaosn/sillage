@@ -246,6 +246,7 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
     private val pQueueSubmit = proc("vkQueueSubmit")
     private val pQueueWaitIdle = proc("vkQueueWaitIdle")
     private val pResetCommandBuffer = proc("vkResetCommandBuffer")
+    private val pCmdExecuteCommands = proc("vkCmdExecuteCommands")
     private val pBeginCommandBuffer = proc("vkBeginCommandBuffer")
     private val pEndCommandBuffer = proc("vkEndCommandBuffer")
     private val pCmdBeginRenderPass = proc("vkCmdBeginRenderPass")
@@ -335,6 +336,7 @@ internal class VkDeviceApi(val handle: MemorySegment, instance: VkInstanceApi, s
 
     fun resetCommandBuffer(cmd: MemorySegment, flags: Int) =
         (Sig.I_PI.invokeExact(pResetCommandBuffer, cmd, flags) as Int).vkCheck("vkResetCommandBuffer")
+    fun cmdExecuteCommands(cmd: MemorySegment, count: Int, buffers: MemorySegment) { Sig.V_PIP.invokeExact(pCmdExecuteCommands, cmd, count, buffers) }
     fun beginCommandBuffer(cmd: MemorySegment, info: MemorySegment) =
         (Sig.I_PP.invokeExact(pBeginCommandBuffer, cmd, info) as Int).vkCheck("vkBeginCommandBuffer")
     fun endCommandBuffer(cmd: MemorySegment) = (Sig.I_P.invokeExact(pEndCommandBuffer, cmd) as Int).vkCheck("vkEndCommandBuffer")

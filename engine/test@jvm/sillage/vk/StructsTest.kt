@@ -25,6 +25,12 @@ class StructsTest {
         check(VkWriteDescriptorSet, 64, "pBufferInfo" to 48, "dstSet" to 16, "descriptorType" to 36, "pImageInfo" to 40, "pTexelBufferView" to 56)
     }
 
+    @Test fun lHeritageDesTamponsSecondairesEstCeluiDuC() {
+        // The secondary command buffers recorded on several threads name their render pass and framebuffer.
+        check(VkCommandBufferInheritanceInfo, 56, "renderPass" to 16, "subpass" to 24, "framebuffer" to 32,
+            "occlusionQueryEnable" to 40, "queryFlags" to 44, "pipelineStatistics" to 48)
+    }
+
     @Test fun laCopieDImageEstCelleDuC() {
         // The lamps' shadow faces are copied from their caches (vkCmdCopyImage).
         check(VkImageCopy, 68, "srcOffset" to 16, "dstSubresource" to 28, "dstOffset" to 44, "extent" to 56)

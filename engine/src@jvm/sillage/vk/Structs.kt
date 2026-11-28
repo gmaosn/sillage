@@ -212,6 +212,8 @@ internal val VkPhysicalDevicePresentWaitFeaturesKHR = t("VkPhysicalDevicePresent
 
 internal val VkCommandBufferBeginInfo = t("VkCommandBufferBeginInfo", VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     "flags" to U32, "pInheritanceInfo" to Ptr)
+internal val VkCommandBufferInheritanceInfo = t("VkCommandBufferInheritanceInfo", VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+    "renderPass" to U64, "subpass" to U32, "framebuffer" to U64, "occlusionQueryEnable" to U32, "queryFlags" to U32, "pipelineStatistics" to U32)
 /** VkClearValue is a 16-byte union: color.float32[4] or depthStencil {depth, stencil}. */
 internal val VkClearValue = s("VkClearValue", "float32" to Field.Array(F32, 4))
 internal val VkClearDepthStencilValue = s("VkClearDepthStencilValue", "depth" to F32, "stencil" to U32)
@@ -273,4 +275,4 @@ internal val ALL_STRUCTS = listOf(VkExtent2D, VkExtent3D, VkOffset2D, VkOffset3D
     VkBufferImageCopy, VkImageBlit, VkImageCopy, VkSubmitInfo, VkSamplerCreateInfo, VkDescriptorSetLayoutBinding,
     VkDescriptorSetLayoutCreateInfo, VkDescriptorPoolSize, VkDescriptorPoolCreateInfo, VkDescriptorSetAllocateInfo,
     VkDescriptorImageInfo, VkDescriptorBufferInfo, VkWriteDescriptorSet, VkPresentIdKHR, VkPhysicalDevicePresentIdFeaturesKHR,
-    VkPhysicalDevicePresentWaitFeaturesKHR)
+    VkPhysicalDevicePresentWaitFeaturesKHR, VkCommandBufferInheritanceInfo)
