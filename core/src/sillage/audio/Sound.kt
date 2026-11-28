@@ -10,14 +10,29 @@ import kotlin.math.roundToInt
 /**
  * A sound in memory: floating-point samples in −1..1, mono or interleaved stereo, at [rate] Hz.
  * Sounds are immutable once built and can be played by many voices at once.
+ *
+ * A long sound read from a file ([decode], [load]: music, ambiences) stays compressed and is decoded while it
+ * plays; its [data] is decoded whole the first time it is read.
  */
-class Sound(val data: FloatArray, val channels: Int = 1, val rate: Int = 48_000) {
+class Sound private constructor(private var held: FloatArray?, internal val source: SoundSource?, val channels: Int, val rate: Int) {
+    constructor(data: FloatArray, channels: Int = 1, rate: Int = 48_000) : this(data, null, channels, rate)
+
     init {
         require(channels == 1 || channels == 2) { "A sound is mono or stereo" }
-        require(rate in 4_000..192_000 && data.size % channels == 0) { "Invalid sound" }
+        require(rate in 4_000..192_000 && (held?.size ?: 0) % channels == 0) { "Invalid sound" }
     }
-    val frames: Int get() = data.size / channels
+    private val lock = Any()
+
+    /** The samples, interleaved when stereo. */
+    val data: FloatArray get() = held ?: sillage.io.locked(lock) { held ?: source!!.decodeAll().also { held = it } }
+    val frames: Int get() = source?.frames ?: data.size / channels
     val duration: Float get() = frames.toFloat() / rate
+
+    /** Whether it plays through a decoder of its own (a long sound from a file, kept compressed). */
+    internal val streamed: Boolean get() = source != null
+
+    /** A reader for one voice playing it, or null when its samples are in memory. */
+    internal fun cursor(): SoundCursor? = source?.cursor()
 
     /** The sound as a 16-bit PCM WAV file. */
     fun toWav(): ByteArray {
@@ -35,8 +50,20 @@ class Sound(val data: FloatArray, val channels: Int = 1, val rate: Int = 48_000)
     fun save(path: String) = Storage.write(path, toWav())
 
     companion object {
+        /**
+         * Sounds read from files ([decode], [load]) longer than this many seconds stay compressed and are
+         * decoded while they play (every voice on its own); shorter ones are decoded whole.
+         */
+        internal const val STREAM_ABOVE = 10f
+
+        /** A sound played from [source], decoded while it plays. */
+        internal fun streamed(source: SoundSource) = Sound(null, source, source.channels, source.rate)
+
         /** Reads a PCM WAV file (8, 16, 24 or 32-bit integers, or 32-bit floats), mono or stereo. */
-        fun wav(bytes: ByteArray): Sound {
+        fun wav(bytes: ByteArray): Sound = wav(bytes, Float.POSITIVE_INFINITY)
+
+        /** [wav], keeping the integer samples of a sound longer than [streamAbove] seconds, to be turned into floats while it plays. */
+        internal fun wav(bytes: ByteArray, streamAbove: Float): Sound {
             var p = 0
             fun tag() = latin1(bytes, p, 4).also { p += 4 }
             fun int() = Le.i32(bytes, p).also { p += 4 }
@@ -60,18 +87,11 @@ class Sound(val data: FloatArray, val channels: Int = 1, val rate: Int = 48_000)
                         require((format == 1 && bits in intArrayOf(8, 16, 24, 32)) || (format == 3 && bits == 32)) {
                             "WAV format $format/$bits bits not supported" }
                         val n = size / width / channels * channels
+                        // A long one in 8, 16 or 24 bits stays as it is, turned into floats while it plays.
+                        if (n / channels > streamAbove * rate && format == 1 && bits <= 24)
+                            return Sound(null, WavSource(bytes.copyOfRange(start, start + n * width), bits, n / channels, channels, rate), channels, rate)
                         val out = FloatArray(n)
-                        for (i in 0 until n) {
-                            val o = start + i * width
-                            out[i] = when {
-                                format == 3 -> Le.f32(bytes, o)
-                                bits == 8 -> ((bytes[o].toInt() and 255) - 128) / 128f
-                                bits == 16 -> Le.i16(bytes, o) / 32768f
-                                bits == 24 -> ((bytes[o].toInt() and 255) or ((bytes[o + 1].toInt() and 255) shl 8) or
-                                    (bytes[o + 2].toInt() shl 16)) / 8388608f
-                                else -> Le.i32(bytes, o) / 2147483648f
-                            }
-                        }
+                        for (i in 0 until n) out[i] = wavSample(bytes, start + i * width, format, bits)
                         return Sound(out, channels, rate)
                     }
                 }
@@ -80,8 +100,15 @@ class Sound(val data: FloatArray, val channels: Int = 1, val rate: Int = 48_000)
             throw IllegalArgumentException("WAV file without data")
         }
 
-        /** Decodes a WAV or an Ogg Vorbis file, found from its first bytes. */
-        fun decode(bytes: ByteArray): Sound = if (Vorbis.isOgg(bytes)) Vorbis.decode(bytes) else wav(bytes)
+        /**
+         * Decodes a WAV or an Ogg Vorbis file, found from its first bytes. A sound longer than ten seconds
+         * (music, an ambience) is kept as it is in the file and decoded while it plays.
+         */
+        fun decode(bytes: ByteArray): Sound = decode(bytes, STREAM_ABOVE)
+
+        /** [decode], with the length in seconds above which the sound is decoded while it plays. */
+        internal fun decode(bytes: ByteArray, streamAbove: Float): Sound =
+            if (Vorbis.isOgg(bytes)) Vorbis.forPlay(bytes, streamAbove) else wav(bytes, streamAbove)
 
         /** Reads a WAV or Ogg Vorbis file from disk, or from the resources when no such file exists. */
         fun load(path: String): Sound = decode(sillage.io.Assets.bytes(path, "Sound"))

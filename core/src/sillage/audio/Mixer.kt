@@ -20,6 +20,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     // ---- what the game asks for (guarded by lock)
     private val lock = Any()
     private val sounds = arrayOfNulls<Sound>(maxVoices)
+    private val cursors = arrayOfNulls<SoundCursor>(maxVoices)   // long sounds: each voice's own reader, made by play
     private val generation = IntArray(maxVoices)
     private val busy = BooleanArray(maxVoices)            // slot taken (from play until the audio side frees it)
     private val starting = BooleanArray(maxVoices)
@@ -54,6 +55,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
 
     // ---- audio side
     private val aSound = arrayOfNulls<Sound>(maxVoices)
+    private val aStream = arrayOfNulls<SoundCursor>(maxVoices)   // the reader of a long sound, decoded while it plays
     private val aActive = BooleanArray(maxVoices)
     private val aCursor = DoubleArray(maxVoices)
     private val aStep = DoubleArray(maxVoices)
@@ -104,7 +106,14 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
     val playing: Int get() = sillage.io.locked(lock) { busy.count { it } }
 
     private fun start(sound: Sound, v: Float, p: Float, l: Boolean, s: Boolean, pn: Float, x: Float, y: Float, z: Float,
-                      ref: Float, max: Float, off: Float, send: Float): Voice = sillage.io.locked(lock) {
+                      ref: Float, max: Float, off: Float, send: Float): Voice {
+        // A long sound gets its own decoder here, on the game's thread: the audio thread only reads it.
+        val cursor = sound.cursor()
+        return startLocked(sound, cursor, v, p, l, s, pn, x, y, z, ref, max, off, send)
+    }
+
+    private fun startLocked(sound: Sound, cursor: SoundCursor?, v: Float, p: Float, l: Boolean, s: Boolean, pn: Float, x: Float, y: Float, z: Float,
+                            ref: Float, max: Float, off: Float, send: Float): Voice = sillage.io.locked(lock) {
         var slot = (0 until maxVoices).firstOrNull { !busy[it] }
         if (slot == null) {
             // All taken: steal the oldest sound that does not loop (loops are usually ambiences).
@@ -113,7 +122,7 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
         }
         val i = slot
         generation[i]++
-        sounds[i] = sound; busy[i] = true; starting[i] = true; stopping[i] = 0f; finished[i] = false
+        sounds[i] = sound; cursors[i] = cursor; busy[i] = true; starting[i] = true; stopping[i] = 0f; finished[i] = false
         volume[i] = v.coerceAtLeast(0f); pitch[i] = p.coerceIn(.05f, 8f); pan[i] = pn.coerceIn(-1f, 1f); loop[i] = l
         spatial[i] = s; sx[i] = x; sy[i] = y; sz[i] = z
         reference[i] = ref.coerceAtLeast(.01f); maximum[i] = max(max, ref + .01f); startedAt[i] = ++plays
@@ -150,12 +159,12 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
                 if (starting[i]) {
                     // A new sound, perhaps in a slot taken from an older one: forget the old one entirely.
                     starting[i] = false
-                    aSound[i] = snd; aActive[i] = true; aFade[i] = -1f; aDone[i] = false
+                    aSound[i] = snd; aStream[i] = cursors[i]; cursors[i] = null; aActive[i] = true; aFade[i] = -1f; aDone[i] = false
                     aCursor[i] = (offset[i].toDouble() * snd.rate).let { if (loop[i] && snd.frames > 0) it % snd.frames else it }
                     aLowL[i] = 0f; aLowR[i] = 0f; aFresh[i] = true
                     aDistance[i] = Float.NaN; aRadial[i] = 0f
                 } else if (aDone[i]) {
-                    aDone[i] = false; aActive[i] = false; finished[i] = true; busy[i] = false; sounds[i] = null
+                    aDone[i] = false; aActive[i] = false; finished[i] = true; busy[i] = false; sounds[i] = null; aStream[i] = null
                     continue
                 }
                 if (stopping[i] > 0f && aFade[i] < 0f) { aFade[i] = stopping[i] * rate; aFadeTotal[i] = aFade[i] }
@@ -206,7 +215,13 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
         for (i in 0 until maxVoices) {
             if (!aActive[i] || aDone[i]) continue
             val snd = aSound[i]!!
-            val data = snd.data; val n = snd.frames; val stereo = snd.channels == 2
+            val n = snd.frames; val stereo = snd.channels == 2
+            // The samples: all of them in memory (from frame 0), or the window of a long sound decoded while it
+            // plays (from frame `from`; a loop going round reads the first frame just after the last, at n).
+            val reader = aStream[i]
+            var data: FloatArray; var from: Int; var until: Int; val wrap: Int
+            if (reader == null) { data = snd.data; from = 0; until = n + 1; wrap = 0 }
+            else { data = reader.buffer; from = reader.base; until = reader.limit; wrap = n }
             var cur = aCursor[i]; val step = aStep[i]
             var gl = aGainL[i]; var gr = aGainR[i]
             val dl = (tGainL[i] - gl) * inv; val dr = (tGainR[i] - gr) * inv
@@ -224,11 +239,17 @@ class Mixer(val rate: Int = 48_000, val maxVoices: Int = 48) {
                 }
                 val t = (cur - j).toFloat()
                 val j1 = if (j + 1 < n) j + 1 else if (aLoop[i]) 0 else j
+                val o1 = if (j1 < j) wrap else j1
+                if (j < from || o1 >= until) {
+                    val w = reader!!
+                    w.cover(j); data = w.buffer; from = w.base; until = w.limit
+                }
+                val a0 = j - from; val a1 = o1 - from
                 var l: Float; var r: Float
                 if (stereo) {
-                    l = data[2 * j] + (data[2 * j1] - data[2 * j]) * t
-                    r = data[2 * j + 1] + (data[2 * j1 + 1] - data[2 * j + 1]) * t
-                } else { l = data[j] + (data[j1] - data[j]) * t; r = l }
+                    l = data[2 * a0] + (data[2 * a1] - data[2 * a0]) * t
+                    r = data[2 * a0 + 1] + (data[2 * a1 + 1] - data[2 * a0 + 1]) * t
+                } else { l = data[a0] + (data[a1] - data[a0]) * t; r = l }
                 lowL += (l - lowL) * cut; lowR += (r - lowR) * cut
                 var g = 1f
                 if (fade >= 0f) {

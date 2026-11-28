@@ -24,20 +24,65 @@ object Vorbis {
 
     /** Decodes a whole Ogg Vorbis file into a [Sound]. Damaged files are refused with an [IllegalArgumentException]. */
     fun decode(bytes: ByteArray): Sound {
+        val scan = VorbisScan(bytes, Float.POSITIVE_INFINITY)
+        return Sound(scan.data!!, scan.channels, scan.rate)
+    }
+
+    /**
+     * The file as a sound to play: decoded whole when it lasts at most [streamAbove] seconds, otherwise kept
+     * compressed and decoded while it plays ([Sound.decode]). Either way the file is read to its end here, so
+     * that a damaged one is refused now, as when it was decoded whole.
+     */
+    internal fun forPlay(bytes: ByteArray, streamAbove: Float): Sound {
+        val scan = VorbisScan(bytes, streamAbove)
+        val data = scan.data
+        return if (data != null) Sound(data, scan.channels, scan.rate) else Sound.streamed(VorbisSource(scan))
+    }
+}
+
+/**
+ * An Ogg Vorbis file read from end to end: every audio packet decoded, what each one adds counted, and the
+ * stream's true start and end found from the granules. The samples are kept ([data], interleaved) while the
+ * decoded stream is at most [keepSeconds] long; a longer one only keeps its packets, to be decoded again
+ * while it plays ([VorbisSource]).
+ */
+internal class VorbisScan(bytes: ByteArray, keepSeconds: Float) {
+    val packets: List<ByteArray>
+    val channels: Int
+    val rate: Int
+    /** Per packet: how many samples per channel decoding it adds, in the order of the file. */
+    val produced: IntArray
+    /** Per packet: whether decoding it changes the decoder (an audio packet, even one that adds nothing). */
+    val audio: BooleanArray
+    /** Samples decoded before the sound's first one (the stream starts later than its first packet). */
+    val start: Int
+    val frames: Int
+    val data: FloatArray?
+
+    init {
         val ogg = OggPackets(bytes)
         require(ogg.packets.size >= 3) { "Ogg Vorbis: missing headers" }
+        packets = ogg.packets
         val d = VorbisDecoder(ogg.packets[0], ogg.packets[2])
-        val channels = d.channels
-        // Decoded at the stream's rate, into growing per-channel buffers.
-        var out = Array(channels) { FloatArray(d.rate * 2) }
+        channels = d.channels; rate = d.rate
+        produced = IntArray(ogg.packets.size); audio = BooleanArray(ogg.packets.size)
+        val keep = if (keepSeconds * rate >= Int.MAX_VALUE.toFloat()) Int.MAX_VALUE else (keepSeconds * rate).toInt().coerceAtLeast(0)
+        // Decoded at the stream's rate, into growing per-channel buffers (dropped once the sound is too long to keep).
+        var out: Array<FloatArray>? = Array(channels) { FloatArray(minOf(d.rate * 2L, keep + 8192L).toInt()) }
         var n = 0
-        var start = 0
+        var first = 0
         var firstPage = true
         for (k in 3 until ogg.packets.size) {
             val got = d.decode(ogg.packets[k])
+            produced[k] = got; audio[k] = d.changed
             if (got > 0) {
-                if (n + got > out[0].size) out = Array(channels) { c -> out[c].copyOf(maxOf(out[c].size * 2, n + got)) }
-                for (c in 0 until channels) d.output[c].copyInto(out[c], n, 0, 0 + got)
+                val o = out
+                if (o != null && n + got > keep) out = null
+                else if (o != null) {
+                    val into = if (n + got > o[0].size) Array(channels) { c -> o[c].copyOf(maxOf(o[c].size * 2, n + got)) } else o
+                    for (c in 0 until channels) d.output[c].copyInto(into[c], n, 0, 0 + got)
+                    out = into
+                }
                 n += got
             }
             // The first audio page's granule is the position of its last sample: decoded beyond it, the
@@ -45,16 +90,97 @@ object Vorbis {
             // A first page that also ends the stream is trimmed at its end instead (spec, appendix A.2).
             if (ogg.pageEnd[k] && firstPage) {
                 firstPage = false
-                if (!ogg.lastPage[k] && ogg.granule[k] in 0 until n) start = (n - ogg.granule[k]).toInt()
+                if (!ogg.lastPage[k] && ogg.granule[k] in 0 until n) first = (n - ogg.granule[k]).toInt()
             }
         }
+        start = first
         // The last granule position is the true length: the end of the last packet is padding.
         val last = ogg.lastGranule
         val end = if (last >= 0) min(n.toLong(), start + last).toInt() else n
-        val frames = maxOf(0, end - start)
-        val data = FloatArray(frames * channels)
-        for (i in 0 until frames) for (c in 0 until channels) data[i * channels + c] = out[c][start + i]
-        return Sound(data, channels, d.rate)
+        frames = maxOf(0, end - start)
+        val o = out
+        data = if (o == null) null else FloatArray(frames * channels).also { data ->
+            for (i in 0 until frames) for (c in 0 until channels) data[i * channels + c] = o[c][start + i]
+        }
+    }
+}
+
+/**
+ * A long Ogg Vorbis sound kept compressed: its packets, and where each one's samples fall in the decoded
+ * stream. Each voice that plays it decodes it again with a decoder of its own ([VorbisCursor]).
+ */
+internal class VorbisSource(scan: VorbisScan) : SoundSource(scan.frames, scan.channels, scan.rate) {
+    val packets: List<ByteArray> = scan.packets
+    /** Samples decoded before the sound's first one. */
+    val start = scan.start
+    val audio = scan.audio
+    val produced = scan.produced
+    /** Per packet, the index in the decoded stream of the first sample it adds. */
+    val outStart = IntArray(scan.produced.size)
+    init {
+        var n = 0
+        for (k in produced.indices) { outStart[k] = n; n += produced[k] }
+        head = firstFrame()
+    }
+    override fun cursor(): SoundCursor = VorbisCursor(this)
+}
+
+/** One voice's way through a [VorbisSource]: a decoder of its own, going on from packet to packet. */
+private class VorbisCursor(private val s: VorbisSource) : SoundCursor(s) {
+    private val d = VorbisDecoder(s.packets[0], s.packets[2])
+    private var next = s.packets.size          // the next packet to decode
+    private var held = 0                       // samples of the last packet decoded not handed out yet
+    private var heldFrom = 0                   // and where they start in d.output
+    private var raw = 0                        // index in the decoded stream of the next sample handed out
+
+    override fun seek(frame: Int) {
+        // The packet holding this frame: the first whose samples end after it.
+        val target = s.start + frame
+        var found = -1
+        var lo = 3; var hi = s.packets.size - 1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (s.outStart[mid] + s.produced[mid] > target) { found = mid; hi = mid - 1 } else lo = mid + 1
+        }
+        d.reset(); held = 0; raw = target
+        if (found < 0) { next = s.packets.size; return }
+        // The audio packet before it gives the decoder the half block that overlaps the one found: from
+        // there its samples come out exactly as when the stream is read from the start.
+        var primer = found - 1
+        while (primer >= 3 && !s.audio[primer]) primer--
+        if (primer >= 3) d.decode(s.packets[primer])
+        next = maxOf(primer + 1, 3)
+        // Then to the frame wanted inside the packet found.
+        if (!decodeNext()) return
+        val drop = (target - raw).coerceIn(0, held)
+        heldFrom += drop; held -= drop; raw += drop
+    }
+
+    /** Decodes packets until one adds samples; false at the end of the stream. */
+    private fun decodeNext(): Boolean {
+        while (next < s.packets.size) {
+            val k = next++
+            val got = d.decode(s.packets[k])
+            if (got > 0) { raw = s.outStart[k]; held = got; heldFrom = 0; return true }
+        }
+        return false
+    }
+
+    override fun produce(into: FloatArray, at: Int, count: Int): Int {
+        var done = 0
+        while (done < count) {
+            if (held == 0 && !decodeNext()) break
+            val n = minOf(held, count - done)
+            val o = d.output
+            if (channels == 1) o[0].copyInto(into, at + done, heldFrom, heldFrom + n)
+            else {
+                val l = o[0]; val r = o[1]
+                var w = 2 * (at + done)
+                for (i in heldFrom until heldFrom + n) { into[w] = l[i]; into[w + 1] = r[i]; w += 2 }
+            }
+            heldFrom += n; held -= n; raw += n; done += n
+        }
+        return done
     }
 }
 
@@ -136,11 +262,14 @@ private class OggPackets(b: ByteArray) {
 // ---------------------------------------------------------------------------------------------- bits
 
 /** Vorbis bit reading: least significant bit first. Past the end, reads give 0 and [eop] is set. */
-private class Bits(private val data: ByteArray) {
+private class Bits(private var data: ByteArray) {
     private var pos = 0
     private var acc = 0L
     private var count = 0                      // valid bits in acc
     var eop = false
+
+    /** Reads [packet] from its start (one reader serves every packet: decoding allocates nothing). */
+    fun reset(packet: ByteArray) { data = packet; pos = 0; acc = 0L; count = 0; eop = false }
 
     private fun fill() {
         while (count <= 56 && pos < data.size) { acc = acc or ((data[pos].toLong() and 255) shl count); pos++; count += 8 }
@@ -481,6 +610,8 @@ private class Residue(b: Bits, val type: Int) {
     }
 
     private var classes = Array(0) { IntArray(0) }
+    private var interleaved: Array<FloatArray>? = null      // type 2: the one vector, made once
+    private val noSkip = BooleanArray(1)
 
     /**
      * Decodes into [v] (one vector per channel, [half] values each) the channels whose [skip] is false.
@@ -491,7 +622,8 @@ private class Residue(b: Bits, val type: Int) {
         if (type == 2) {
             if (skip.all { it }) return
             scratch.fill(0f, 0, half * ch)
-            decodeVectors(bits, books, arrayOf(scratch), BooleanArray(1), half * ch, 1)
+            val one = interleaved.let { if (it != null && it[0] === scratch) it else arrayOf(scratch).also { a -> interleaved = a } }
+            decodeVectors(bits, books, one, noSkip, half * ch, 1)
             for (c in 0 until ch) { val out = v[c]; for (i in 0 until half) out[i] = scratch[i * ch + c] }
             return
         }
@@ -624,8 +756,8 @@ private class VorbisDecoder(id: ByteArray, setup: ByteArray) {
 
     private fun readTag(b: Bits): Boolean { for (ch in "vorbis") if (b.read(8) != ch.code) return false; return true }
 
-    private val windows = HashMap<Int, FloatArray>()     // the rising slope of each block size
-    private val imdcts = HashMap<Int, Imdct>()
+    // Everything a packet needs is made here, once: decoding allocates nothing (it may run on the audio
+    // thread, while a long sound plays).
     private val spectrum = Array(channels) { FloatArray(blocksize[1] / 2) }
     private val samples = Array(channels) { FloatArray(blocksize[1]) }
     private val previous = Array(channels) { FloatArray(blocksize[1] / 2) }  // right half of the last block, windowed
@@ -634,20 +766,37 @@ private class VorbisDecoder(id: ByteArray, setup: ByteArray) {
     private val floorUsed = BooleanArray(channels)
     private val floorY = Array(channels) { IntArray(65) }
     private val skip = BooleanArray(channels)
+    private val bits = Bits(ByteArray(0))
+    /** Per mapping and submap: the spectra of the channels it holds, and whether each is skipped. */
+    private val submapVectors = Array(mappings.size) { m ->
+        Array(mappings[m].submaps) { k -> Array(channels) { c -> spectrum[c] }.filterIndexed { c, _ -> mappings[m].mux[c] == k }.toTypedArray() } }
+    private val submapSkip = Array(mappings.size) { m -> Array(mappings[m].submaps) { k -> BooleanArray(submapVectors[m][k].size) } }
+    // The rising slopes of the windows (the half sizes of both blocks) and the inverse MDCT of each block size.
+    private val slopeShort = risingSlope(blocksize[0] / 2)
+    private val slopeLong = if (blocksize[1] == blocksize[0]) slopeShort else risingSlope(blocksize[1] / 2)
+    private val imdctShort = Imdct(blocksize[0])
+    private val imdctLong = if (blocksize[1] == blocksize[0]) imdctShort else Imdct(blocksize[1])
     /** The samples of the last decoded packet, per channel ([decode] says how many). */
     val output = Array(channels) { FloatArray(blocksize[1]) }
+    /** Whether the last [decode] read an audio packet (and so changed what the next one overlaps). */
+    var changed = false; private set
 
-    private fun slope(n: Int) = windows.getOrPut(n) {
-        // Vorbis's window: sin(π/2 · sin²(π/2 · (i + ½)/n)), rising over n samples.
-        FloatArray(n) { i -> sin(PI / 2 * sin(PI / 2 * (i + .5) / n).pow(2)).toFloat() }
-    }
+    /** Vorbis's window: sin(π/2 · sin²(π/2 · (i + ½)/n)), rising over n samples. */
+    private fun risingSlope(n: Int) = FloatArray(n) { i -> sin(PI / 2 * sin(PI / 2 * (i + .5) / n).pow(2)).toFloat() }
+    private fun slope(n: Int) = if (n == blocksize[0] / 2) slopeShort else slopeLong
+
+    /** Forgets the last block, as at the start of the stream: the next audio packet adds no samples. */
+    fun reset() { previousSize = 0; changed = false }
 
     /** Decodes one audio packet; returns how many samples per channel it completed (0 for the first). */
     fun decode(packet: ByteArray): Int {
-        val b = Bits(packet)
+        val b = bits
+        b.reset(packet)
+        changed = false
         if (packet.isEmpty() || b.bit()) return 0                  // not an audio packet
         val mode = modes[b.read(ilog(modes.size - 1))]
         if (b.eop) return 0
+        changed = true
         val n = blocksize[if (mode.blockflag) 1 else 0]
         val half = n / 2
         var prevLong = true; var nextLong = true
@@ -668,16 +817,13 @@ private class VorbisDecoder(id: ByteArray, setup: ByteArray) {
         }
         // Residues, submap by submap.
         for (k in 0 until map.submaps) {
-            var count = 0
-            for (c in 0 until channels) if (map.mux[c] == k) count++
-            val vecs = arrayOfNulls<FloatArray>(count); val sk = BooleanArray(count)
+            val vecs = submapVectors[mode.mapping][k]; val sk = submapSkip[mode.mapping][k]
             var j = 0
-            for (c in 0 until channels) if (map.mux[c] == k) { vecs[j] = spectrum[c]; sk[j] = skip[c]; j++ }
-            @Suppress("UNCHECKED_CAST")
-            residues[map.residue[k]].decode(b, books, vecs as Array<FloatArray>, sk, half, scratch)
+            for (c in 0 until channels) if (map.mux[c] == k) { sk[j] = skip[c]; j++ }
+            residues[map.residue[k]].decode(b, books, vecs, sk, half, scratch)
         }
         // Inverse coupling, last step first.
-        for (i in map.magnitude.indices.reversed()) {
+        for (i in map.magnitude.size - 1 downTo 0) {
             val mv = spectrum[map.magnitude[i]]; val av = spectrum[map.angle[i]]
             for (j in 0 until half) {
                 val m = mv[j]; val a = av[j]
@@ -691,7 +837,7 @@ private class VorbisDecoder(id: ByteArray, setup: ByteArray) {
             if (!floorUsed[c]) spec.fill(0f, 0, half)
             else floors[map.floor[map.mux[c]]].apply(spec, half, floorY[c])
             val out = samples[c]
-            imdcts.getOrPut(n) { Imdct(n) }.inverse(spec, out)
+            (if (n == blocksize[0]) imdctShort else imdctLong).inverse(spec, out)
             window(out, n, mode.blockflag, prevLong, nextLong)
         }
         // Overlap with the previous block: from its centre to this block's centre.
