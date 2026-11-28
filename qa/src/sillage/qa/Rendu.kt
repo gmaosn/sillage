@@ -93,6 +93,22 @@ fun Qa.rendu() {
         "${pct(part)} de pixels différents, écart moyen ${f3(moyen)}" to (part == 0.0 && moyen == 0.0)
     }
 
+    // Les commandes d'une image enregistrées sur plusieurs fils (VulkanRenderer, RecordPool) : les mêmes, dans le même
+    // ordre, que sur un seul fil (sillage.recordThreads=1), donc la même image à l'octet ; de jour, et de nuit (lampes
+    // et leurs ombres, particules). Avec 4, chaque image est faite sur plusieurs fils, même courte (la scène de l'île,
+    // plus de 40 maillages, est alors coupée en tampons secondaires).
+    controle("enregistrement sur plusieurs fils : même image que sur un seul", "fichiers identiques à l'octet") {
+        val faux = ArrayList<String>()
+        fun rendre(nom: String, fils: String): ByteArray {
+            val img = dossier.resolve("fils-$nom-$fils.png")
+            System.setProperty("sillage.recordThreads", fils)
+            try { rendreIle(img, 90, vues[nom], heure = heures[nom]) } finally { System.clearProperty("sillage.recordThreads") }
+            return Files.readAllBytes(img)
+        }
+        for (nom in listOf("ile", "nuit")) if (!rendre(nom, "1").contentEquals(rendre(nom, "4"))) faux += nom
+        (if (faux.isEmpty()) "vues « ile » et « nuit » identiques" else "différentes : ${faux.joinToString()}") to faux.isEmpty()
+    }
+
     // La mémoire résidente oscille de ±25 Mo d'un moteur à l'autre (tas, pilote) : on compare la médiane de quatre
     // mesures au début (après deux pour s'installer) à celle des quatre dernières. Une fuite d'un moteur de rendu,
     // quelques Mo à chaque fois, monte de plus de 40 Mo en dix moteurs.
