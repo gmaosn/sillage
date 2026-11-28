@@ -46,7 +46,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `cone(radius = .5, height = 1, color = YELLOW, at)` | standing on Y |
 | `plane(width = 10, depth = width, color = GRASS, at)` | flat, facing up, not solid |
 | `ground(size = 400, color = GRASS, surface = Material.GRASS, at)` | flat solid floor, its edge lost in the haze |
-| `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6, buoyant = true)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests |
+| `water(level = 0, color = WATER, size = 300, shallows = null, reach = 6, buoyant = true)` | sea or lake, not solid: a lagoon of `shallows` colour (lighter than `color` by default) `reach` metres out from its shores, foam, surf and drifting crests; foam at the foot of steep solid things standing in it (cliffs, rocks, posts) |
 | `model(path, at, scale = 1, normals = Normals.SMOOTH)` | a `.glb` model, from disk or the resources; animated models keep their parts and clips |
 | `mesh(mesh, at)` | a `Mesh` of your own |
 | `chain(from, to, links, radius = .03, color = GREY, start = null, end = null, density = 2000)` | a chain of dynamic capsule nodes joined by ball joints, hanging from `start` (or the world), holding `end`; the links |
@@ -69,7 +69,7 @@ The world being played. Inside `game { }` you are in one. `Scene().apply { … }
 | `autoTextures` | models (and `ground`) get ready-made textures from their material names (true); set it before adding them |
 | **Lamps and particles** | |
 | `light(color = warm, intensity = 1.5, radius = 6, at, onlyAtNight = false, flicker = 0)` | a `PointLight` |
-| `lights`, `removeLight(light)` | the lamps; the 16 nearest the camera are drawn |
+| `lights`, `removeLight(light)` | the lamps; up to 128 are drawn, the nearest first, and the few that matter most in the picture cast shadows |
 | `emit(style, at, rate = 20)`, `removeEmitter(emitter)` | an `Emitter`: `rate` particles per second |
 | `burst(style, at, count = 12, direction = style.direction)` | particles all at once |
 | **Time and events** | |
@@ -345,7 +345,7 @@ Light and air of a scene. Every value can change at any time, `shadows` included
 
 ### Lamps and particles
 
-`PointLight`: `color`, `intensity`, `radius`, `position` (in the world, or in its node's space), `node`, `onlyAtNight`, `flicker` (0 steady, 1 a flame), `enabled`, `worldPosition`.
+`PointLight`: `color`, `intensity`, `radius`, `position` (in the world, or in its node's space), `node`, `onlyAtNight`, `flicker` (0 steady, 1 a flame), `enabled`, `worldPosition`. The renderer gives a shadow to the brightest and nearest few by itself (see the guide, Lamps).
 
 `Emitter`: `style`, `rate` (per second), `position` (in the world or its node's space), `node`, `enabled`.
 
@@ -373,7 +373,7 @@ Light and air of a scene. Every value can change at any time, `shadows` included
 
 ### Models and animation
 
-`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy, clips, textures and skins. `read(bytes)` and `readModel(bytes, beside)` do the same from bytes (`beside` gives the bytes of a file the GLB names, an image beside it). Paths are looked up on disk, then in the resources. Cubic-spline curves and morph targets are refused with a message. `KHR_lights_punctual` (Blender's lights) is read.
+`Glb` loads glTF 2.0 binary files: `load(path)` gives the model in its rest pose as one `Mesh`, and `loadModel(path)` the `Model` with its hierarchy, clips, textures and skins. `read(bytes)` and `readModel(bytes, beside)` do the same from bytes (`beside` gives the bytes of a file the GLB names, an image beside it). Paths are looked up on disk, then in the resources. Cubic-spline curves and morph targets are refused with a message. `KHR_lights_punctual` (Blender's lights) is read. Besides the base colour (factor and image), a material's `normalTexture` (with the file's tangents or ones the engine makes), its emission (`emissiveFactor`, `KHR_materials_emissive_strength`, `emissiveTexture`) and `alphaMode` `BLEND` (drawn blended, sorted with the particles) are drawn.
 
 | Class | |
 |---|---|
