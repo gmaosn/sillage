@@ -47,7 +47,11 @@ class CullTest {
             return n
         }
         repeat(3000) { make() }
+        // Lamps around the camera's way: some cast shadows, what is out of sight still casts into their cubes.
+        repeat(40) { val a = rnd.nextFloat() * 6.3f; val d = 100 + rnd.nextFloat() * 40; s.light(at = vec(kotlin.math.cos(a) * d, 2, kotlin.math.sin(a) * d), radius = 6 + rnd.nextFloat() * 10) }
         val withCells = RenderBatches {}; val plain = RenderBatches {}
+        for (b in listOf(withCells, plain)) b.lampShadows(LAMP_SHADOWS, LAMP_TEXELS)
+        var lampFrames = 0
         var framesWithCells = 0
         for (frame in 0 until 240) {
             // The game changes a few things.
@@ -68,6 +72,7 @@ class CullTest {
             val main = s.lighting.mainLight()
             for (b in listOf(withCells, plain)) {
                 b.schedule(true, s.lighting, look, main, SHADOW_TEXELS)
+                b.lights(s.frameExtras(eye), vp, eye, s.lighting.fogEnd, 1280, 800, true)
                 b.gather(if (b === withCells) list else ArrayList(list), hidden, vp, eye, s.lighting.fogEnd, main)
             }
             if (s.stillCells.cells.isNotEmpty()) framesWithCells++
@@ -95,7 +100,22 @@ class CullTest {
             same("opaques", plain.opaque, withCells.opaque); same("discrets", plain.quiet, withCells.quiet)
             same("ciel", plain.skies, withCells.skies); same("taches", plain.shadows, withCells.shadows); same("eaux", plain.waters, withCells.waters)
             for (c in 0 until CASCADES) same("ombres $c", plain.casters[c], withCells.casters[c])
+            // The lamps' cube faces get the same copies (still or moving: each RenderBatches counts the frames on the same
+            // nodes, so only the whole of each face is compared).
+            fun copies(b: RenderBatches, k: Int): List<Long> {
+                val out = ArrayList<Long>()
+                for (list in listOf(b.lampCasters[k], b.lampMovers[k])) for (x in list) for (c in 0 until x.count) {
+                    var h = x.mesh.hashCode().toLong()
+                    for (i in 12 * c until 12 * c + 12) h = h * 31 + x.rows[i].toRawBits()
+                    out.add(h)
+                }
+                return out.sorted()
+            }
+            var faces = 0
+            for (k in 0 until 6 * LAMP_SHADOWS) { val p = copies(plain, k); assertEquals(p, copies(withCells, k), "image $frame : face $k des lampes"); if (p.isNotEmpty()) faces++ }
+            if (faces > 0) lampFrames++
         }
+        assertTrue(lampFrames > 100, "des lampes ont eu des ombres ($lampFrames images)")
         assertTrue(framesWithCells > 150, "les cellules ont servi ($framesWithCells images)")
         assertTrue(s.stillCells.still > 2500, "nœuds dans les cellules : ${s.stillCells.still}")
     }
