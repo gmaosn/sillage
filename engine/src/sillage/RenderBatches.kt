@@ -114,8 +114,11 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         return focus + right * (round(u / texel) * texel - u) + up * (round(v / texel) * texel - v)
     }
 
-    /** Adds one copy of [mesh] with the model rows of [node] (times [pose] for a part of an animated model). */
-    private fun add(slot: Int, order: ArrayList<Batch>, mesh: Mesh, node: Node, pose: Mat4?): Batch? {
+    /**
+     * Adds one copy of [mesh] with the model rows of [node] (times [pose] for a part of an animated model: its
+     * 16 coefficients, column first, see [Part.m]).
+     */
+    private fun add(slot: Int, order: ArrayList<Batch>, mesh: Mesh, node: Node, pose: FloatArray?): Batch? {
         if (mesh.vertices.isEmpty()) return null
         var slots = mesh.batches
         if (mesh.batchOwner !== token || slots == null) { slots = arrayOfNulls(5 + CASCADES); mesh.batches = slots; mesh.batchOwner = token }
@@ -134,13 +137,13 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
             r[o + 4] = a10; r[o + 5] = a11; r[o + 6] = a12; r[o + 7] = p.y
             r[o + 8] = a20; r[o + 9] = a21; r[o + 10] = a22; r[o + 11] = p.z
         } else {
-            // Mat4 names its coefficients column first (m30 m31 m32: the translation).
-            r[o] = a00 * pose.m00 + a01 * pose.m01 + a02 * pose.m02; r[o + 1] = a00 * pose.m10 + a01 * pose.m11 + a02 * pose.m12
-            r[o + 2] = a00 * pose.m20 + a01 * pose.m21 + a02 * pose.m22; r[o + 3] = a00 * pose.m30 + a01 * pose.m31 + a02 * pose.m32 + p.x
-            r[o + 4] = a10 * pose.m00 + a11 * pose.m01 + a12 * pose.m02; r[o + 5] = a10 * pose.m10 + a11 * pose.m11 + a12 * pose.m12
-            r[o + 6] = a10 * pose.m20 + a11 * pose.m21 + a12 * pose.m22; r[o + 7] = a10 * pose.m30 + a11 * pose.m31 + a12 * pose.m32 + p.y
-            r[o + 8] = a20 * pose.m00 + a21 * pose.m01 + a22 * pose.m02; r[o + 9] = a20 * pose.m10 + a21 * pose.m11 + a22 * pose.m12
-            r[o + 10] = a20 * pose.m20 + a21 * pose.m21 + a22 * pose.m22; r[o + 11] = a20 * pose.m30 + a21 * pose.m31 + a22 * pose.m32 + p.z
+            // The pose is laid column first: pose[12], pose[13], pose[14] are its translation.
+            r[o] = a00 * pose[0] + a01 * pose[1] + a02 * pose[2]; r[o + 1] = a00 * pose[4] + a01 * pose[5] + a02 * pose[6]
+            r[o + 2] = a00 * pose[8] + a01 * pose[9] + a02 * pose[10]; r[o + 3] = a00 * pose[12] + a01 * pose[13] + a02 * pose[14] + p.x
+            r[o + 4] = a10 * pose[0] + a11 * pose[1] + a12 * pose[2]; r[o + 5] = a10 * pose[4] + a11 * pose[5] + a12 * pose[6]
+            r[o + 6] = a10 * pose[8] + a11 * pose[9] + a12 * pose[10]; r[o + 7] = a10 * pose[12] + a11 * pose[13] + a12 * pose[14] + p.y
+            r[o + 8] = a20 * pose[0] + a21 * pose[1] + a22 * pose[2]; r[o + 9] = a20 * pose[4] + a21 * pose[5] + a22 * pose[6]
+            r[o + 10] = a20 * pose[8] + a21 * pose[9] + a22 * pose[10]; r[o + 11] = a20 * pose[12] + a21 * pose[13] + a22 * pose[14] + p.z
         }
         b.count++
         return b
@@ -191,7 +194,7 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
     }
 
     /** Whether a copy of [mesh] placed by node [o] and [pose] is seen, then whether it casts into the maps. */
-    private fun test(mesh: Mesh, o: Node, pose: Mat4?) {
+    private fun test(mesh: Mesh, o: Node, pose: FloatArray?) {
         if (!culling) { seen = true; casting = (1 shl CASCADES) - 1; return }
         if (pose == null) {
             // A node that has not moved since the last frame keeps its world sphere (its place and mesh are immutable values).
@@ -211,11 +214,11 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         }
         val sp = mesh.sphere
         var r = sp[3] * (if (mesh.dynamic) 1.5f else 1f)
-        val cx = pose.m00 * sp[0] + pose.m10 * sp[1] + pose.m20 * sp[2] + pose.m30
-        val cy = pose.m01 * sp[0] + pose.m11 * sp[1] + pose.m21 * sp[2] + pose.m31
-        val cz = pose.m02 * sp[0] + pose.m12 * sp[1] + pose.m22 * sp[2] + pose.m32
-        val sx = pose.m00 * pose.m00 + pose.m01 * pose.m01 + pose.m02 * pose.m02; val sy = pose.m10 * pose.m10 + pose.m11 * pose.m11 + pose.m12 * pose.m12
-        val sz = pose.m20 * pose.m20 + pose.m21 * pose.m21 + pose.m22 * pose.m22
+        val cx = pose[0] * sp[0] + pose[4] * sp[1] + pose[8] * sp[2] + pose[12]
+        val cy = pose[1] * sp[0] + pose[5] * sp[1] + pose[9] * sp[2] + pose[13]
+        val cz = pose[2] * sp[0] + pose[6] * sp[1] + pose[10] * sp[2] + pose[14]
+        val sx = pose[0] * pose[0] + pose[1] * pose[1] + pose[2] * pose[2]; val sy = pose[4] * pose[4] + pose[5] * pose[5] + pose[6] * pose[6]
+        val sz = pose[8] * pose[8] + pose[9] * pose[9] + pose[10] * pose[10]
         r *= sqrt(maxOf(sx, sy, sz))
         // The centre turned by the node's rotation (q v q*, written out: nothing allocated), scaled, moved.
         val q = o.rotation; val qx = q.x; val qy = q.y; val qz = q.z; val qw = q.w
@@ -336,11 +339,11 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         val casts = o.castsShadow
         for (j in parts.indices) {
             val p = parts[j]
-            test(p.mesh, o, p.pose)
+            test(p.mesh, o, p.m)
             if (!seen && casting == 0) { culled++; continue }
             prepare(p.mesh)
-            if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, p.mesh, o, p.pose) } else culled++
-            if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], p.mesh, o, p.pose)
+            if (seen) { drawn++; add(if (casts) 0 else 1, if (casts) opaque else quiet, p.mesh, o, p.m) } else culled++
+            if (casts && casting != 0) for (c in 0 until CASCADES) if (casting and (1 shl c) != 0) add(5 + c, casters[c], p.mesh, o, p.m)
         }
     }
 

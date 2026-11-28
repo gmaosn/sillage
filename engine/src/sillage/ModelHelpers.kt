@@ -123,7 +123,7 @@ internal class ModelHelpers(private val scene: Scene) {
         var j = m.nodes[i].parent
         while (j >= 0) {
             val n = m.nodes[j].name
-            if (n != null && a.nodePose(n) != null) return n
+            if (n != null && a.nodeIndex(n) >= 0) return n
             j = m.nodes[j].parent
         }
         return null
