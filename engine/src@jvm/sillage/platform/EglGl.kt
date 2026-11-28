@@ -176,7 +176,7 @@ internal class EglGl(private val target: EglWindow? = null) : Gl, AutoCloseable 
     /** The driver's name for its GPU (« Mesa Intel(R) Arc… », « llvmpipe… »). */
     val rendererName: String
     val versionName: String
-    /** EGL's own version and vendor (« 1.5 », « Mesa Project »). */
+    /** EGL's own version (« 1.5 »). */
     val eglVersion: String
     /** How the context was made: « surfaceless », « pbuffer », or the window's platform (« Wayland », « X11 (XCB) »…). */
     val kind: String

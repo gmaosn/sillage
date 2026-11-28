@@ -40,7 +40,7 @@ private fun String.en(vararg a: Any?): String = String.format(java.util.Locale.R
 internal class Doctor(private val title: String, private val args: Array<String>, private val setup: Scene.() -> Unit) {
     private val out: PrintStream = System.out
     private class Problem(val what: String, val fix: String?, val blocking: Boolean)
-    private val problems = ArrayList<Problem>()
+    private val problems: MutableList<Problem> = java.util.Collections.synchronizedList(ArrayList())   // filled from the checks' threads
     private var vulkanDevice: String? = null
     private var vulkanSoftware = false
     private var glRenderer: String? = null
@@ -74,7 +74,11 @@ internal class Doctor(private val title: String, private val args: Array<String>
 
     /** [check]'s line, or a line that says what failed (never an exception). */
     private fun section(label: String, seconds: Int, check: () -> String) {
-        val text = try { timed(seconds, check) } catch (e: Throwable) { "could not be checked: " + (e.message ?: e.javaClass.simpleName) }
+        val text = try { timed(seconds, check) } catch (e: Throwable) {
+            val why = (e.message ?: e.javaClass.simpleName).lineSequence().first()
+            problems.add(Problem(label.lowercase() + " could not be checked: " + why, null, false))
+            "could not be checked: $why"
+        }
         line(label, text)
     }
 
@@ -298,7 +302,8 @@ internal class Doctor(private val title: String, private val args: Array<String>
 
     private fun gles(): String {
         val gl = try { EglGl() } catch (e: Throwable) {
-            problems.add(Problem("OpenGL ES: " + Advice.glReason(e) + " (the fallback when Vulkan fails)", Advice.glFix(e), false))
+            // Windows has no OpenGL ES of its own: nothing to mend there.
+            if (!Os.windows) problems.add(Problem("OpenGL ES: " + Advice.glReason(e) + " (the fallback when Vulkan fails)", Advice.glFix(e), false))
             return "MISSING: " + Advice.glReason(e) + (Advice.glFix(e)?.let { "\nto have it: $it" } ?: "")
         }
         try {
@@ -416,6 +421,7 @@ internal class Doctor(private val title: String, private val args: Array<String>
     // ------------------------------------------------------------------ what to do
 
     private fun verdict() {
+        val problems = synchronized(this.problems) { this.problems.toList() }
         if (problems.isEmpty()) { line("Verdict", "everything Sillage needs is here."); return }
         val text = StringBuilder()
         for ((i, p) in problems.withIndex()) {
