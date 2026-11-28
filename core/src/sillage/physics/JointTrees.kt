@@ -1,6 +1,7 @@
 package sillage.physics
 
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
@@ -54,8 +55,8 @@ internal class JointTrees(private val world: PhysicsWorld) {
         val b = if (dynamic(j.ib)) j.ib else -1
         return if (a >= 0) root(a) else if (b >= 0) root(b) else -1
     }
-    private var heavy = BooleanArray(0); private var was = BooleanArray(0)
-    private companion object { const val LOADED = 20f }
+    private var heavy = BooleanArray(0); private var was = BooleanArray(0); private var busy = BooleanArray(0)
+    private companion object { const val LOADED = 20f; const val QUIET = 10f; const val QUIET_STEPS = 60 }
 
     /** Picks this step's tree joints among [joints] (prepared already), builds K at the step's start and factors it. */
     fun prepare(joints: List<Joint>, dt: Float) {
@@ -65,7 +66,7 @@ internal class JointTrees(private val world: PhysicsWorld) {
         if (parent.size < bodies) {
             val c = bodies + 16
             parent = IntArray(c); tainted = BooleanArray(c); calm = BooleanArray(c); bodyDegree = IntArray(c); degree = IntArray(c); stamp = IntArray(c)
-            bodyStart = IntArray(c); blockStart = IntArray(c); heavy = BooleanArray(c); was = BooleanArray(c)
+            bodyStart = IntArray(c); blockStart = IntArray(c); heavy = BooleanArray(c); was = BooleanArray(c); busy = BooleanArray(c)
         }
         for (j in joints) { if (j.ia >= 0) { parent[j.ia] = j.ia; tainted[j.ia] = false }; parent[j.ib] = j.ib; tainted[j.ib] = false }
         // The groups of dynamic bodies joined together, and those with a joint that stays iterative: one with no
@@ -88,28 +89,33 @@ internal class JointTrees(private val world: PhysicsWorld) {
         }
         // A heavy load on a light body: a joint carrying more than [LOADED] times the weight (at 9.81 m/s², whatever
         // the world's gravity) of the lighter of its bodies. Below that the soft joints are as good and cheaper (a
-        // chain waving, the demo's swing with no one on it); a group solved here stays so until it falls asleep (its
-        // impulses, corrections included, no longer measure the load alone: switching to and fro jolted a bridge).
-        for (j in joints) { val r = groupOf(j); if (r < 0) continue; heavy[r] = false; was[r] = false; calm[r] = false }
+        // chain waving, the demo's swing with no one on it). A group solved here stays so while a kinematic body
+        // touches it (a character on a bridge: its weight, given between steps, does not show in the joints'
+        // impulses at the step's end) or while one of its joints carried more than [QUIET] times that weight within
+        // the last [QUIET_STEPS] steps (switching to and fro jolts a loaded bridge).
+        for (j in joints) { val r = groupOf(j); if (r < 0) continue; heavy[r] = false; was[r] = false; busy[r] = false; calm[r] = false }
+        // A group a kinematic body touches is not stiffened either: its contacts, which have the last word, would
+        // fight the stiffened bodies.
+        for (j in joints) {
+            val a = if (dynamic(j.ia)) j.ia else -1
+            val b = if (dynamic(j.ib)) j.ib else -1
+            if (a < 0 && b < 0) continue
+            if ((a >= 0 && world.touchingKinematic(a)) || (b >= 0 && world.touchingKinematic(b))) calm[root(if (a >= 0) a else b)] = true
+        }
         for (j in joints) {
             val r = groupOf(j); if (r < 0) continue
             val im = max(if (dynamic(j.ia)) world.st[j.ia * S + IM] else 0f, if (dynamic(j.ib)) world.st[j.ib * S + IM] else 0f)
-            if (j.force * im > LOADED * 9.81f) heavy[r] = true
+            val carried = j.force * im
+            if (carried > LOADED * 9.81f) heavy[r] = true
+            j.treeQuiet = if (carried > QUIET * 9.81f) 0 else min(j.treeQuiet + 1, QUIET_STEPS)
+            if (j.treeQuiet < QUIET_STEPS) busy[r] = true
             if (j.direct) was[r] = true
         }
         for (k in 0 until list.size) list[k].direct = false
         list.clear()
         for (j in joints) {
             val r = groupOf(j); if (r < 0) continue
-            if (!tainted[r] && (heavy[r] || was[r])) list.add(j)
-        }
-        // A group a kinematic body touches (a character standing on a bridge) is not stiffened: its contacts, which
-        // have the last word, would fight the stiffened bodies.
-        for (j in joints) {
-            val a = if (dynamic(j.ia)) j.ia else -1
-            val b = if (dynamic(j.ib)) j.ib else -1
-            if (a < 0 && b < 0) continue
-            if ((a >= 0 && world.touchingKinematic(a)) || (b >= 0 && world.touchingKinematic(b))) calm[root(if (a >= 0) a else b)] = true
+            if (!tainted[r] && (heavy[r] || (was[r] && (busy[r] || calm[r])))) list.add(j)
         }
         val count = list.size
         if (count == 0) return
