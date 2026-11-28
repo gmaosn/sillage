@@ -71,6 +71,17 @@ class CullTest {
                 b.gather(if (b === withCells) list else ArrayList(list), hidden, vp, eye, s.lighting.fogEnd, main)
             }
             if (s.stillCells.cells.isNotEmpty()) framesWithCells++
+            // The cells know their nodes by their place in the list; the others are visited in the list's order.
+            for (c in s.stillCells.cells) for (j in 0 until c.count) {
+                val n = list[c.ranks[j]]
+                assertTrue(n.cell === c && n.cellSlot == j && n.rank == c.ranks[j], "image $frame : cellule, place $j")
+            }
+            val moving = s.stillCells.moving
+            for (k in moving.indices) {
+                assertTrue(moving[k].cell == null && list[moving[k].rank] === moving[k], "image $frame : hors cellule $k")
+                if (k > 0) assertTrue(moving[k - 1].rank < moving[k].rank, "image $frame : ordre hors cellule")
+            }
+            assertEquals(list.size, moving.size + s.stillCells.still, "image $frame : chaque nœud une fois")
             assertEquals(plain.culled, withCells.culled, "image $frame : culled")
             assertEquals(plain.drawn, withCells.drawn, "image $frame : drawn")
             fun same(what: String, x: List<Batch>, y: List<Batch>) {

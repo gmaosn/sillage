@@ -600,9 +600,8 @@ class Scene {
     fun remove(node: Node) {
         if (node.removed) return
         node.removed = true
-        removals++; stillCells.forget(node)
-        all.remove(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node); behaving.remove(node); animated.remove(node)
-        shadows.filter { it.of === node }.forEach { all.remove(it.disc) }
+        drop(node); linked.remove(node); kinematicNodes.remove(node); playerList.remove(node); behaving.remove(node); animated.remove(node)
+        shadows.filter { it.of === node }.forEach { drop(it.disc) }
         shadows.removeAll { it.of === node }
         node.body?.let { b -> sounds.untrack(b); surfaces.remove(b.id); cameraIgnores.remove(b.id); physics.remove(b) }
         followers.filter { it.node === node }.forEach { surfaces.remove(it.body.id); cameraIgnores.remove(it.body.id); physics.remove(it.body) }
@@ -1011,14 +1010,22 @@ class Scene {
     }
 
     /** The still nodes in cells, for the renderers' culling (see [StillCells]); how many nodes left the draw list so far. */
-    internal val stillCells = StillCells()
-    private var removals = 0
+    internal val stillCells = StillCells(all)
 
     /** The cells of [nodes] if it is this scene's draw list ([drawList]), brought up to date for this frame; null otherwise. */
     internal fun stillCellsOf(nodes: List<Node>): StillCells? {
         if (nodes !== all) return null
-        stillCells.sync(all, removals)
+        stillCells.sync()
         return stillCells
+    }
+
+    /** Takes [n] out of the draw list, keeping the still cells' indices right. */
+    private fun drop(n: Node) {
+        val r = all.indexOf(n)
+        if (r < 0) return
+        stillCells.forget(n)
+        all.removeAt(r)
+        stillCells.removedAt(r)
     }
 
     /** What the renderer draws this frame (the sky follows the eye; a first-person player is not drawn). */

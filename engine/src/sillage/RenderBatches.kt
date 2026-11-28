@@ -258,11 +258,32 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         val sRight = (ref cross light).normalized(); val sUp = light cross sRight
         rx = sRight.x; ry = sRight.y; rz = sRight.z; ux = sUp.x; uy = sUp.y; uz = sUp.z
         val still = if (culling && nodes.isNotEmpty()) nodes[0].scene.stillCellsOf(nodes) else null
-        if (still == null || still.cells.isEmpty()) {
-            for (k in nodes.indices) visit(nodes[k], hidden, eye)
-            return
+        // When the cells left out whole hold few nodes, visiting every node costs less than choosing them.
+        if (still == null || 8 * cellsLeftOut(still) < nodes.size) visitAll(nodes, hidden, eye)
+        else visitKept(nodes, still, hidden, eye)
+    }
+
+    // Each loop in a method of its own, compiled on its own (see ARCHITECTURE: a loop inside a large method ran slower).
+
+    private fun visitAll(nodes: List<Node>, hidden: Node?, eye: Vec3) {
+        for (k in nodes.indices) visit(nodes[k], hidden, eye)
+    }
+
+    /** Marks the cells left out whole this frame ([StillCell.out]); how many nodes they hold. */
+    private fun cellsLeftOut(still: StillCells): Int {
+        val cells = still.cells
+        eyeSize = max(max(abs(ex), abs(ey)), abs(ez))
+        var left = 0
+        for (k in 0 until cells.size) {
+            val c = cells[k]
+            c.out = c.count > 0 && leftOut(c)
+            if (c.out) left += c.count
         }
-        // The nodes to visit: every one outside the cells, and those of the cells not left out whole.
+        return left
+    }
+
+    /** Visits, in the list's order, every node outside the cells and those of the cells not left out whole. */
+    private fun visitKept(nodes: List<Node>, still: StillCells, hidden: Node?, eye: Vec3) {
         val words = (nodes.size + 63) ushr 6
         if (marks.size < words) marks = LongArray(2 * words)
         val m = marks
@@ -270,18 +291,17 @@ internal class RenderBatches(private val prepare: (Mesh) -> Unit) {
         val moving = still.moving
         for (k in 0 until moving.size) { val r = moving[k].rank; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
         val cells = still.cells
-        eyeSize = max(max(abs(ex), abs(ey)), abs(ez))
         for (k in 0 until cells.size) {
             val c = cells[k]
             if (c.count == 0) continue
-            if (leftOut(c)) {
+            if (c.out) {
                 // As if each of its nodes had been visited and found unseen (the hidden node is never counted).
                 culled += c.count
                 if (hidden != null && hidden.cell === c) culled--
                 continue
             }
-            val ns = c.nodes
-            for (j in 0 until c.count) { val r = ns[j]!!.rank; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
+            val rs = c.ranks
+            for (j in 0 until c.count) { val r = rs[j]; m[r ushr 6] = m[r ushr 6] or (1L shl r) }
         }
         for (w in 0 until words) {
             var bits = m[w]

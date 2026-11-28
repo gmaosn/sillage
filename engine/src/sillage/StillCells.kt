@@ -13,16 +13,23 @@ import kotlin.math.sqrt
 // the first change (Node.stir); every other node is visited each frame, as before. A frame visits the nodes it
 // kept by their index in the scene's draw list, so that what is drawn, and in which order, is exactly what
 // visiting every node gives.
+//
+// A cell holds its nodes' indices, not the nodes: the collector then copies the nodes in the order of the draw
+// list that refers to them, and a frame that visits them in that order reads memory in order (with the nodes
+// referred to from the cells too, the copies followed the cells, and 10 000 crates all in sight were drawn
+// 20 % slower).
 
 /** Frames without a change before a node joins a cell. */
 private const val CALM_FRAMES = 30
 /** Nodes per cell aimed at when the grid's side is chosen. */
 private const val PER_CELL = 16f
 
-/** One cell of [StillCells]: its nodes and the box holding their spheres. */
+/** One cell of [StillCells]: its nodes (by their index in the draw list) and the box holding their spheres. */
 internal class StillCell {
-    var nodes = arrayOfNulls<Node>(8)
+    var ranks = IntArray(8)
     var count = 0
+    /** Left out whole this frame (RenderBatches). */
+    var out = false
     var minX = Float.POSITIVE_INFINITY; var minY = Float.POSITIVE_INFINITY; var minZ = Float.POSITIVE_INFINITY
     var maxX = Float.NEGATIVE_INFINITY; var maxY = Float.NEGATIVE_INFINITY; var maxZ = Float.NEGATIVE_INFINITY
     /** The longest draw distance of its nodes. */
@@ -31,18 +38,19 @@ internal class StillCell {
     var size = 0f
 
     fun add(o: Node, b: FloatArray) {
-        if (count == nodes.size) nodes = nodes.copyOf(2 * count)
-        nodes[count] = o; o.cell = this; o.cellSlot = count; count++
+        if (count == ranks.size) ranks = ranks.copyOf(2 * count)
+        ranks[count] = o.rank; o.cell = this; o.cellSlot = count; count++
         minX = min(minX, b[0]); minY = min(minY, b[1]); minZ = min(minZ, b[2])
         maxX = max(maxX, b[3]); maxY = max(maxY, b[4]); maxZ = max(maxZ, b[5])
         far = max(far, o.drawDistance)
         size = max(max(max(abs(minX), abs(maxX)), max(abs(minY), abs(maxY))), max(abs(minZ), abs(maxZ)))
     }
 
-    fun remove(o: Node) {
+    /** Takes [o] out ([nodes]: the draw list, to find the node moved into its slot). */
+    fun remove(o: Node, nodes: List<Node>) {
         val s = o.cellSlot
-        val last = nodes[--count]!!
-        nodes[s] = last; last.cellSlot = s; nodes[count] = null
+        val last = ranks[--count]
+        ranks[s] = last; nodes[last].cellSlot = s
         o.cell = null; o.cellSlot = -1
         if (count == 0) {       // its box starts afresh (while it holds nodes, it only grows: still holding the ones left)
             minX = Float.POSITIVE_INFINITY; minY = Float.POSITIVE_INFINITY; minZ = Float.POSITIVE_INFINITY
@@ -52,9 +60,12 @@ internal class StillCell {
     }
 }
 
-/** The still nodes of a scene in cells, and the nodes visited every frame ([moving]). */
-internal class StillCells {
-    /** Nodes not in a cell: moving, just made, or never still (the sky, players, animated models…). */
+/**
+ * The still nodes of a scene in cells, and the nodes visited every frame ([moving]), for the scene's draw list
+ * [nodes]. Every node of the list knows its index in it ([Node.rank]) once the cells have seen it.
+ */
+internal class StillCells(private val nodes: List<Node>) {
+    /** Nodes not in a cell (moving, just made, or never still: the sky, players, animated models…), in the list's order. */
     val moving = ArrayList<Node>()
     val cells = ArrayList<StillCell>()
     private val byKey = HashMap<Long, StillCell>()
@@ -65,43 +76,46 @@ internal class StillCells {
     var still = 0
         private set
     private var sideFor = 0
+    /** How many nodes of the list the cells know (the others were added since). */
     private var known = 0
-    private var removalsSeen = 0
     private val joining = ArrayList<Node>()
     private val box = FloatArray(6)
     private val sphere = FloatArray(4)
 
-    /** [o] changed: it leaves its cell and is visited every frame again. */
+    /** [o] changed: it leaves its cell and is visited every frame again (in the list's order). */
     fun wake(o: Node) {
-        o.cell!!.remove(o); still--
+        o.cell!!.remove(o, nodes); still--
         o.calm = 0
-        moving.add(o)
+        backToMoving(o)
     }
 
-    /** [o] left the scene. */
+    /** [o] among the nodes visited every frame, at its place in the list's order. */
+    private fun backToMoving(o: Node) {
+        var lo = 0; var hi = moving.size
+        while (lo < hi) { val mid = (lo + hi) ushr 1; if (moving[mid].rank < o.rank) lo = mid + 1 else hi = mid }
+        moving.add(lo, o)
+    }
+
+    /** [o] is about to leave the draw list (the indices still hold). */
     fun forget(o: Node) {
         val c = o.cell
-        if (c != null) { c.remove(o); still-- }
-        // In [moving], it is dropped at the next frame (it is no longer at its place in the list).
+        if (c != null) { c.remove(o, nodes); still-- } else moving.remove(o)
     }
 
-    /**
-     * Brings the cells up to date with the scene's draw list [nodes] ([removals]: how many nodes left it so far): every
-     * node knows its index, new nodes are visited every frame, the ones calm for long enough join their cells.
-     */
-    fun sync(nodes: List<Node>, removals: Int) {
-        if (removals != removalsSeen) {
-            removalsSeen = removals
-            for (i in nodes.indices) nodes[i].rank = i
-            var w = 0
-            for (k in 0 until moving.size) { val o = moving[k]; val r = o.rank; if (r < nodes.size && nodes[r] === o) moving[w++] = o }
-            while (moving.size > w) moving.removeAt(moving.size - 1)
-            for (i in nodes.indices) { val o = nodes[i]; if (!o.indexed) { o.indexed = true; moving.add(o) } }
-        } else if (nodes.size > known) {
-            for (i in known until nodes.size) { val o = nodes[i]; o.rank = i; if (!o.indexed) { o.indexed = true; moving.add(o) } }
+    /** The node that was at [r] left the draw list: the indices after it move down by one. */
+    fun removedAt(r: Int) {
+        if (r >= known) return
+        known--
+        for (i in r until nodes.size) nodes[i].rank = i
+        for (k in 0 until cells.size) { val c = cells[k]; val rs = c.ranks; for (j in 0 until c.count) if (rs[j] > r) rs[j]-- }
+    }
+
+    /** Brings the cells up to date for this frame: new nodes are visited every frame, the ones calm for long enough join their cells. */
+    fun sync() {
+        if (nodes.size > known) {
+            for (i in known until nodes.size) { val o = nodes[i]; o.rank = i; o.calm = 0; moving.add(o) }
+            known = nodes.size
         }
-        known = nodes.size
-        // The nodes that stayed calm long enough join a cell.
         var w = 0
         for (k in 0 until moving.size) {
             val o = moving[k]
@@ -113,7 +127,7 @@ internal class StillCells {
         while (moving.size > w) moving.removeAt(moving.size - 1)
         if (joining.isNotEmpty()) {
             if (side == 0f || still + joining.size > 4 * sideFor) regrid()
-            for (k in 0 until joining.size) { val o = joining[k]; if (!join(o)) moving.add(o) }
+            for (k in 0 until joining.size) { val o = joining[k]; if (!join(o)) backToMoving(o) }
             joining.clear()
         }
     }
@@ -169,7 +183,7 @@ internal class StillCells {
 
     /** Chooses the side of the cells for the still nodes and those [joining] (about [PER_CELL] nodes a cell), and lays the cells again. */
     private fun regrid() {
-        for (k in 0 until cells.size) { val c = cells[k]; while (c.count > 0) { val o = c.nodes[c.count - 1]!!; c.remove(o); joining.add(o) } }
+        for (k in 0 until cells.size) { val c = cells[k]; while (c.count > 0) { val o = nodes[c.ranks[c.count - 1]]; c.remove(o, nodes); joining.add(o) } }
         cells.clear(); byKey.clear(); still = 0
         var lx = Float.POSITIVE_INFINITY; var lz = Float.POSITIVE_INFINITY; var hx = Float.NEGATIVE_INFINITY; var hz = Float.NEGATIVE_INFINITY
         var n = 0

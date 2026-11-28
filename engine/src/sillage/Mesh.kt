@@ -90,15 +90,24 @@ class Mesh(val vertices: FloatArray) {
         if (e != null) { var o = 0; while (o < e.size && !cut) { cut = e[o + 4] > .5f && e[o + 7] > 1.5f && e[o + 10] > 0f; o += EFFECT_FLOATS } }
         cut
     }
-    /** Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. */
-    internal val unlit: Boolean by lazy { vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f }
+    /**
+     * Drawn in its plain colours (zero normals: the sky, the HUD); such a mesh casts no shadow. Read for every
+     * copy drawn, so kept in a plain field once worked out (0: not yet, 1: no, 2: yes) rather than behind a lazy.
+     */
+    internal val unlit: Boolean get() {
+        var u = unlitState
+        if (u == 0) { u = if (vertices.size >= 9 && vertices[3] == 0f && vertices[4] == 0f && vertices[5] == 0f) 2 else 1; unlitState = u }
+        return u == 2
+    }
+    private var unlitState = 0
 
-    /** A sphere holding the mesh (the centre of its bounds, half their diagonal): x, y, z, radius. */
-    internal val sphere: FloatArray by lazy {
+    /** A sphere holding the mesh (the centre of its bounds, half their diagonal): x, y, z, radius; worked out once, when first asked. */
+    internal val sphere: FloatArray get() = sphereOnce ?: run {
         val (lo, hi) = bounds
         val dx = (hi.x - lo.x) / 2; val dy = (hi.y - lo.y) / 2; val dz = (hi.z - lo.z) / 2
-        floatArrayOf((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, (lo.z + hi.z) / 2, sqrt(dx * dx + dy * dy + dz * dz))
+        floatArrayOf((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, (lo.z + hi.z) / 2, sqrt(dx * dx + dy * dy + dz * dz)).also { sphereOnce = it }
     }
+    private var sphereOnce: FloatArray? = null
 
     /** Smallest box holding the mesh: min and max corners. */
     val bounds: Pair<Vec3, Vec3> by lazy {

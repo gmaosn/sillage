@@ -58,8 +58,6 @@ open class Node internal constructor(internal val scene: Scene, mesh: Mesh) {
     /** Whether its placement or looks changed since the cells last looked; frames in a row without a change. */
     internal var stirred = false
     internal var calm = 0
-    /** Whether the scene's cells know it (in a cell or among the nodes visited every frame). */
-    internal var indexed = false
 
     /** Its placement or what it draws changed: it leaves its cell, if it was in one. */
     internal fun stir() {
