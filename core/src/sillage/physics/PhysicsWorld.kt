@@ -858,7 +858,8 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
     // Broad phase: a uniform grid. Every small body is entered in each cell its bounds overlap, as one
     // Long (cell coordinates on 13 bits each, then the body on 24 bits); one primitive sort groups the
     // cells. A pair is reported only in the cell that holds the lowest corner of the two bounds'
-    // overlap, so no pair comes twice and no set is needed. Large bodies (walls) are tested apart.
+    // overlap, so no pair comes twice and no set is needed. Large bodies (walls) are tested apart. The static
+    // bodies are not entered: the awake dynamic ones find theirs in the still query tree (see [staticPairsOf]).
     private var cells = LongArray(0)
     private val large = IntList()
     private var isLarge = BooleanArray(0)
@@ -1994,7 +1995,7 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
      * core (half its smallest half-size) during the step has its whole shape swept from where it was to
      * where it is (at its present orientation), against the meshes and what does not move (and against
      * every body for a [Body.isBullet]), each in the motion relative to it. If it went through something —
-     * met it and went on deeper than a small depth (a quarter of its core, at most 1 cm) — it is put back
+     * met it and went on into it as deep as its core — it is put back
      * just before it, its velocity kept: the next step's contacts then stop it (Box2D v3's way). A sweep
      * that starts inside something is ignored.
      */
