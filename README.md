@@ -21,11 +21,11 @@ That is a whole game: a window, a sky, a sun, a lawn, a crate and a ball that ob
 
 ## What is inside
 
-- **Rendering**: Vulkan, called directly through the JDK's foreign function API. A soft toon look (two-tone light, rim light, haze) drawn in linear light, with a halo around bright things, ink lines along silhouettes and 4× anti-aliasing. The hours of the day (sunrise, sunset, night with moon and stars), shadows cast by the sun or the moon, lamps that light up at dusk, surfaces that glow, plants that sway in the wind, particles (fire, smoke, sparks, splashes, fireflies), water that finds its shores (lagoons, foam, surf, glitter). Detail textures painted by the engine itself (grass, sand, wood, planks, roof tiles, cobbles, rock, plaster, cloth, leaves, bark) and laid on models by their material names. Only what the camera sees is drawn (frustum, haze, draw distance; levels of detail by distance). Instanced drawing, two frames in flight, GPU timing. Runs in a window or off screen. The look is a setting, not a fate: `lighting.softness` goes from the drawn two-tone light to a smooth one that turns around shapes (stone, clay), and models may carry their colours vertex by vertex. A second renderer, on OpenGL ES 3 and WebGL 2, draws the same picture from the same shaders where there is no Vulkan (a web page, a phone).
+- **Rendering**: Vulkan, called directly through the JDK's foreign function API. A soft toon look (two-tone light, rim light, haze) drawn in linear light, with a halo around bright things, ink lines along silhouettes and 4× anti-aliasing. The hours of the day (sunrise, sunset, night with moon and stars), shadows cast by the sun or the moon, lamps that light up at dusk, surfaces that glow, plants that sway in the wind, particles (fire, smoke, sparks, splashes, fireflies), water that finds its shores (lagoons, foam, surf, glitter). Detail textures painted by the engine itself (grass, sand, wood, planks, roof tiles, cobbles, rock, plaster, cloth, leaves, bark) and laid on models by their material names. Only what the camera sees is drawn (frustum, haze, draw distance; levels of detail by distance). Instanced drawing, two frames in flight, GPU timing. Runs in a window or off screen. The look is a setting, not a fate: `lighting.softness` goes from the drawn two-tone light to a smooth one that turns around shapes (stone, clay), and models may carry their colours vertex by vertex. A second renderer, on OpenGL ES 3 and WebGL 2, draws the same picture from the same shaders where there is no Vulkan (a web page, a phone), and takes over on the desktop, in the game's own Wayland or X11 window, when Vulkan cannot start.
 - **Windows**: its own Wayland client, with X11 as a fallback; a Win32 window on Windows, a canvas in a page, a surface on Android. Relative mouse, pointer lock, sharp output on high-DPI screens. Keys are read by position, so WASD works as ZQSD on an AZERTY keyboard. A touch screen plays as a pad, with nothing to set up: left thumb to walk, right thumb to look, a tap to jump.
 - **Physics**: rigid bodies (boxes, spheres, capsules, convex hulls, compounds) on static triangle meshes, floating in water that carries them (exact submerged volumes, drag, currents), after Box2D v3's soft-step solver. Stable stacks, friction patches, mixed masses, rolling resistance, surfaces per material, sleep, rays and sphere sweeps, trigger zones, continuous collision for fast bodies and projectiles. Joints (ball, hinge, slider, fixed, distance, spring, rope, chains, cone–twist for rag dolls) with limits, motors and springs; raycast vehicles with suspension, steering, brakes and tyres that skid; characters carried by moving platforms. Up to 8 threads, with the same result to the bit whatever their number. Collision tests allocate nothing.
 - **A character controller**: walks, runs, climbs steps, handles slopes, rides platforms, pushes crates according to their mass. Third or first person, switchable.
-- **Sound**: its own mixer (48 voices, sounds placed in space, Doppler effect, reverberation with presets and zones), its own Ogg Vorbis decoder (the same as libvorbis to 3·10⁻⁷), output through ALSA (Linux), OSS (FreeBSD), waveOut (Windows), Web Audio (a page) or AudioTrack (Android). The engine's own sounds are synthesised: footsteps per surface, jumps, landings, impacts, waves, gulls.
+- **Sound**: its own mixer (48 voices, sounds placed in space, Doppler effect, reverberation with presets and zones), its own Ogg Vorbis decoder (the same as libvorbis to 3·10⁻⁷; music and long ambiences stay compressed and are decoded while they play), output through ALSA (Linux), OSS (FreeBSD), waveOut (Windows), Web Audio (a page) or AudioTrack (Android). The engine's own sounds are synthesised: footsteps per surface, jumps, landings, impacts, waves, gulls.
 - **Blender as the editor**: objects named `col_…` become collision volumes, an empty `spawn` the player's start, Blender's lights lamps; custom properties make an object move (`sillage = dynamic`), a zone or a pickup the game finds by name.
 - **Models**: glTF binary files as Blender exports them: hierarchies, node animations, skins (characters bent by a skeleton), images painted on the model (PNG and JPEG read by the engine's own decoders, alpha cut-outs). Material names in Blender set the surface (grass, sand, wood, stone, road, ice) and the detail texture.
 - **Games**: a scene API in one file. Builders, physics in one call, players, pickups, zones, timers, scripts and tweens, several scenes, and runs without a window for tests.
@@ -39,20 +39,20 @@ No third-party library: the engine depends on the Kotlin standard library and on
 
 | | Drawn with | Packed with |
 |---|---|---|
-| Linux x86-64 | Vulkan | `./sillage package GAME` (one AppImage file) |
-| Raspberry Pi 4, 5, 500 | Vulkan | `./sillage package GAME --arch aarch64` |
+| Linux x86-64 | Vulkan (OpenGL ES without it) | `./sillage package GAME` (one AppImage file) |
+| Raspberry Pi 4, 5, 500 | Vulkan (OpenGL ES without it) | `./sillage package GAME --arch aarch64` |
 | Windows 10 and 11 | Vulkan | `./sillage package GAME --os windows` |
 | FreeBSD (and NetBSD through its Linux emulation) | Vulkan | `./sillage package GAME --portable` |
 | A web page | WebGL 2, from WebAssembly | `./sillage web GAME` |
 | Android | OpenGL ES 3 | `./kotlin build -m GAME-android` |
 
-Every package is made on the Linux computer where the game is written, and carries its own Java runtime where the system has none. [docs/PLATFORMS.md](docs/PLATFORMS.md) gives the recipe for each, and says plainly what each was tried on: Linux on a real desktop every day, the others on emulators, virtual machines and Wine so far.
+Every package is made on the Linux computer where the game is written, and carries its own Java runtime where the system has none. `./sillage doctor` (or a packed game started with `--doctor`) checks a computer — system, Java, Vulkan, Wayland or X11, OpenGL ES, sound, memory, disk — times a short run of the game without a window, and prints a short report to paste in a message, with what to install when something is missing. [docs/PLATFORMS.md](docs/PLATFORMS.md) gives the recipe for each, and says plainly what each was tried on: Linux on a real desktop every day, the others on emulators, virtual machines and Wine so far.
 
 ## Requirements
 
 To write a game:
 
-- Linux on x86-64, with a Vulkan driver (Mesa or a vendor's) and Wayland or X11. Sound goes through ALSA, which on a desktop hands it to PipeWire or PulseAudio.
+- Linux on x86-64, with a Vulkan driver (Mesa or a vendor's) and Wayland or X11; without Vulkan the game is drawn with OpenGL ES (EGL), and says so in one line. Sound goes through ALSA, which on a desktop hands it to PipeWire or PulseAudio; without it the game plays on silently.
 - JDK 25 and the Kotlin Toolchain, which `./kotlin` (and so `./sillage`) downloads by itself into `.tools/` on the first build.
 - Nothing else: the shaders are compiled to SPIR-V in the repository (`tools/shaders.sh` and `glslc` only to change them). Packing for a Raspberry Pi uses Docker for its start-up cache, and packing for Windows uses Wine for the same, when they are there; both do without.
 
@@ -115,7 +115,7 @@ A game is a module of the project: `./sillage new mygame` makes one, `./sillage 
 
 Linux on x86-64 is where Sillage is written and played every day. The other systems have their backend, their packaging command and their recipe, and were tried as far as a single laptop allows (an emulated ARM processor, virtual machines, Wine, the Android emulator, a headless browser): a real Raspberry Pi, a real Windows, a real phone are the next step, and reports are welcome. Game pads are read on Linux only; elsewhere keyboard, mouse and touch. No macOS or iOS.
 
-Not there yet: streamed audio (files are decoded whole into memory), MP3, morph targets. The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.
+Not there yet: MP3, morph targets. The [guide](docs/GUIDE.md) and the [physics page](docs/PHYSICS.md) list the limits in detail.
 
 ## Licence
 

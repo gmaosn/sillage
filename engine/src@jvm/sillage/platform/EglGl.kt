@@ -137,30 +137,37 @@ private object Egl {
     @JvmField val initialize = f("eglInitialize", I, P, P, P)
     @JvmField val bindApi = f("eglBindAPI", I, I)
     @JvmField val chooseConfig = f("eglChooseConfig", I, P, P, P, I, P)
+    @JvmField val getConfigAttrib = f("eglGetConfigAttrib", I, P, P, I, P)
     @JvmField val createContext = f("eglCreateContext", P, P, P, P, P)
     @JvmField val createPbufferSurface = f("eglCreatePbufferSurface", P, P, P, P)
+    @JvmField val createWindowSurface = f("eglCreateWindowSurface", P, P, P, P, P)
+    /** EGL 1.5, with a display from [getPlatformDisplay]. */
+    @JvmField val createPlatformWindowSurface: MethodHandle? = lib.find("eglCreatePlatformWindowSurface").map { linker.downcallHandle(it, FunctionDescriptor.of(P, P, P, P, P)) }.orElse(null)
     @JvmField val makeCurrent = f("eglMakeCurrent", I, P, P, P, P)
+    @JvmField val swapBuffers = f("eglSwapBuffers", I, P, P)
+    @JvmField val swapInterval = f("eglSwapInterval", I, P, I)
     @JvmField val destroyContext = f("eglDestroyContext", I, P, P)
     @JvmField val destroySurface = f("eglDestroySurface", I, P, P)
     @JvmField val terminate = f("eglTerminate", I, P)
     @JvmField val getError = f("eglGetError", I)
 
-    const val EXTENSIONS = 0x3055
+    const val EXTENSIONS = 0x3055; const val VENDOR = 0x3053; const val VERSION = 0x3054
     const val PLATFORM_SURFACELESS_MESA = 0x31DD
     const val OPENGL_ES_API = 0x30A0
     const val NONE = 0x3038
-    const val SURFACE_TYPE = 0x3033; const val PBUFFER_BIT = 1
+    const val SURFACE_TYPE = 0x3033; const val PBUFFER_BIT = 1; const val WINDOW_BIT = 4
     const val RENDERABLE_TYPE = 0x3040; const val OPENGL_ES3_BIT = 0x40
     const val RED_SIZE = 0x3024; const val GREEN_SIZE = 0x3023; const val BLUE_SIZE = 0x3022; const val ALPHA_SIZE = 0x3021
+    const val SAMPLE_BUFFERS = 0x3032; const val NATIVE_VISUAL_ID = 0x302E; const val CONFIG_CAVEAT = 0x3027; const val SLOW_CONFIG = 0x3050
     const val CONTEXT_CLIENT_VERSION = 0x3098
     const val WIDTH = 0x3057; const val HEIGHT = 0x3056
 }
 
 /**
- * An OpenGL ES 3 context of its own, with no window, current on the thread that makes it (every call must
- * come from that thread). [close] frees it.
+ * An OpenGL ES 3 context, current on the thread that makes it (every call must come from that thread): of its
+ * own, without any window, or drawing into the window [target] describes. [close] frees it.
  */
-internal class EglGl : Gl, AutoCloseable {
+internal class EglGl(private val target: EglWindow? = null) : Gl, AutoCloseable {
     private val arena = Arena.ofConfined()
     private val scratch = arena.allocate(JAVA_INT, 16)
     private var display = MemorySegment.NULL
@@ -169,7 +176,9 @@ internal class EglGl : Gl, AutoCloseable {
     /** The driver's name for its GPU (« Mesa Intel(R) Arc… », « llvmpipe… »). */
     val rendererName: String
     val versionName: String
-    /** How the context was made: « surfaceless » or « pbuffer ». */
+    /** EGL's own version (« 1.5 »). */
+    val eglVersion: String
+    /** How the context was made: « surfaceless », « pbuffer », or the window's platform (« Wayland », « X11 (XCB) »…). */
     val kind: String
     override val floatTargets: Boolean
     override val maxSamples: Int
@@ -178,28 +187,49 @@ internal class EglGl : Gl, AutoCloseable {
         try {
             val client = Native.string(Egl.queryString.invokeExact(MemorySegment.NULL, Egl.EXTENSIONS) as MemorySegment)
             val platform = Egl.getPlatformDisplay
-            if (platform != null && "EGL_MESA_platform_surfaceless" in client)
-                display = platform.invokeExact(Egl.PLATFORM_SURFACELESS_MESA, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
-            if (display == MemorySegment.NULL) display = Egl.getDisplay.invokeExact(MemorySegment.NULL) as MemorySegment
-            check(display != MemorySegment.NULL) { "EGL: no display" }
+            var platformDisplay = false
+            var windowKind = ""
+            if (target == null) {
+                if (platform != null && "EGL_MESA_platform_surfaceless" in client)
+                    display = platform.invokeExact(Egl.PLATFORM_SURFACELESS_MESA, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
+                if (display == MemorySegment.NULL) display = Egl.getDisplay.invokeExact(MemorySegment.NULL) as MemorySegment
+            } else {
+                // The window's own platform, the first this EGL offers among those the window can be drawn through.
+                for (p in target.platforms) {
+                    if (platform == null || p.extensions.none { it in client }) continue
+                    display = platform.invokeExact(p.id, p.nativeDisplay, attribs(*p.attributes, Egl.NONE)) as MemorySegment
+                    if (display != MemorySegment.NULL) { platformDisplay = true; windowKind = p.name; target.chosen = p; break }
+                }
+                if (display == MemorySegment.NULL) {
+                    val p = target.platforms.last()
+                    display = Egl.getDisplay.invokeExact(p.legacyDisplay) as MemorySegment
+                    windowKind = p.name + ", eglGetDisplay"; target.chosen = p
+                }
+            }
+            check(display != MemorySegment.NULL) { "EGL: no display" + (if (target != null) " for the window" else "") }
             egl(Egl.initialize.invokeExact(display, MemorySegment.NULL, MemorySegment.NULL) as Int, "eglInitialize")
             egl(Egl.bindApi.invokeExact(Egl.OPENGL_ES_API) as Int, "eglBindAPI")
             val extensions = Native.string(Egl.queryString.invokeExact(display, Egl.EXTENSIONS) as MemorySegment)
-            val config = arena.allocate(ADDRESS)
-            val count = arena.allocate(JAVA_INT)
-            val wanted = ints(Egl.SURFACE_TYPE, Egl.PBUFFER_BIT, Egl.RENDERABLE_TYPE, Egl.OPENGL_ES3_BIT,
-                Egl.RED_SIZE, 8, Egl.GREEN_SIZE, 8, Egl.BLUE_SIZE, 8, Egl.ALPHA_SIZE, 8, Egl.NONE)
-            egl(Egl.chooseConfig.invokeExact(display, wanted, config, 1, count) as Int, "eglChooseConfig")
-            check(count.get(JAVA_INT, 0) > 0) { "EGL: no OpenGL ES 3 configuration" }
-            context = Egl.createContext.invokeExact(display, config.get(ADDRESS, 0), MemorySegment.NULL, ints(Egl.CONTEXT_CLIENT_VERSION, 3, Egl.NONE)) as MemorySegment
+            eglVersion = Native.string(Egl.queryString.invokeExact(display, Egl.VERSION) as MemorySegment)
+            val config = if (target == null) pbufferConfig() else windowConfig(target.chosen!!.visual)
+            context = Egl.createContext.invokeExact(display, config, MemorySegment.NULL, ints(Egl.CONTEXT_CLIENT_VERSION, 3, Egl.NONE)) as MemorySegment
             check(context != MemorySegment.NULL) { "EGL: no OpenGL ES 3 context (error 0x" + (Egl.getError.invokeExact() as Int).toString(16) + ")" }
-            if ("EGL_KHR_surfaceless_context" in extensions) kind = "surfaceless"
+            if (target != null) {
+                val p = target.chosen!!
+                val create = Egl.createPlatformWindowSurface
+                surface = if (platformDisplay && create != null) create.invokeExact(display, config, p.platformWindow(arena), MemorySegment.NULL) as MemorySegment
+                    else Egl.createWindowSurface.invokeExact(display, config, p.legacyWindow(), MemorySegment.NULL) as MemorySegment
+                check(surface != MemorySegment.NULL) { "EGL could not draw into the window (error 0x" + (Egl.getError.invokeExact() as Int).toString(16) + ")" }
+                kind = windowKind
+            } else if ("EGL_KHR_surfaceless_context" in extensions) kind = "surfaceless"
             else {
-                surface = Egl.createPbufferSurface.invokeExact(display, config.get(ADDRESS, 0), ints(Egl.WIDTH, 16, Egl.HEIGHT, 16, Egl.NONE)) as MemorySegment
+                surface = Egl.createPbufferSurface.invokeExact(display, config, ints(Egl.WIDTH, 16, Egl.HEIGHT, 16, Egl.NONE)) as MemorySegment
                 check(surface != MemorySegment.NULL) { "EGL: no pbuffer" }
                 kind = "pbuffer"
             }
             egl(Egl.makeCurrent.invokeExact(display, surface, surface, context) as Int, "eglMakeCurrent")
+            // A window is paced by its platform (Wayland: the compositor's frame callbacks; X11: the screen's refresh).
+            if (target != null) Egl.swapInterval.invokeExact(display, target.chosen!!.swapInterval) as Int
             rendererName = Native.string(Gles.getString.invokeExact(0x1F01) as MemorySegment)
             versionName = Native.string(Gles.getString.invokeExact(0x1F02) as MemorySegment)
             val gl = Native.string(Gles.getString.invokeExact(0x1F03) as MemorySegment)
@@ -213,9 +243,55 @@ internal class EglGl : Gl, AutoCloseable {
     }
 
     private fun ints(vararg v: Int): MemorySegment = arena.allocateFrom(JAVA_INT, *v)
+    /** An EGLAttrib list (EGL 1.5: pointer-sized numbers, not ints). */
+    private fun attribs(vararg v: Int): MemorySegment = arena.allocateFrom(JAVA_LONG, *LongArray(v.size) { v[it].toLong() })
     private fun egl(result: Int, what: String) {
         check(result != 0) { what + " failed (EGL error 0x" + (Egl.getError.invokeExact() as Int).toString(16) + ")" }
     }
+
+    /** A configuration with 8-bit colour and alpha for a pbuffer (a context without any window). */
+    private fun pbufferConfig(): MemorySegment {
+        val config = arena.allocate(ADDRESS)
+        val count = arena.allocate(JAVA_INT)
+        val wanted = ints(Egl.SURFACE_TYPE, Egl.PBUFFER_BIT, Egl.RENDERABLE_TYPE, Egl.OPENGL_ES3_BIT,
+            Egl.RED_SIZE, 8, Egl.GREEN_SIZE, 8, Egl.BLUE_SIZE, 8, Egl.ALPHA_SIZE, 8, Egl.NONE)
+        egl(Egl.chooseConfig.invokeExact(display, wanted, config, 1, count) as Int, "eglChooseConfig")
+        check(count.get(JAVA_INT, 0) > 0) { "EGL: no OpenGL ES 3 configuration" }
+        return config.get(ADDRESS, 0)
+    }
+
+    /**
+     * The configuration for a window: 8-bit colour, no alpha (the compositor would see through it), no
+     * multisampling (the picture is copied in by a blit, which OpenGL ES 3.0 refuses into a multisampled
+     * screen), and on X11 the window's own visual.
+     */
+    private fun windowConfig(visual: Int): MemorySegment {
+        val configs = arena.allocate(ADDRESS, 64)
+        val count = arena.allocate(JAVA_INT)
+        val wanted = ints(Egl.SURFACE_TYPE, Egl.WINDOW_BIT, Egl.RENDERABLE_TYPE, Egl.OPENGL_ES3_BIT,
+            Egl.RED_SIZE, 8, Egl.GREEN_SIZE, 8, Egl.BLUE_SIZE, 8, Egl.NONE)
+        egl(Egl.chooseConfig.invokeExact(display, wanted, configs, 64, count) as Int, "eglChooseConfig")
+        fun attribute(c: MemorySegment, name: Int): Int {
+            Egl.getConfigAttrib.invokeExact(display, c, name, scratch) as Int
+            return scratch.get(JAVA_INT, 0)
+        }
+        var best = MemorySegment.NULL; var bestScore = Int.MIN_VALUE
+        for (i in 0 until count.get(JAVA_INT, 0)) {
+            val c = configs.getAtIndex(ADDRESS, i.toLong())
+            if (attribute(c, Egl.SAMPLE_BUFFERS) != 0) continue
+            var score = 0
+            if (visual != 0) score += if (attribute(c, Egl.NATIVE_VISUAL_ID) == visual) 1000 else -1000
+            if (attribute(c, Egl.ALPHA_SIZE) == 0) score += 100
+            if (attribute(c, Egl.RED_SIZE) == 8 && attribute(c, Egl.GREEN_SIZE) == 8 && attribute(c, Egl.BLUE_SIZE) == 8) score += 10
+            if (attribute(c, Egl.CONFIG_CAVEAT) == Egl.SLOW_CONFIG) score -= 50
+            if (score > bestScore) { bestScore = score; best = c }
+        }
+        check(best != MemorySegment.NULL) { "EGL offers no OpenGL ES 3 configuration for a window (8-bit colour, no multisampling)" }
+        return best
+    }
+
+    /** Shows the picture drawn in the window. */
+    fun swap() { egl(Egl.swapBuffers.invokeExact(display, surface) as Int, "eglSwapBuffers") }
 
     override fun close() {
         if (display != MemorySegment.NULL) {
@@ -225,6 +301,7 @@ internal class EglGl : Gl, AutoCloseable {
             Egl.terminate.invokeExact(display) as Int
             display = MemorySegment.NULL; context = MemorySegment.NULL; surface = MemorySegment.NULL
         }
+        target?.close()
         if (arena.scope().isAlive) arena.close()
     }
 

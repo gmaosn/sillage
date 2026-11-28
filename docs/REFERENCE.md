@@ -531,11 +531,11 @@ Made by `addTrigger`. `world`, `shape`, `position`, `rotation`, `filter: (Body) 
 
 ### `Sound`
 
-`Sound(data, channels = 1, rate = 48000)`: float samples in −1..1, mono or interleaved stereo. `frames`, `duration`, `toWav()`, `save(path)`. `Sound.load(path)` reads an Ogg Vorbis or WAV file from disk or the resources; `Sound.decode(bytes)` from bytes, either kind; `Sound.wav(bytes)` a WAV (8, 16, 24 or 32-bit integers, or 32-bit floats).
+`Sound(data, channels = 1, rate = 48000)`: float samples in −1..1, mono or interleaved stereo. `frames`, `duration`, `toWav()`, `save(path)`. `Sound.load(path)` reads an Ogg Vorbis or WAV file from disk or the resources; `Sound.decode(bytes)` from bytes, either kind; `Sound.wav(bytes)` a WAV (8, 16, 24 or 32-bit integers, or 32-bit floats). From `load` and `decode`, a sound longer than ten seconds stays compressed (Ogg Vorbis) or as its integers (WAV) and is decoded while it plays, each voice on its own; `frames` and `duration` are known at once, and `data`, the same samples, is decoded whole the first time it is read. A missing file is refused with a message that names every place it was looked for.
 
 ### `Vorbis`
 
-`Vorbis.decode(bytes)`: an Ogg Vorbis file into a `Sound`, by the engine's own decoder (Ogg pages and checksums, Vorbis I: codebooks, floor 1, residues 0 to 2, channel coupling, inverse MDCT by FFT), the same as libvorbis to 3·10⁻⁷. Mono and stereo; floor 0 (unused since 2001) and more than two channels are refused, damaged files too, with an `IllegalArgumentException`. `Vorbis.isOgg(bytes)`. The whole file is decoded into memory (a stereo minute at 44.1 kHz takes 21 MB).
+`Vorbis.decode(bytes)`: an Ogg Vorbis file into a `Sound`, by the engine's own decoder (Ogg pages and checksums, Vorbis I: codebooks, floor 1, residues 0 to 2, channel coupling, inverse MDCT by FFT), the same as libvorbis to 3·10⁻⁷. Mono and stereo; floor 0 (unused since 2001) and more than two channels are refused, damaged files too, with an `IllegalArgumentException`. `Vorbis.isOgg(bytes)`. `Vorbis.decode` decodes the whole file into memory (a stereo minute at 44.1 kHz takes 21 MB); `Sound.load` and `Sound.decode` keep a long one compressed instead (see `Sound`).
 
 ### `Sounds`
 

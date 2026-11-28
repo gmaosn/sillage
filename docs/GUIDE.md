@@ -31,6 +31,7 @@ A game is a module of the project whose `module.yaml` depends on `//engine`. The
 ./sillage dev garden          # plays, and reloads the game each time you save a file
 ./sillage package garden      # build/package/garden/garden-x86_64.AppImage
 ./sillage pad                 # try the gamepads plugged in (a DualSense: its lights, rumble and triggers)
+./sillage doctor              # what this computer has for the engine, and how fast it runs (below)
 ./sillage games               # the games of the project
 ```
 
@@ -71,7 +72,8 @@ The same from code: `debug.showPhysics`, `debug.freeCamera`, `debug.paused`, `de
 | `--trace [--trace-every N]` | prints the player's state |
 | `--mute`, `--audio-device NAME` | sound off, or another device (an ALSA name; a path such as `/dev/dsp1` is written to as an OSS device) |
 | `--quality low\|medium\|high` | what the renderer spends: `medium` halves the shadow maps' side, `low` also drops the anti-aliasing. Chosen by itself otherwise (`medium` on a Raspberry Pi, `high` elsewhere); `SILLAGE_QUALITY` does the same from the environment |
-| `--renderer gl` | with `--headless`: draws with the OpenGL ES renderer (the one of the web and Android) instead of Vulkan, to compare their pictures |
+| `--renderer vulkan\|gl` | what draws. By default Vulkan, and the OpenGL ES renderer (the one of the web and Android, through EGL, in the window or without one) when Vulkan cannot start: one line says so, with the package that would bring Vulkan. `--renderer gl` asks for OpenGL ES, `--renderer vulkan` for Vulkan alone (no fallback); `SILLAGE_RENDERER` does the same from the environment |
+| `--doctor` | checks the computer and times a short run of the game without a window, then prints a report (see below) |
 | `--record-audio file.wav` | with `--headless`: records what the game would play |
 | `--export-sounds dir` | writes the engine's synthesised sounds as WAV files |
 | `--export-textures dir` | writes the ready-made textures as PNG files (the pattern, and the pattern on a typical colour) |
@@ -79,6 +81,17 @@ The same from code: `debug.showPhysics`, `debug.freeCamera`, `debug.paused`, `de
 | `--debug physics,free,paused` | starts with the physics drawn, the free camera, or paused (see below) |
 
 `game` returns a `RunReport` (frames drawn, CPU time per frame, GPU time per frame, time to the first frame, player position), which makes scripted checks easy.
+
+### When something is missing
+
+What a game needs and the computer lacks is said in plain words, with what to type to get it: a file that is not where the game looks (every place looked in, and a file of nearly that name if there is one), no Vulkan (the game is drawn with OpenGL ES instead; if that fails too, the packages to install, for the system's own package tool), no screen (start the game from the desktop, or with `--headless`), no sound (the game plays on silently). When such a problem stops the game, only its message is printed, with the line of the game that asked, not a Java stack trace (`SILLAGE_TRACE=1` keeps the trace).
+
+`./sillage doctor` (or `./mygame.AppImage --doctor`, or any game with `--doctor`) checks the computer the way the engine sees it and prints a short report to paste in a message: the system and its processor, Java, Vulkan (each card, its driver and version), Wayland or X11, EGL and OpenGL ES, the sound output (opened and closed again; nothing is heard), memory, cores and free space; then it times the game without a window (300 frames of the playground for `./sillage doctor`, its own scene for a game) and the physics alone (1000 crates falling into a heap), and ends with what to install or change. Each check has a time limit, so a driver that does not answer is reported rather than waited for. `--audio-device NAME` checks another sound output, `--frames N` and `--size WxH` change the timed run.
+
+```sh
+./sillage doctor                  # the playground
+./sillage doctor demo             # another game of the project
+```
 
 ## Units, axes, numbers
 
@@ -380,7 +393,7 @@ The pointer and the text typed come from the window; `hud.source = UiScript()` (
 
 ## Sound
 
-Every sound is synthesised by the engine (`Sounds.footstep`, `jump`, `land`, `pickup`, `knock`, `bounce`, `scrape`, `waves`, `gull`), or loaded from a file with `Sound.load("sounds/door.ogg")`: Ogg Vorbis (decoded by the engine itself, a few hundred times faster than real time) or WAV.
+Every sound is synthesised by the engine (`Sounds.footstep`, `jump`, `land`, `pickup`, `knock`, `bounce`, `scrape`, `waves`, `gull`), or loaded from a file with `Sound.load("sounds/door.ogg")`: Ogg Vorbis (decoded by the engine itself, a few hundred times faster than real time) or WAV. A file longer than ten seconds (music, an ambience) stays as it is in memory, compressed, and each voice playing it decodes it bit by bit as it goes: a minute of stereo music takes about 1 MB instead of 21 MB, and sounds exactly the same, to the last sample. The file is still read to its end when it is loaded, so a damaged one is refused there; its `data` is decoded whole only if the game reads it.
 
 ```kotlin
 play(Sounds.pickup())                                          // everywhere
@@ -398,7 +411,7 @@ reverbZone(Box(4f, 3f, 6f), at = vec(10, 2, 0), reverb = Reverb.CAVE)   // insid
 
 Sounds placed in the world are softer and duller far away, come from their side, shift in pitch as they come and go (the Doppler effect: `audio.mixer.doppler`, 1 by default) and echo in the place: `Reverb.OUTDOOR`, `ROOM`, `HALL`, `CAVE`, or your own `Reverb(decay, wet, damping)`. Far sounds keep more of their echo than of themselves, as in a real room. Sounds that are not placed (interface, music) stay dry.
 
-The scene makes its own sounds too: footsteps that follow the walk and run clips and the ground underfoot, jumps and landings, bodies hitting things (louder when harder), a crate scraping as it is pushed. `toggleMute()` turns sound off and on. The mixer runs on its own thread with 48 voices, and plays through ALSA.
+The scene makes its own sounds too: footsteps that follow the walk and run clips and the ground underfoot, jumps and landings, bodies hitting things (louder when harder), a crate scraping as it is pushed. `toggleMute()` turns sound off and on. The mixer runs on its own thread with 48 voices, and plays through ALSA. When there is no sound output (no ALSA, no sound card, a device that will not open), the game says so in one line and plays on without sound.
 
 The ears are at the head of the player the camera follows, turned as the camera looks: what is near the player sounds near, and left and right follow the view. `listener = Listener.CAMERA` puts them at the camera instead.
 

@@ -4,6 +4,8 @@ import sillage.gl.GlRenderer
 import sillage.math.Mat4
 import sillage.math.Vec3
 import sillage.platform.EglGl
+import sillage.platform.EglWindow
+import sillage.platform.Window
 import java.nio.file.Path
 
 /** What the desktop's loop asks of what draws: the Vulkan renderer, or the OpenGL ES one through EGL (`--renderer gl`). */
@@ -47,21 +49,29 @@ internal class VulkanDrawing(private val r: VulkanRenderer) : Drawing {
 }
 
 /**
- * The OpenGL ES 3 renderer (the one of the web and of phones) on the desktop, without a window: an EGL
- * context of its own, pictures read back for captures. `SILLAGE_GL_FINISH=1` waits for the GPU at the end
- * of each frame, so that the loop's frame times include its work (for measures).
+ * The OpenGL ES 3 renderer (the one of the web and of phones) on the desktop: through EGL into the game's
+ * window (Wayland or X11) when there is one, the finished picture copied to it turned the right way up; else
+ * an EGL context of its own, pictures read back for captures. `SILLAGE_GL_FINISH=1` waits for the GPU at the
+ * end of each frame, so that the loop's frame times include its work (for measures); `SILLAGE_GL_SCREEN=file.png`
+ * also writes, with a capture, what was copied to the window (read back from it, to check the copy).
  */
-internal class GlDrawing(width: Int, height: Int, shadows: Boolean) : Drawing {
-    private val gl = EglGl()
+internal class GlDrawing(private val window: Window?, width: Int, height: Int, shadows: Boolean) : Drawing {
+    private val gl: EglGl
+    private val target: EglWindow?
     private val r: GlRenderer
     private val finish = System.getenv("SILLAGE_GL_FINISH") != null
+    private val screen = System.getenv("SILLAGE_GL_SCREEN")?.takeIf { it.isNotEmpty() && window != null }
 
     init {
+        val t = window?.let { sillage.platform.eglWindowFor(it) }
+        val g = try { EglGl(t) } catch (e: Throwable) { t?.close(); throw e }
+        gl = g; target = t
         try {
-            r = GlRenderer(gl, width, height, shadows)
-            r.present = false                  // no screen: the picture is only read back
-            r.waitForTextures = true           // the same frame from run to run
-            println("SILLAGE_GL_OK GPU=" + gl.rendererName + " version=" + gl.versionName + " target=" + width + "x" + height + " msaa=" + r.samples + " context=" + gl.kind)
+            val size = window?.framebufferSize()?.takeIf { it[0] > 0 && it[1] > 0 } ?: intArrayOf(width, height)
+            r = GlRenderer(gl, size[0], size[1], shadows)
+            r.present = window != null         // into the window; without one the picture is only read back
+            r.waitForTextures = window == null // without a window, the same frame from run to run (a capture always waits)
+            println("SILLAGE_GL_OK GPU=" + gl.rendererName + " version=" + gl.versionName + " target=" + r.width + "x" + r.height + " msaa=" + r.samples + " context=" + gl.kind)
         } catch (e: Throwable) { gl.close(); throw e }
     }
 
@@ -75,17 +85,43 @@ internal class GlDrawing(width: Int, height: Int, shadows: Boolean) : Drawing {
     override val culled get() = r.culled
     override val gpuMs get() = 0.0
     override val validationErrors get() = 0
-    override fun waitForFrame() = true
-    override fun resized() = true
+    override fun waitForFrame(): Boolean { target?.waitForFrame(.1); return true }
+    override fun resized(): Boolean {
+        val w = window ?: return true
+        val s = w.framebufferSize()
+        if (s[0] <= 0 || s[1] <= 0) return false
+        target?.resize(s[0], s[1])
+        r.resize(s[0], s[1])
+        return true
+    }
     override fun draw(nodes: List<Node>, camera: Mat4, hud: HudMesh, capture: Path?, eye: Vec3, time: Float, hidden: Node?, focus: Vec3?, lighting: Lighting, extras: FrameExtras?) {
         r.draw(nodes, camera, hud, eye, time, hidden, focus, lighting, extras, if (capture == null) null else { w, h, rgb ->
             sillage.io.PngWriter.write(capture.toString(), w, h, rgb)
             println("SILLAGE_CAPTURE=" + capture.toAbsolutePath())
         })
+        if (capture != null && screen != null) readScreen(screen)
+        if (target != null) { target.beforeSwap(); gl.swap() }
         if (finish) gl.finish()
         val e = gl.getError()
         check(e == 0) { "OpenGL ES error 0x" + e.toString(16) + " in the frame" }
     }
+
+    /** What the window holds before the swap (its first row in memory is the bottom one), written top row first. */
+    private fun readScreen(file: String) {
+        val w = r.width; val h = r.height
+        val rgba = ByteArray(4 * w * h)
+        gl.bindFramebuffer(sillage.gl.GL.READ_FRAMEBUFFER, 0)
+        gl.readPixels(0, 0, w, h, rgba)
+        gl.bindFramebuffer(sillage.gl.GL.FRAMEBUFFER, 0)
+        val rgb = ByteArray(3 * w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            val s = 4 * ((h - 1 - y) * w + x); val d = 3 * (y * w + x)
+            rgb[d] = rgba[s]; rgb[d + 1] = rgba[s + 1]; rgb[d + 2] = rgba[s + 2]
+        }
+        sillage.io.PngWriter.write(file, w, h, rgb)
+        println("SILLAGE_GL_SCREEN=" + Path.of(file).toAbsolutePath())
+    }
+
     override fun forget() = r.forget()
     override fun close() { gl.finish(); r.close(); gl.close() }
 }

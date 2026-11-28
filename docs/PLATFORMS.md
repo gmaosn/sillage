@@ -4,7 +4,7 @@ One game, one source file; what changes from one system to the next is the engin
 
 | System | Backend | Pack with | Tried on |
 |---|---|---|---|
-| Linux x86-64 | Vulkan, Wayland or X11, ALSA, pads | `./sillage package GAME` (AppImage) | a real desktop (Intel Arc), daily |
+| Linux x86-64 | Vulkan (OpenGL ES through EGL without it), Wayland or X11, ALSA, pads | `./sillage package GAME` (AppImage) | a real desktop (Intel Arc), daily; OpenGL ES in a Wayland window (isolated KWin) and an X11 one (Xvfb) |
 | Raspberry Pi 4, 5, 500 (64-bit OS) | the same, ARM build | `./sillage package GAME --arch aarch64` | an emulated ARM processor with a software renderer; **not yet on a real Pi** |
 | FreeBSD 15 x86-64 | Vulkan, X11 or Wayland, OSS sound; keyboard and mouse only | `./sillage package GAME --portable` | a virtual machine with a software renderer (window, keyboard, sound device) |
 | NetBSD 11 x86-64 | through its Linux emulation: X11, software Vulkan, sound; keyboard and mouse only | `./sillage package GAME --portable` | a virtual machine (window, sound device); slow, see below |
@@ -15,7 +15,7 @@ One game, one source file; what changes from one system to the next is the engin
 
 ## Raspberry Pi
 
-A Pi 4, 5 or 500 with the 64-bit Raspberry Pi OS (Bookworm or later) has what the engine calls: Vulkan (Mesa's V3DV driver, installed by default), Wayland, ALSA. A Pi Zero, 1, 2 or 3 has no Vulkan and is out of reach.
+A Pi 4, 5 or 500 with the 64-bit Raspberry Pi OS (Bookworm or later) has what the engine calls: Vulkan (Mesa's V3DV driver, installed by default), Wayland, ALSA; and OpenGL ES 3.1, which draws the game if Vulkan will not start. A Pi Zero, 1, 2 or 3 has neither Vulkan nor OpenGL ES 3 and is out of reach.
 
 On the x86 computer where the game is developed (Docker makes the start-up cache; without it the AppImage is made without, and starts a little slower):
 
@@ -33,7 +33,15 @@ The engine picks the `medium` quality by itself on a Pi (shadow maps of 1024 ins
 
 and lower the screen's resolution: the picture is drawn at the window's size, and a Pi's GPU is small. F3 shows the frames per second; the line `SILLAGE_RUN_OK … cpu=… gpu=…` printed when the game ends gives the times per frame — worth sending back when reporting how it runs.
 
-What emulation could not tell: the speed, and whether the Pi's driver accepts everything the renderer asks (16-bit float pictures with 4 samples, three shadow layers). The renderer now asks the card what it can do instead of assuming, and says clearly what is missing if something is.
+What emulation could not tell: the speed, and whether the Pi's driver accepts everything the renderer asks (16-bit float pictures with 4 samples, three shadow layers). The renderer now asks the card what it can do instead of assuming, and says clearly what is missing if something is; if Vulkan fails all the same, the game is drawn with OpenGL ES and one line says why.
+
+The first thing to run on a Pi, and to send back:
+
+```sh
+./demo-aarch64.AppImage --doctor            # the system, Vulkan (V3DV), Wayland, OpenGL ES, sound, memory; then timings
+```
+
+It prints a short report (each check with a time limit, nothing heard from the speakers), its last lines saying what to install when something is missing (on Raspberry Pi OS: `sudo apt install mesa-vulkan-drivers` for Vulkan).
 
 ## Windows
 
