@@ -26,8 +26,10 @@ float ripples(vec2 p, float t) { return noise(p * 0.9 + vec2(t * 0.35, t * 0.2))
 void main() {
     float t = pc.eye.w;
     float d = color.r;                                   // distance to the shore (m)
-    // Where a steep solid thing cuts the water (a cliff, a rock, a post): the green is 1 + the distance to it, 0 when none is near.
+    // Where a steep solid thing cuts the water (a cliff, a rock, a post): the green is 1 + the distance to it, 0 when none is near;
+    // the blue, how open the water is in front of it (0: a basin between walls, calm; 1: the open sea).
     float wall = color.g > 0.5 ? color.g - 1.0 : 1e4;
+    float open = color.b;
     vec2 p = world.xz;
     float far = length(world - pc.eye.xyz);
     float reach = max(pc.shallows.w, 0.01);
@@ -38,10 +40,12 @@ void main() {
     // Foam against the shore, swelling and ebbing.
     float swell = 0.5 + 0.5 * sin(t * 1.3 + noise(p * 0.5) * 4.0);
     float lace = noise(p * 2.2 + vec2(t * 0.3, -t * 0.2));
-    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, min(d, wall) + wobble * 0.12 + (lace - 0.5) * 0.18);
-    // At the foot of a wall the waves break: a wider lace of foam that comes and goes, torn by the noise.
+    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, d + wobble * 0.12 + (lace - 0.5) * 0.18);
+    // At the foot of a wall on open water the waves break: the same breathing ring, and a wider lace of foam that comes and
+    // goes, torn by the noise.
+    float ring = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, wall + wobble * 0.12 + (lace - 0.5) * 0.18);
     float crash = (1.0 - smoothstep(0.2, 0.7 + 0.3 * swell, wall + (lace - 0.5) * 0.4)) * smoothstep(0.38, 0.62, noise(p * 3.1 + vec2(-t * 0.4, t * 0.3)));
-    shore = max(shore, crash * 0.75);
+    shore = max(shore, max(ring, crash * 0.75) * open);
     // A line of surf rolling towards the beach, broken into pieces, every few seconds.
     float roll = fract(t * 0.16);
     float at = (1.0 - roll) * reach * 0.55 + 0.35;

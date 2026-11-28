@@ -1137,6 +1137,7 @@ void main() {
     float t = pc.eye.w;
     float d = v1.r;
     float wall = v1.g > 0.5 ? v1.g - 1.0 : 1e4;
+    float open = v1.b;
     vec2 p = v2.xz;
     float far = length(v2 - pc.eye.xyz);
     float reach = max(pc.shallows.w, 0.01);
@@ -1145,9 +1146,10 @@ void main() {
     vec3 c = mix(pc.water.rgb, pc.shallows.rgb, lagoon * (1.0 - 0.25 * smoothstep(0.0, reach * 0.6, d)));
     float swell = 0.5 + 0.5 * sin(t * 1.3 + noise(p * 0.5) * 4.0);
     float lace = noise(p * 2.2 + vec2(t * 0.3, -t * 0.2));
-    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, min(d, wall) + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float shore = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, d + wobble * 0.12 + (lace - 0.5) * 0.18);
+    float ring = 1.0 - smoothstep(0.12 + 0.22 * swell, 0.18 + 0.22 * swell, wall + wobble * 0.12 + (lace - 0.5) * 0.18);
     float crash = (1.0 - smoothstep(0.2, 0.7 + 0.3 * swell, wall + (lace - 0.5) * 0.4)) * smoothstep(0.38, 0.62, noise(p * 3.1 + vec2(-t * 0.4, t * 0.3)));
-    shore = max(shore, crash * 0.75);
+    shore = max(shore, max(ring, crash * 0.75) * open);
     float roll = fract(t * 0.16);
     float at = (1.0 - roll) * reach * 0.55 + 0.35;
     float surf = (1.0 - smoothstep(0.04, 0.1, abs(d - at - wobble * 0.3))) * step(0.35, noise(p * 0.8 + 3.0)) * smoothstep(0.0, 0.3, roll) * (1.0 - roll);

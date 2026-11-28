@@ -17,6 +17,10 @@ private const val SHORE_HEIGHT = .9f
 private const val WALL_SLOPE = .7f
 /** How far from such a wall the distance is kept (m): the foam needs less than half a metre. */
 private const val WALL_REACH = 1.5f
+/** Open water this long in front of a wall (m) brings the waves in full; under 3 m none (a basin, a well). */
+private const val FETCH = 14f
+private val DI = intArrayOf(1, 1, 0, -1, -1, -1, 0, 1)
+private val DJ = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
 
 /** How a water surface looks: the open water's colour, the lagoon's colour and how far from the shore the lagoon reaches (m). */
 internal class WaterLook(val deep: Color, val shallow: Color, val reach: Float)
@@ -65,10 +69,12 @@ internal fun waterMesh(physics: PhysicsWorld, level: Float, size: Float, reach: 
     // Shore: the first solid surface from above rises gently out of the water there (meshes and static
     // bodies). Higher things standing in the water (a pier's deck, a roof) leave the water under them open.
     val dist = FloatArray(w * (nz + 1)) { Float.MAX_VALUE }
+    val above = BooleanArray(w * (nz + 1))                    // something solid at or above the water there (land, a wall's top)
     val down = Vec3(0f, -1f, 0f)
     for (j in 0..nz) for (i in 0..nx) {
         val hit = physics.raycast(Vec3(x0 + i * step, level + 200f, z0 + j * step), down, 200f, filter = { it.type == BodyType.STATIC })
         if (hit != null && hit.point.y >= level - .02f && hit.point.y <= level + SHORE_HEIGHT) dist[j * w + i] = 0f
+        if (hit != null && hit.point.y >= level - .02f) above[j * w + i] = true
     }
     // Distance to the nearest land: each vertex keeps the offset to its nearest land vertex, passed on to its
     // neighbours in two sweeps (8SSEDT), then the field is smoothed once so that its contours stay round.
@@ -99,11 +105,32 @@ internal fun waterMesh(physics: PhysicsWorld, level: Float, size: Float, reach: 
         dist[k] = (sharp[k] * 4 + sharp[k - 1] + sharp[k + 1] + sharp[k - w] + sharp[k + w]) / 8
     }
     val wall = walls(physics, level, x0, z0, step, nx, nz)
+    // How open the water is in front of a wall: the longest stretch of water from it, out of eight directions (a basin
+    // between walls stays calm, a cliff on the open sea takes the waves). In the blue: 0 sheltered … 1 open.
+    val exposed = FloatArray(w * (nz + 1))
+    for (j in 0..nz) for (i in 0..nx) {
+        val o = j * w + i
+        if (wall[o] >= WALL_REACH) continue
+        var longest = 0
+        for (dir in 0 until 8) {
+            val di = DI[dir]; val dj = DJ[dir]
+            var n = 1
+            while (n * step < FETCH) {
+                val a = i + di * n; val b = j + dj * n
+                if (a !in 0..nx || b !in 0..nz) { n = (FETCH / step).toInt(); break }      // the grid's edge: the open sea beyond
+                if (above[b * w + a] || wall[b * w + a] < step * .5f) break          // land, or a wall thinner than the grid
+                n++
+            }
+            longest = max(longest, n)
+        }
+        exposed[o] = ((longest * step - 3f) / (FETCH - 3f)).coerceIn(0f, 1f)
+    }
     val v = FloatArray(nx * nz * 54)
     var k = 0
     fun vertex(i: Int, j: Int) {
         v[k] = x0 + i * step; v[k + 1] = level; v[k + 2] = z0 + j * step
         v[k + 4] = 1f; v[k + 6] = dist[j * w + i]; v[k + 7] = wall[j * w + i].let { if (it < WALL_REACH) 1f + it else 0f }
+        v[k + 8] = exposed[j * w + i]
         k += 9
     }
     for (j in 0 until nz) for (i in 0 until nx) {

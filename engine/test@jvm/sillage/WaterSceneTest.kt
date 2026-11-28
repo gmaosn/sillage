@@ -39,6 +39,9 @@ class WaterSceneTest {
         s.mesh(beach.build(), at = Vec3.ZERO).solid()
         s.mesh(Mesh.box(2f, 6f, 2f, Color.STONE), at = vec(0, 0, 0)).solid()
         s.collider(sillage.physics.Box(.15f, 2f, .15f), at = vec(-5, 0, 0))
+        // Un bassin de 2 m entre quatre murs : à l'abri des vagues.
+        for ((x, z, w, d) in listOf(listOf(-10f, -12f, 3f, .2f), listOf(-10f, -9f, 3f, .2f), listOf(-11.5f, -10.5f, .2f, 3f), listOf(-8.5f, -10.5f, .2f, 3f)))
+            s.mesh(Mesh.box(w, 3f, d, Color.STONE), at = vec(x, 0, z)).solid()
         val water = s.water(level = 0, size = 60)
         s.drawList(Vec3.ZERO)
         val v = water.mesh.vertices
@@ -47,10 +50,18 @@ class WaterSceneTest {
             for (k in v.indices step 9) { val d = (v[k] - x) * (v[k] - x) + (v[k + 2] - z) * (v[k + 2] - z); if (d < best) { best = d; r = v[k + 6]; g = v[k + 7] } }
             return r to g
         }
+        fun open(x: Float, z: Float): Float {
+            var best = Float.MAX_VALUE; var b = 0f
+            for (k in v.indices step 9) { val d = (v[k] - x) * (v[k] - x) + (v[k + 2] - z) * (v[k + 2] - z); if (d < best) { best = d; b = v[k + 8] } }
+            return b
+        }
         // Au pied de la falaise (son flanc en x = 1) : à moins d'un demi-mètre du mur, et pas de plage (pas de lagune).
         val cliff = at(1.25f, 0f)
         assertTrue(cliff.second in 1f..1.5f, "falaise : ${cliff.second}")
         assertTrue(cliff.first > 3f, "pas de rivage au pied de la falaise : ${cliff.first}")
+        assertEquals(1f, open(1.25f, 0f), "la falaise est sur la mer ouverte")
+        assertTrue(at(-10f, -10.5f).second > 1f, "le bassin a ses murs")
+        assertEquals(0f, open(-10f, -10.5f), "le bassin est à l'abri")
         assertTrue(at(-5.5f, 0f).second in 1f..1.6f, "poteau : ${at(-5.5f, 0f).second}")
         assertEquals(0f, at(-20f, 20f).second, "loin de tout : rien")
         // La plage garde son rivage, sans mur.
