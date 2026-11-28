@@ -137,6 +137,9 @@ internal object Advice {
     /** What to type so that Vulkan works, or null when no package would help. */
     fun vulkanFix(e: Throwable): String? {
         if (Os.windows) return "install the newest driver of your graphics card (from Intel, AMD or NVIDIA)"
+        val chosen = listOf("VK_DRIVER_FILES", "VK_ICD_FILENAMES").filter { !System.getenv(it).isNullOrEmpty() }
+        if (chosen.isNotEmpty() && !mentions(e, "No Vulkan loader"))
+            return "unset " + chosen.joinToString(" and ") + " (" + (if (chosen.size > 1) "they choose" else "it chooses") + " which drivers Vulkan loads)"
         return when {
             mentions(e, "No Vulkan loader") -> install(vulkanLoader, *vulkanDrivers.toTypedArray())
             vulkanResult(e) == -9 -> install(*vulkanDrivers.toTypedArray())

@@ -74,7 +74,25 @@ internal class AlsaOutput(override val device: String, private val mixer: Mixer,
     private fun check(code: Int, what: String) { if (code < 0) throw IllegalStateException("the sound output \"$device\" refused 16-bit stereo at $rate Hz ($what: ${error(code)})") }
     private fun error(code: Int) = Native.string(STRERROR.invokeExact(fStrerror, code) as MemorySegment)
 
-    private companion object {
+    internal companion object {
+        /**
+         * Opens [device] for 16-bit stereo at [rate] Hz and closes it again without writing anything (nothing is
+         * heard): what it gave, in words. Throws when it would not open.
+         */
+        fun probe(device: String, rate: Int, latencyMs: Int): String = Arena.ofConfined().use { a ->
+            val handle = a.allocate(ADDRESS)
+            val opened = OPEN.invokeExact(fOpen, handle, a.allocateFrom(device), 0 /* playback */, 0) as Int
+            if (opened < 0) throw IllegalStateException("the sound output \"$device\" would not open (ALSA says: ${Native.string(STRERROR.invokeExact(fStrerror, opened) as MemorySegment)})")
+            val pcm = handle.get(ADDRESS, 0)
+            try {
+                val set = SET_PARAMS.invokeExact(fSetParams, pcm, 2 /* S16_LE */, 3 /* RW_INTERLEAVED */, 2, rate, 1, latencyMs * 1000) as Int
+                if (set < 0) throw IllegalStateException("the sound output \"$device\" refused 16-bit stereo at $rate Hz (ALSA says: ${Native.string(STRERROR.invokeExact(fStrerror, set) as MemorySegment)})")
+                val sizes = a.allocate(JAVA_LONG, 2)
+                GET_PARAMS.invokeExact(fGetParams, pcm, sizes, sizes.asSlice(8)) as Int
+                "ALSA \"" + device + "\" opens: 16-bit stereo at " + rate + " Hz, a buffer of " + (sizes.get(JAVA_LONG, 0) * 1000 / rate) + " ms (nothing was played)"
+            } finally { CLOSE.invokeExact(fClose, pcm) as Int }
+        }
+
         val lib = Native.library("libasound.so.2", "libasound.so")
         val fOpen = lib.fn("snd_pcm_open"); val fSetParams = lib.fn("snd_pcm_set_params"); val fGetParams = lib.fn("snd_pcm_get_params")
         val fWritei = lib.fn("snd_pcm_writei"); val fRecover = lib.fn("snd_pcm_recover"); val fDrop = lib.fn("snd_pcm_drop")

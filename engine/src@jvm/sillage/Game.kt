@@ -64,10 +64,13 @@ internal class Runtime(private val title: String, private val args: Array<String
   --mute | --audio-device NAME | --record-audio file.wav (no window) | --export-sounds dir
   --export-textures dir   write the ready-made textures as PNG
   --validation            Vulkan validation layers
+  --doctor                check this computer (system, Java, Vulkan, the screen, OpenGL ES, sound) and time
+                          a short run of the game without a window: a report to paste in a message
   --pad-test [--seconds N]   check the pads from the terminal (buttons, sticks, motion, lights, rumble, triggers)
   --pad-script "0 L 0,1; 1 tap CROSS; 2 R 1,0"   a scripted pad (see PadScript)""")
             return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO)
         }
+        if ("--doctor" in args) { Doctor(title, args, setup).run(); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         if ("--pad-test" in args) { padTest(args); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-sounds")?.let { exportSounds(it); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }
         option("--export-textures")?.let { exportTextures(it); return RunReport(0, 0.0, 0.0, 0.0, Vec3.ZERO) }

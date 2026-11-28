@@ -32,6 +32,9 @@ Sillage: make, run and ship games.
   ./sillage web GAME [--serve [PORT]]   GAME for a web page (WebAssembly + WebGL 2), from its module GAME-web,
                                   in build/web/GAME; --serve shows it at http://127.0.0.1:PORT (8080)
   ./sillage pad                   try the gamepads plugged in (a DualSense in full: lights, rumble, triggers)
+  ./sillage doctor [GAME]         check this computer (system, Java, Vulkan, Wayland or X11, OpenGL ES, sound,
+                                  memory, disk) and time a short run of GAME (the playground) without a window:
+                                  a short report to paste in a message. A packaged game does the same with --doctor
   ./sillage games                 the games of this project
 
 OPTIONS are the game's own: ./sillage run GAME --help lists them (--headless, --capture, ...).
@@ -270,6 +273,23 @@ cmd_qa() {
 	exec "$(jdk_home)/bin/java" $(java_options) -Xmx2g -cp "$(classpath qa)" "$(main_class qa)" "$@"
 }
 
+# The doctor: what this computer has for the engine, then a short run of the playground without a window.
+# When the engine cannot even be built or started, what the shell can see is said instead.
+cmd_doctor() {
+	game=playground
+	if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then game=$1; shift; fi
+	check_game "$game"
+	mkdir -p "$stamps"
+	if ! (build "$game") >"$stamps/doctor-build.log" 2>&1; then
+		echo "Sillage doctor: the engine could not be built here (the end of what the build said is below)."
+		echo "System     $(uname -srm)$( [ -r /etc/os-release ] && . /etc/os-release && printf ', %s' "${PRETTY_NAME:-$ID}")"
+		echo "Java       $(command -v java >/dev/null 2>&1 && java -version 2>&1 | head -n 1 || echo 'none on the PATH (./kotlin downloads its own)')"
+		tail -n 15 "$stamps/doctor-build.log"
+		exit 1
+	fi
+	exec "$(jdk_home)/bin/java" $(java_options) -cp "$(classpath "$game")" "$(main_class "$game")" --doctor "$@"
+}
+
 # The game as jars and a launcher: nothing of this computer's processor or system in it. It runs wherever a Java 25
 # and the system's own libraries are (Vulkan, X11 or Wayland): Linux, FreeBSD, NetBSD.
 package_portable() {
@@ -494,6 +514,7 @@ package) cmd_package "$@" ;;
 web) cmd_web "$@" ;;
 games) games ;;
 pad) cmd_run playground --pad-test "$@" ;;
+doctor) cmd_doctor "$@" ;;
 help|-h|--help) usage ;;
 *) usage >&2; exit 2 ;;
 esac
