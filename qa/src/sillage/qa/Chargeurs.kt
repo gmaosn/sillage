@@ -92,6 +92,28 @@ fun Qa.chargeurs() {
         total.toString() to (total.plantages == 0 && total.bloques == 0)
     }
 
+    controle("GLB à cibles de morphose, courbes cubiques, transformées de texture : lus, et abîmés refusés proprement",
+        "lus et animés intacts ; abîmés : aucun plantage, aucun blocage") {
+        // Les GLB d'essai de tools/create_glb_essais.py, lus depuis le dépôt.
+        val dossier = java.nio.file.Path.of("engine/test@jvm/fixtures/glb")
+        val total = Lectures(); var intacts = 0
+        for (nom in listOf("morphose", "cubique", "transformee")) {
+            val source = java.nio.file.Files.readAllBytes(dossier.resolve("$nom.glb"))
+            val m = Glb.readModel(source)
+            val a = sillage.Animator(m, m.parts())
+            for (clip in m.clips.keys) { a.play(clip, fade = 0f); repeat(30) { a.advance(1f / 30f) } }
+            if (m.flatten().vertices.all { it.isFinite() }) intacts++
+            val longueurJson = ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN).getInt(12)
+            val b = essayer(abimer(source, rnd, cas(200, 1500), 20 until 20 + longueurJson)) { bytes ->
+                val mm = Glb.readModel(bytes); val aa = sillage.Animator(mm, mm.parts())
+                for (clip in mm.clips.keys) { aa.play(clip, fade = 0f); aa.advance(.3f) }
+            }
+            total.lus += b.lus; total.refuses += b.refuses; total.plantages += b.plantages; total.bloques += b.bloques
+            b.exemples.forEach { (k, v) -> total.exemples.putIfAbsent(k, "$nom, $v") }
+        }
+        "$intacts / 3 lus et animés ; abîmés : $total" to (intacts == 3 && total.plantages == 0 && total.bloques == 0)
+    }
+
     controle("JSON abîmés et pièges : refusés proprement", "aucun plantage, aucun blocage") {
         val source = ressource("models/caisse.glb").let { g -> val l = ByteBuffer.wrap(g).order(ByteOrder.LITTLE_ENDIAN).getInt(12); g.copyOfRange(20, 20 + l) }
         val pieges = listOf("[".repeat(200_000), "{\"a\":".repeat(100_000), "\"\\u12", "\"\\uZZZZ\"", "1e999999", "-", "{\"a\" 1}", "[1,]", "\"\u0001\"",

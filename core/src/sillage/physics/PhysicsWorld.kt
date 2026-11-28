@@ -1127,6 +1127,24 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
             sqrt(friction[i] * friction[j]), e, poses[j], previous)
     }
 
+    /** How far the centre of [pose] is in front of triangle [t] of [mesh] (negative: behind it). */
+    private fun heightAbove(mesh: TriangleMesh, t: Int, pose: Pose): Float {
+        val v = mesh.v; val nn = mesh.n
+        return (pose.px - v[9 * t]) * nn[3 * t] + (pose.py - v[9 * t + 1]) * nn[3 * t + 1] + (pose.pz - v[9 * t + 2]) * nn[3 * t + 2]
+    }
+
+    /** Whether some triangle among [found] faces the other way from [t] and has the centre of [pose] in front of it, within [near]. */
+    private fun facedFromFront(mesh: TriangleMesh, t: Int, found: IntList, pose: Pose, near: Float): Boolean {
+        val nn = mesh.n
+        for (k in 0 until found.size) {
+            val u = found[k]
+            if (u == t || nn[3 * u] * nn[3 * t] + nn[3 * u + 1] * nn[3 * t + 1] + nn[3 * u + 2] * nn[3 * t + 2] > -.5f) continue
+            val h = heightAbove(mesh, u, pose)
+            if (h >= 0f && h <= near) return true
+        }
+        return false
+    }
+
     private fun collideMesh(m: Int, b: Int, dt: Float, n: NarrowScratch) {
         if (types[b] != BodyType.DYNAMIC || sleeping[b]) return
         val mesh = meshes[m]
@@ -1137,8 +1155,16 @@ class PhysicsWorld(var gravity: Vec3 = Vec3(0f, -9.81f, 0f)) {
         if (found.size == 0) return
         val margin = min(1f, speculativeDistance + speed(b) * dt)
         val scratch = n.points
+        // A thin wall of triangles back to back (thinner than the body): a body in front of one face, near it, is not
+        // pushed by the face behind it that looks the other way, which would push it through the wall (the narrow
+        // phase lets a ball within two radii behind a triangle be pushed out through it, for one pressed under a floor).
+        val pose = poses[b]
+        var behind = false
+        for (f in 0 until found.size) if (heightAbove(mesh, found[f], pose) < 0f) { behind = true; break }
+        val near = shapes[b]!!.boundingRadius + margin
         for (f in 0 until found.size) {
             val t = found[f]
+            if (behind && heightAbove(mesh, t, pose) < 0f && facedFromFront(mesh, t, found, pose, near)) continue
             scratch.clear()
             collideTriangle(mesh, t, shapes[b]!!, poses[b], margin, scratch)
             val surface = mesh.palette[mesh.material[t]]
