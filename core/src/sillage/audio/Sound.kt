@@ -4,8 +4,14 @@ import sillage.io.Le
 import sillage.io.Storage
 import sillage.io.latin1
 
+import kotlin.concurrent.Volatile
 import kotlin.math.roundToInt
 
+/**
+ * Sounds read from files ([Sound.decode], [Sound.load]) longer than this many seconds stay compressed and are
+ * decoded while they play (every voice on its own); shorter ones are decoded whole.
+ */
+private const val STREAM_ABOVE = 10f
 
 /**
  * A sound in memory: floating-point samples in −1..1, mono or interleaved stereo, at [rate] Hz.
@@ -14,7 +20,7 @@ import kotlin.math.roundToInt
  * A long sound read from a file ([decode], [load]: music, ambiences) stays compressed and is decoded while it
  * plays; its [data] is decoded whole the first time it is read.
  */
-class Sound private constructor(private var held: FloatArray?, internal val source: SoundSource?, val channels: Int, val rate: Int) {
+class Sound private constructor(@Volatile private var held: FloatArray?, internal val source: SoundSource?, val channels: Int, val rate: Int) {
     constructor(data: FloatArray, channels: Int = 1, rate: Int = 48_000) : this(data, null, channels, rate)
 
     init {
@@ -50,12 +56,6 @@ class Sound private constructor(private var held: FloatArray?, internal val sour
     fun save(path: String) = Storage.write(path, toWav())
 
     companion object {
-        /**
-         * Sounds read from files ([decode], [load]) longer than this many seconds stay compressed and are
-         * decoded while they play (every voice on its own); shorter ones are decoded whole.
-         */
-        internal const val STREAM_ABOVE = 10f
-
         /** A sound played from [source], decoded while it plays. */
         internal fun streamed(source: SoundSource) = Sound(null, source, source.channels, source.rate)
 
