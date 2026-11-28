@@ -98,35 +98,122 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
         return Vec3(s[k] * x.x + s[k + 1] * x.y + s[k + 2] * x.z, s[k + 1] * x.x + s[k + 3] * x.y + s[k + 4] * x.z,
             s[k + 2] * x.x + s[k + 4] * x.y + s[k + 5] * x.z)
     }
+    // apply, push, solvePoint and solveLock run for every joint in every pass of every substep: they work on
+    // floats, with the very operations of the vector functions they were written with, in the same order (the
+    // results are the same to the bit), and make no vector but the impulse they return.
+
     /** Applies the linear impulse [p] at the levers [ra], [rb] and the angular impulse [l]: −(p, l) on a, +(p, l) on b. */
-    internal fun apply(p: Vec3, ra: Vec3, rb: Vec3, l: Vec3 = Vec3.ZERO) {
-        push(ia, -1f, p, (ra cross p) + l)
-        push(ib, 1f, p, (rb cross p) + l)
+    internal fun apply(p: Vec3, ra: Vec3, rb: Vec3, l: Vec3 = Vec3.ZERO) =
+        apply(p.x, p.y, p.z, ra.x, ra.y, ra.z, rb.x, rb.y, rb.z, l.x, l.y, l.z)
+
+    /** [apply] on floats: p, then the levers ra and rb, then l. */
+    private fun apply(px: Float, py: Float, pz: Float, ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float, lx: Float, ly: Float, lz: Float) {
+        // (r × p) + l for each side.
+        val tax = (ay * pz - az * py) + lx; val tay = (az * px - ax * pz) + ly; val taz = (ax * py - ay * px) + lz
+        val tbx = (by * pz - bz * py) + lx; val tby = (bz * px - bx * pz) + ly; val tbz = (bx * py - by * px) + lz
+        push(ia, -1f, px, py, pz, tax, tay, taz)
+        push(ib, 1f, px, py, pz, tbx, tby, tbz)
     }
-    internal fun applyAngular(l: Vec3) { push(ia, -1f, Vec3.ZERO, l); push(ib, 1f, Vec3.ZERO, l) }
+    internal fun applyAngular(l: Vec3) { push(ia, -1f, 0f, 0f, 0f, l.x, l.y, l.z); push(ib, 1f, 0f, 0f, 0f, l.x, l.y, l.z) }
     /** Adds sign × (p, torque) to body [i]'s velocities. */
-    internal fun push(i: Int, sign: Float, p: Vec3, torque: Vec3) {
+    internal fun push(i: Int, sign: Float, p: Vec3, torque: Vec3) = push(i, sign, p.x, p.y, p.z, torque.x, torque.y, torque.z)
+
+    private fun push(i: Int, sign: Float, px: Float, py: Float, pz: Float, tx: Float, ty: Float, tz: Float) {
         if (i < 0) return
         val m = im(i)
         if (m == 0f) return
         val s = world.st; val o = i * SS
-        s[o] += sign * p.x * m; s[o + 1] += sign * p.y * m; s[o + 2] += sign * p.z * m
-        val dw = ii(i, torque)
-        s[o + 3] += sign * dw.x; s[o + 4] += sign * dw.y; s[o + 5] += sign * dw.z
+        s[o] += sign * px * m; s[o + 1] += sign * py * m; s[o + 2] += sign * pz * m
+        // ii(i, torque), written out.
+        val k = i * SS + 7
+        val dx = s[k] * tx + s[k + 1] * ty + s[k + 2] * tz; val dy = s[k + 1] * tx + s[k + 3] * ty + s[k + 4] * tz
+        val dz = s[k + 2] * tx + s[k + 4] * ty + s[k + 5] * tz
+        s[o + 3] += sign * dx; s[o + 4] += sign * dy; s[o + 5] += sign * dz
+    }
+
+    // What the float helpers below found.
+    private var fx = 0f; private var fy = 0f; private var fz = 0f
+    /** The three columns of a 3 × 3 matrix being solved (Mat3's c0, c1, c2). */
+    private val k3 = FloatArray(9)
+
+    /** dq(i).rotate(v) into fx, fy, fz. */
+    private fun turnedBy(i: Int, v: Vec3) {
+        val x: Float; val y: Float; val z: Float; val w: Float
+        if (i < 0) { x = 0f; y = 0f; z = 0f; w = 1f }
+        else { val s = world.st; val o = i * SS; x = s[o + 16]; y = s[o + 17]; z = s[o + 18]; w = s[o + 19] }
+        val tx = 2f * (y * v.z - z * v.y); val ty = 2f * (z * v.x - x * v.z); val tz = 2f * (x * v.y - y * v.x)
+        fx = v.x + w * tx + (y * tz - z * ty); fy = v.y + w * ty + (z * tx - x * tz); fz = v.z + w * tz + (x * ty - y * tx)
+    }
+
+    /** ii(i, (x, y, z)) into fx, fy, fz. */
+    private fun inertiaTimes(i: Int, x: Float, y: Float, z: Float) {
+        if (i < 0 || im(i) == 0f) { fx = 0f; fy = 0f; fz = 0f; return }
+        val s = world.st; val k = i * SS + 7
+        fx = s[k] * x + s[k + 1] * y + s[k + 2] * z; fy = s[k + 1] * x + s[k + 3] * y + s[k + 4] * z; fz = s[k + 2] * x + s[k + 4] * y + s[k + 5] * z
+    }
+
+    /** Mat3(k3).solve(r) into fx, fy, fz (Cramer; zero when singular). */
+    private fun solve3(rx: Float, ry: Float, rz: Float) {
+        val k = k3
+        val c0x = k[0]; val c0y = k[1]; val c0z = k[2]; val c1x = k[3]; val c1y = k[4]; val c1z = k[5]; val c2x = k[6]; val c2y = k[7]; val c2z = k[8]
+        // c1 × c2, then det = c0 · (c1 × c2)
+        val ux = c1y * c2z - c1z * c2y; val uy = c1z * c2x - c1x * c2z; val uz = c1x * c2y - c1y * c2x
+        val det = c0x * ux + c0y * uy + c0z * uz
+        val l0 = sqrt(c0x * c0x + c0y * c0y + c0z * c0z); val l1 = sqrt(c1x * c1x + c1y * c1y + c1z * c1z); val l2 = sqrt(c2x * c2x + c2y * c2y + c2z * c2z)
+        if (abs(det) <= 1e-10f * l0 * l1 * l2 || det == 0f) { fx = 0f; fy = 0f; fz = 0f; return }
+        val inv = 1f / det
+        // r × c2 and c1 × r
+        val vx = ry * c2z - rz * c2y; val vy = rz * c2x - rx * c2z; val vz = rx * c2y - ry * c2x
+        val wx = c1y * rz - c1z * ry; val wy = c1z * rx - c1x * rz; val wz = c1x * ry - c1y * rx
+        fx = (rx * ux + ry * uy + rz * uz) * inv; fy = (c0x * vx + c0y * vy + c0z * vz) * inv; fz = (c0x * wx + c0y * wy + c0z * wz) * inv
+    }
+
+    /** Column [col] of pointMass(ra, rb) (unit vector e = X, Y or Z) into k3: e * m − ra × ii(ia, ra × e) − rb × ii(ib, rb × e). */
+    private fun pointMassColumn(col: Int, ex: Float, ey: Float, ez: Float, m: Float,
+                                ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float) {
+        inertiaTimes(ia, ay * ez - az * ey, az * ex - ax * ez, ax * ey - ay * ex)
+        val iax = fx; val iay = fy; val iaz = fz
+        inertiaTimes(ib, by * ez - bz * ey, bz * ex - bx * ez, bx * ey - by * ex)
+        val ibx = fx; val iby = fy; val ibz = fz
+        val o = 3 * col
+        k3[o] = ex * m - (ay * iaz - az * iay) - (by * ibz - bz * iby)
+        k3[o + 1] = ey * m - (az * iax - ax * iaz) - (bz * ibx - bx * ibz)
+        k3[o + 2] = ez * m - (ax * iay - ay * iax) - (bx * iby - by * ibx)
     }
 
     /** Both anchors at one place (3 rows); returns the impulse applied. */
     internal fun solvePoint(useBias: Boolean, accumulated: Vec3): Vec3 {
-        val ra = dq(ia).rotate(frameA); val rb = dq(ib).rotate(frameB)
-        val cdot = v(ib) + (w(ib) cross rb) - v(ia) - (w(ia) cross ra)
-        var bias = Vec3.ZERO; var massScale = 1f; var impulseScale = 0f
+        turnedBy(ia, frameA); val ax = fx; val ay = fy; val az = fz
+        turnedBy(ib, frameB); val bx = fx; val by = fy; val bz = fz
+        val s = world.st
+        // v(i) and w(i): zero for the world.
+        val oa = ia * SS; val ob = ib * SS
+        val vax = if (ia < 0) 0f else s[oa]; val vay = if (ia < 0) 0f else s[oa + 1]; val vaz = if (ia < 0) 0f else s[oa + 2]
+        val wax = if (ia < 0) 0f else s[oa + 3]; val way = if (ia < 0) 0f else s[oa + 4]; val waz = if (ia < 0) 0f else s[oa + 5]
+        val vbx = if (ib < 0) 0f else s[ob]; val vby = if (ib < 0) 0f else s[ob + 1]; val vbz = if (ib < 0) 0f else s[ob + 2]
+        val wbx = if (ib < 0) 0f else s[ob + 3]; val wby = if (ib < 0) 0f else s[ob + 4]; val wbz = if (ib < 0) 0f else s[ob + 5]
+        // cdot = v(ib) + (w(ib) × rb) − v(ia) − (w(ia) × ra)
+        val cx = ((vbx + (wby * bz - wbz * by)) - vax) - (way * az - waz * ay)
+        val cy = ((vby + (wbz * bx - wbx * bz)) - vay) - (waz * ax - wax * az)
+        val cz = ((vbz + (wbx * by - wby * bx)) - vaz) - (wax * ay - way * ax)
+        var gx = 0f; var gy = 0f; var gz = 0f; var massScale = 1f; var impulseScale = 0f
         if (useBias) {
-            val separation = dp(ib) - dp(ia) + (rb - ra) + deltaCenter
-            bias = separation * soft.biasRate; massScale = soft.massScale; impulseScale = soft.impulseScale
+            // separation = dp(ib) − dp(ia) + (rb − ra) + deltaCenter; bias = separation * biasRate
+            val pax = if (ia < 0) 0f else s[oa + 13]; val pay = if (ia < 0) 0f else s[oa + 14]; val paz = if (ia < 0) 0f else s[oa + 15]
+            val pbx = if (ib < 0) 0f else s[ob + 13]; val pby = if (ib < 0) 0f else s[ob + 14]; val pbz = if (ib < 0) 0f else s[ob + 15]
+            val d = deltaCenter; val rate = soft.biasRate
+            gx = (((pbx - pax) + (bx - ax)) + d.x) * rate; gy = (((pby - pay) + (by - ay)) + d.y) * rate; gz = (((pbz - paz) + (bz - az)) + d.z) * rate
+            massScale = soft.massScale; impulseScale = soft.impulseScale
         }
-        val impulse = pointMass(ra, rb).solve(-(cdot + bias)) * massScale - accumulated * impulseScale
-        apply(impulse, ra, rb)
-        return impulse
+        val m = im(ia) + im(ib)
+        pointMassColumn(0, 1f, 0f, 0f, m, ax, ay, az, bx, by, bz)
+        pointMassColumn(1, 0f, 1f, 0f, m, ax, ay, az, bx, by, bz)
+        pointMassColumn(2, 0f, 0f, 1f, m, ax, ay, az, bx, by, bz)
+        solve3(-(cx + gx), -(cy + gy), -(cz + gz))
+        val ix = fx * massScale - accumulated.x * impulseScale; val iy = fy * massScale - accumulated.y * impulseScale
+        val iz = fz * massScale - accumulated.z * impulseScale
+        apply(ix, iy, iz, ax, ay, az, bx, by, bz, 0f, 0f, 0f)
+        return Vec3(ix, iy, iz)
     }
 
     /**
@@ -153,9 +240,6 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
         return Mat3(col(Vec3.X), col(Vec3.Y), col(Vec3.Z))
     }
 
-    /** K of a rotation lock: IA + IB. */
-    private fun angularMass(): Mat3 = Mat3(ii(ia, Vec3.X) + ii(ib, Vec3.X), ii(ia, Vec3.Y) + ii(ib, Vec3.Y), ii(ia, Vec3.Z) + ii(ib, Vec3.Z))
-
     /** Inverse inertia about [axis] of the two bodies together, inverted (0: neither turns). */
     internal fun axialMass(axis: Vec3): Float = (axis dot (ii(ia, axis) + ii(ib, axis))).let { if (it > 0f) 1f / it else 0f }
 
@@ -164,19 +248,49 @@ sealed class Joint(internal val world: PhysicsWorld, val a: Body?, val b: Body, 
      * [accumulated]; returns the impulse applied.
      */
     internal fun solveLock(useBias: Boolean, relative0: Quat, accumulated: Vec3): Vec3 {
-        var cdot = w(ib) - w(ia)
+        val s = world.st; val oa = ia * SS; val ob = ib * SS
+        // cdot = w(ib) − w(ia)
+        var cx = (if (ib < 0) 0f else s[ob + 3]) - (if (ia < 0) 0f else s[oa + 3])
+        var cy = (if (ib < 0) 0f else s[ob + 4]) - (if (ia < 0) 0f else s[oa + 4])
+        var cz = (if (ib < 0) 0f else s[ob + 5]) - (if (ia < 0) 0f else s[oa + 5])
         var massScale = 1f; var impulseScale = 0f
         if (useBias) {
-            // b = a · E · relative0: E, the error in a's frame, turned into the world.
-            val qa = rot(ia)
-            var e = qa.conjugate() * rot(ib) * relative0.conjugate()
-            if (e.w < 0f) e = Quat(-e.x, -e.y, -e.z, -e.w)
-            cdot += qa.rotate(Vec3(e.x, e.y, e.z) * 2f) * soft.biasRate
+            // b = a · E · relative0: E, the error in a's frame, turned into the world. E = (qa* · qb) · relative0*.
+            val q = world
+            val ax = if (ia < 0) 0f else q.qx[ia]; val ay = if (ia < 0) 0f else q.qy[ia]; val az = if (ia < 0) 0f else q.qz[ia]; val aw = if (ia < 0) 1f else q.qw[ia]
+            val bx = if (ib < 0) 0f else q.qx[ib]; val by = if (ib < 0) 0f else q.qy[ib]; val bz = if (ib < 0) 0f else q.qz[ib]; val bw = if (ib < 0) 1f else q.qw[ib]
+            // qa* = (−ax, −ay, −az, aw), times qb (Quat.times: w·q.x + x·q.w + y·q.z − z·q.y …)
+            val nx = -ax; val ny = -ay; val nz = -az
+            val px = aw * bx + nx * bw + ny * bz - nz * by
+            val py = aw * by - nx * bz + ny * bw + nz * bx
+            val pz = aw * bz + nx * by - ny * bx + nz * bw
+            val pw = aw * bw - nx * bx - ny * by - nz * bz
+            // times relative0* = (−r.x, −r.y, −r.z, r.w)
+            val rx = -relative0.x; val ry = -relative0.y; val rz = -relative0.z; val rw = relative0.w
+            var ex = pw * rx + px * rw + py * rz - pz * ry
+            var ey = pw * ry - px * rz + py * rw + pz * rx
+            var ez = pw * rz + px * ry - py * rx + pz * rw
+            val ew = pw * rw - px * rx - py * ry - pz * rz
+            if (ew < 0f) { ex = -ex; ey = -ey; ez = -ez }
+            // cdot += qa.rotate(Vec3(e.x, e.y, e.z) * 2f) * biasRate
+            val vx = ex * 2f; val vy = ey * 2f; val vz = ez * 2f
+            val tx = 2f * (ay * vz - az * vy); val ty = 2f * (az * vx - ax * vz); val tz = 2f * (ax * vy - ay * vx)
+            val rate = soft.biasRate
+            cx += (vx + aw * tx + (ay * tz - az * ty)) * rate; cy += (vy + aw * ty + (az * tx - ax * tz)) * rate; cz += (vz + aw * tz + (ax * ty - ay * tx)) * rate
             massScale = soft.massScale; impulseScale = soft.impulseScale
         }
-        val l = angularMass().solve(-cdot) * massScale - accumulated * impulseScale
-        applyAngular(l)
-        return l
+        // angularMass() = Mat3(ii(ia, X) + ii(ib, X), ii(ia, Y) + ii(ib, Y), ii(ia, Z) + ii(ib, Z)), then solve(−cdot).
+        for (col in 0..2) {
+            val ex = if (col == 0) 1f else 0f; val ey = if (col == 1) 1f else 0f; val ez = if (col == 2) 1f else 0f
+            inertiaTimes(ia, ex, ey, ez); val ux = fx; val uy = fy; val uz = fz
+            inertiaTimes(ib, ex, ey, ez)
+            k3[3 * col] = ux + fx; k3[3 * col + 1] = uy + fy; k3[3 * col + 2] = uz + fz
+        }
+        solve3(-cx, -cy, -cz)
+        val lx = fx * massScale - accumulated.x * impulseScale; val ly = fy * massScale - accumulated.y * impulseScale
+        val lz = fz * massScale - accumulated.z * impulseScale
+        push(ia, -1f, 0f, 0f, 0f, lx, ly, lz); push(ib, 1f, 0f, 0f, 0f, lx, ly, lz)
+        return Vec3(lx, ly, lz)
     }
 }
 
